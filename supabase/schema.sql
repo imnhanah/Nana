@@ -298,7 +298,7 @@ alter table public.trades alter column rating type numeric using rating::numeric
 create table if not exists public.premarket_markups (
   id uuid primary key default gen_random_uuid(), account_id uuid not null references public.accounts(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade, markup_date date not null, market text, instrument text,
-  bias text, levels text, market_structure text, notes text, screenshots jsonb not null default '[]'::jsonb,
+  bias text, status text not null default 'Planned', levels text, market_structure text, notes text, screenshots jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(), updated_at timestamptz not null default now()
 );
 alter table public.trades drop constraint if exists trades_premarket_markup_id_fkey;
@@ -309,14 +309,28 @@ create table if not exists public.trade_reviews (
   review_date date not null, done_well text, went_wrong text, execution_review text, rule_adherence text, psychology text,
   lessons text, action_items text, notes text, screenshots jsonb not null default '[]'::jsonb, created_at timestamptz not null default now(), updated_at timestamptz not null default now()
 );
+create table if not exists public.period_reviews (
+  id uuid primary key default gen_random_uuid(), account_id uuid not null references public.accounts(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  period_type text not null check (period_type in ('monthly', 'quarterly', 'annual')),
+  period_key text not null,
+  content jsonb not null default '{}'::jsonb,
+  completed boolean not null default false,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  unique (account_id, period_type, period_key)
+);
 alter table public.premarket_markups enable row level security;
 alter table public.trade_reviews enable row level security;
+alter table public.period_reviews enable row level security;
 alter table public.premarket_markups add column if not exists markup_time time;
+alter table public.premarket_markups add column if not exists status text not null default 'Planned';
 alter table public.trade_reviews add column if not exists review_time time;
 drop policy if exists "markups_own" on public.premarket_markups; create policy "markups_own" on public.premarket_markups for all using (user_id=auth.uid()) with check (user_id=auth.uid());
 drop policy if exists "reviews_own" on public.trade_reviews; create policy "reviews_own" on public.trade_reviews for all using (user_id=auth.uid()) with check (user_id=auth.uid());
+drop policy if exists "period_reviews_own" on public.period_reviews; create policy "period_reviews_own" on public.period_reviews for all using (user_id=auth.uid()) with check (user_id=auth.uid());
 drop trigger if exists set_updated_at on public.premarket_markups; create trigger set_updated_at before update on public.premarket_markups for each row execute function public.set_updated_at();
 drop trigger if exists set_updated_at on public.trade_reviews; create trigger set_updated_at before update on public.trade_reviews for each row execute function public.set_updated_at();
+drop trigger if exists set_updated_at on public.period_reviews; create trigger set_updated_at before update on public.period_reviews for each row execute function public.set_updated_at();
 
 -- ============================================================================
 -- Done. Every table above has RLS enabled with policies scoped to
