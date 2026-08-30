@@ -538,7 +538,7 @@ function ListManager({ title, items, onSave, note }) {
 }
 
 function ManagementPage({ typeTags, mistakeTags, confluenceSessions, onTypeTags, onMistakes, onConfluence }) {
-  return <><div className="tj-page-intro"><div className="tj-bold" style={{fontSize:18}}>Management</div><div className="tj-muted-txt" style={{fontSize:12}}>Manage the entry options available on future trades. Historical records retain their saved values.</div></div><div className="tj-row3">
+  return <><div className="tj-page-intro"><div className="tj-bold" style={{fontSize:18}}>Management</div><div className="tj-muted-txt" style={{fontSize:12}}>Manage the entry options available on future trades. Historical records retain their saved values.</div></div><div className="tj-row3 tj-management-grid">
     <ListManager title="Entry Type" items={confluenceSessions} onSave={onConfluence} note="Former Confluence Session records. Used for trade classification and Entry Type analytics." />
     <ListManager title="Confluence" items={typeTags} onSave={onTypeTags} note="Former tag records. Select one or more confluences while logging a trade." />
     <ListManager title="Mistake Management" items={mistakeTags} onSave={onMistakes} note="Multi-select mistakes available when logging a trade." />
@@ -692,9 +692,28 @@ function DashboardPage({ account, stats, monthCursor, setMonthCursor, onDayClick
   const grossProfit = stats.sorted.filter((t) => t.pnl > 0).reduce((s, t) => s + t.pnl, 0);
   const grossLossAmt = stats.sorted.filter((t) => t.pnl < 0).reduce((s, t) => s + t.pnl, 0);
   const winSegPct = stats.avgWin + stats.avgLoss ? (stats.avgWin / (stats.avgWin + stats.avgLoss)) * 100 : 50;
+  const accountValue = account.balance + stats.netPnl;
+  const latestTrade = stats.sorted[stats.sorted.length - 1];
 
   return (
     <>
+      <Card className="tj-command-panel">
+        <div className="tj-command-copy">
+          <div className="tj-command-eyebrow"><span className="tj-command-live" /> JOURNAL OVERVIEW</div>
+          <div className="tj-command-title">Trade with a clear read on your account.</div>
+          <div className="tj-command-sub">
+            {latestTrade
+              ? `Last trade: ${latestTrade.asset} · ${formatTime(latestTrade.time)} · ${fmtMoney(latestTrade.pnl)}`
+              : "Your workspace is ready. Log a trade when your plan is complete."}
+          </div>
+        </div>
+        <div className="tj-command-metrics">
+          <div className="tj-command-metric"><span>ACCOUNT VALUE</span><strong>{fmtMoney(accountValue)}</strong></div>
+          <div className="tj-command-metric"><span>NET P&amp;L</span><strong className={stats.netPnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(stats.netPnl)}</strong></div>
+          <div className="tj-command-metric"><span>WIN RATE</span><strong className={wrColorClass(stats.winRate)}>{stats.winRate.toFixed(0)}%</strong></div>
+          <div className="tj-command-metric"><span>TRADES LOGGED</span><strong>{stats.total}</strong></div>
+        </div>
+      </Card>
       <div className="tj-stats-grid">
         <StatCard label={`NET P&L · ${stats.total}T`}>
           <div className={`tj-stat-value ${stats.netPnl > 0 ? "tj-green" : stats.netPnl < 0 ? "tj-red" : ""}`}>{fmtMoney(stats.netPnl)}</div>
@@ -2426,27 +2445,27 @@ const CSS = `
 .tj-toast-error { background: #2A1215; border: 1px solid #F87171; color: #F87171; }
 .tj-toast-info { background: #12241A; border: 1px solid var(--tj-green); color: var(--tj-green); }
 :root {
-  --tj-bg: #0F1115; --tj-panel: #191D24; --tj-panel-alt: #222730; --tj-border: #363E4A;
-  --tj-text: #F8FAFC; --tj-muted: #B6C0CC; --tj-green: #228B22; --tj-red: #FB7185;
+  --tj-bg: #0A121B; --tj-panel: #101B27; --tj-panel-alt: #162432; --tj-border: #2B3B4C;
+  --tj-text: #F2F6FA; --tj-muted: #A5B4C7; --tj-green: #228B22; --tj-red: #FB7185;
   --tj-purple: #8B7CF6; --tj-blue: #60A5FA; --tj-amber: #FBBF24;
-  --tj-input-bg: #222730; --tj-chart-bg: #191D24; --tj-chart-grid: #3A4350; --tj-chart-text: #D8E0E8;
+  --tj-input-bg: #0D1823; --tj-chart-bg: #101B27; --tj-chart-grid: #29394A; --tj-chart-text: #C8D4E0;
   --tj-tooltip-bg: #222730; --tj-primary-hover: #1B6F1B; --tj-primary-muted: rgba(34,139,34,0.22);
-  --tj-shadow: 0 10px 30px rgba(0,0,0,0.42); --tj-primary-contrast: #FFFFFF;
+  --tj-shadow: 0 16px 36px rgba(0,0,0,0.32); --tj-primary-contrast: #FFFFFF; --tj-grid-line: rgba(148,163,184,0.05);
 }
 .tj-theme-light {
-  --tj-bg: #F4F5F7; --tj-panel: #FFFFFF; --tj-panel-alt: #F1F2F5; --tj-border: #E2E5EA;
-  --tj-text: #16181D; --tj-muted: #64748B; --tj-green: #228B22; --tj-red: #DC2626;
+  --tj-bg: #F3F6F4; --tj-panel: #FFFFFF; --tj-panel-alt: #F7FAF8; --tj-border: #D4E1D7;
+  --tj-text: #17221A; --tj-muted: #65746A; --tj-green: #228B22; --tj-red: #C7374B;
   --tj-purple: #6D5FD8; --tj-blue: #2563EB; --tj-amber: #B45309;
-  --tj-input-bg: #FFFFFF; --tj-chart-bg: #FFFFFF; --tj-chart-grid: #D9E0E7; --tj-chart-text: #475569;
+  --tj-input-bg: #FFFFFF; --tj-chart-bg: #FFFFFF; --tj-chart-grid: #D7E1D9; --tj-chart-text: #536258;
   --tj-tooltip-bg: #FFFFFF; --tj-primary-hover: #1B6F1B; --tj-primary-muted: rgba(34,139,34,0.12);
-  --tj-shadow: 0 10px 28px rgba(15,23,42,0.12); --tj-primary-contrast: #FFFFFF;
+  --tj-shadow: 0 14px 30px rgba(19,35,26,0.10); --tj-primary-contrast: #FFFFFF; --tj-grid-line: rgba(34,139,34,0.06);
 }
 .tj-theme-light .tj-modal-overlay { background: rgba(0,0,0,0.35); }
 .tj-theme-light .tj-backdrop { background: rgba(0,0,0,0.35); }
 .tj-theme-light ::placeholder { color: #9CA3AF; }
 .tj-theme-light .tj-btn-primary, .tj-theme-light .auth-submit { color: #FFFFFF; }
 .tj-theme-light .tj-panel, .tj-theme-light .tj-modal { box-shadow: 0 5px 18px rgba(15,23,42,0.07); }
-.tj-root { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: var(--tj-bg); color: var(--tj-text); display: flex; height: 100vh; width: 100%; font-size: 14px; overflow: hidden; }
+.tj-root { font-family: 'Inter', system-ui, -apple-system, sans-serif; background-color: var(--tj-bg); background-image: linear-gradient(var(--tj-grid-line) 1px, transparent 1px), linear-gradient(90deg, var(--tj-grid-line) 1px, transparent 1px); background-size: 32px 32px; color: var(--tj-text); display: flex; height: 100vh; width: 100%; font-size: 14px; overflow: hidden; }
 .tj-loading { align-items: center; justify-content: center; flex-direction: column; gap: 12px; color: var(--tj-muted); }
 .tj-spinner { width: 28px; height: 28px; border: 3px solid var(--tj-border); border-top-color: var(--tj-purple); border-radius: 50%; animation: tj-spin 0.8s linear infinite; }
 @keyframes tj-spin { to { transform: rotate(360deg); } }
@@ -2455,18 +2474,18 @@ const CSS = `
 .tj-green { color: var(--tj-green); } .tj-red { color: var(--tj-red); } .tj-blue { color: var(--tj-blue); }
 .tj-muted-txt { color: var(--tj-muted); } .tj-purple-txt { color: var(--tj-purple); }
 
-.tj-sidebar { width: 220px; min-width: 220px; height: 100vh; background: var(--tj-panel); border-right: 1px solid var(--tj-border); display: flex; flex-direction: column; padding: 18px 14px; position: relative; flex-shrink: 0; transition: transform 0.25s, width 0.2s, min-width 0.2s; }
+.tj-sidebar { width: 220px; min-width: 220px; height: 100vh; background: color-mix(in srgb, var(--tj-panel) 96%, transparent); border-right: 1px solid var(--tj-border); display: flex; flex-direction: column; padding: 18px 14px; position: relative; flex-shrink: 0; transition: transform 0.25s, width 0.2s, min-width 0.2s; box-shadow: 12px 0 28px rgba(0,0,0,0.08); }
 .tj-sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .tj-sidebar-collapsed { width: 0; min-width: 0; padding: 0; overflow: hidden; border: none; }
 .tj-backdrop { display: none; }
-.tj-logo { height: 72px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel-alt); padding: 6px; text-align: center; margin-bottom: 22px; overflow: hidden; }
+.tj-logo { height: 76px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--tj-border); border-radius: 12px; background: linear-gradient(135deg, var(--tj-panel-alt), var(--tj-panel)); padding: 6px; text-align: center; margin-bottom: 22px; overflow: hidden; box-shadow: inset 0 1px 0 rgba(255,255,255,0.03); }
 .tj-logo img { display: block; width: 64px; height: 64px; object-fit: contain; border-radius: 50%; mix-blend-mode: screen; filter: brightness(1.5) contrast(1.18) drop-shadow(0 2px 5px rgba(0,0,0,.18)); }
 .tj-theme-light .tj-logo img { mix-blend-mode: multiply; filter: contrast(1.1) drop-shadow(0 2px 5px rgba(0,0,0,.12)); }
 .tj-nav-label { font-size: 10px; letter-spacing: 1.2px; color: var(--tj-muted); margin: 14px 4px 8px; font-weight: 600; }
 .tj-nav { display: flex; flex-direction: column; gap: 2px; }
-.tj-nav-item { display: flex; align-items: center; gap: 10px; background: none; border: none; color: var(--tj-muted); padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px; text-align: left; font-family: inherit; }
+.tj-nav-item { display: flex; align-items: center; gap: 10px; background: none; border: 1px solid transparent; color: var(--tj-muted); padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px; text-align: left; font-family: inherit; transition: background .16s ease, color .16s ease, border-color .16s ease; }
 .tj-nav-item:hover { background: var(--tj-panel-alt); color: var(--tj-text); }
-.tj-nav-active { background: var(--tj-primary-muted); color: var(--tj-green) !important; font-weight: 600; }
+.tj-nav-active { background: var(--tj-primary-muted); border-color: rgba(34,139,34,0.34); color: var(--tj-green) !important; font-weight: 700; box-shadow: inset 3px 0 0 var(--tj-green); }
 .tj-nav-danger:hover { color: var(--tj-red) !important; }
 .tj-logged-in-as { font-size: 10.5px; color: var(--tj-muted); text-align: center; margin-top: 8px; padding: 0 4px; }
 .tj-sidebar-footer { position: relative; flex-shrink: 0; padding-top: 10px; }
@@ -2486,23 +2505,34 @@ const CSS = `
 .tj-account-row-name { display: flex; flex-direction: column; } .tj-active-tag { font-size: 10px; color: var(--tj-green); } .tj-add-account { color: var(--tj-purple); }
 
 .tj-main { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100vh; overflow: hidden; }
-.tj-topbar { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; border-bottom: 1px solid var(--tj-border); gap: 12px; }
+.tj-topbar { display: flex; align-items: center; justify-content: space-between; padding: 15px 24px; border-bottom: 1px solid var(--tj-border); background: color-mix(in srgb, var(--tj-panel) 90%, transparent); backdrop-filter: blur(14px); gap: 12px; }
 .tj-topbar-left { display: flex; align-items: center; gap: 10px; }
 .tj-page-title { font-weight: 700; font-size: 16px; } .tj-page-sub { font-size: 11px; color: var(--tj-muted); }
-.tj-topbar-account { color: var(--tj-purple); font-weight: 600; flex: 1; text-align: center; }
-.tj-content { padding: 20px 24px; overflow-y: auto; flex: 1; min-height: 0; }
+.tj-topbar-account { color: var(--tj-green); font-weight: 700; flex: 1; text-align: center; font-size: 12px; letter-spacing: .02em; }
+.tj-content { padding: 22px 24px 32px; overflow-y: auto; flex: 1; min-height: 0; }
 .tj-topbar { flex-shrink: 0; }
 
-.tj-btn-primary { background: var(--tj-green); color: var(--tj-primary-contrast); border: none; border-radius: 8px; padding: 9px 16px; font-weight: 700; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: inherit; white-space: nowrap; }
-.tj-btn-primary:hover { background: var(--tj-primary-hover); }
+.tj-btn-primary { background: var(--tj-green); color: var(--tj-primary-contrast); border: 1px solid var(--tj-green); border-radius: 8px; padding: 9px 16px; font-weight: 700; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: inherit; white-space: nowrap; box-shadow: 0 7px 16px rgba(34,139,34,0.22); transition: transform .16s ease, background .16s ease, box-shadow .16s ease; }
+.tj-btn-primary:hover { background: var(--tj-primary-hover); transform: translateY(-1px); box-shadow: 0 9px 20px rgba(34,139,34,0.28); }
 .tj-btn-outline { background: none; border: 1px solid var(--tj-border); color: var(--tj-text); border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; font-family: inherit; }
 .tj-btn-outline:hover { background: var(--tj-panel-alt); }
 .tj-icon-btn { background: none; border: none; color: var(--tj-muted); cursor: pointer; padding: 4px; border-radius: 6px; display: inline-flex; }
 .tj-icon-btn:hover { background: var(--tj-panel-alt); color: var(--tj-text); }
 .tj-fab { position: sticky; bottom: 16px; margin: 16px auto 0; display: flex; background: var(--tj-green); color: var(--tj-primary-contrast); border: none; border-radius: 24px; padding: 10px 18px; font-weight: 700; cursor: pointer; align-items: center; gap: 6px; box-shadow: var(--tj-shadow); }
 
-.tj-card { background: var(--tj-panel); border: 1px solid var(--tj-border); border-radius: 12px; }
-.tj-stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 16px; }
+.tj-card { background: color-mix(in srgb, var(--tj-panel) 96%, transparent); border: 1px solid var(--tj-border); border-radius: 12px; box-shadow: 0 8px 22px rgba(0,0,0,0.05); }
+.tj-stats-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tj-command-panel { position: relative; overflow: hidden; display: flex; align-items: center; justify-content: space-between; gap: 28px; padding: 20px 22px; margin-bottom: 16px; background: linear-gradient(112deg, color-mix(in srgb, var(--tj-panel) 98%, transparent), color-mix(in srgb, var(--tj-panel-alt) 86%, var(--tj-green) 14%)); }
+.tj-command-panel::after { content: ""; position: absolute; inset: auto -46px -72px auto; width: 240px; height: 240px; border-radius: 50%; border: 1px solid rgba(34,139,34,.20); box-shadow: 0 0 0 32px rgba(34,139,34,.035), 0 0 0 64px rgba(34,139,34,.025); pointer-events: none; }
+.tj-command-copy { min-width: 0; position: relative; z-index: 1; }
+.tj-command-eyebrow { display: flex; align-items: center; gap: 7px; color: var(--tj-green); font-size: 10px; font-weight: 800; letter-spacing: .13em; }
+.tj-command-live { width: 7px; height: 7px; border-radius: 999px; background: var(--tj-green); box-shadow: 0 0 0 4px var(--tj-primary-muted); }
+.tj-command-title { max-width: 560px; margin-top: 8px; font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: clamp(19px, 2vw, 27px); font-weight: 750; letter-spacing: -.035em; line-height: 1.12; }
+.tj-command-sub { color: var(--tj-muted); font-size: 12.5px; margin-top: 7px; }
+.tj-command-metrics { position: relative; z-index: 1; display: grid; grid-template-columns: repeat(4, minmax(100px, 1fr)); gap: 8px; min-width: min(100%, 530px); }
+.tj-command-metric { min-width: 0; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--tj-border) 88%, var(--tj-green) 12%); background: color-mix(in srgb, var(--tj-panel) 78%, transparent); border-radius: 9px; }
+.tj-command-metric span { display: block; color: var(--tj-muted); font-size: 9.5px; letter-spacing: .08em; font-weight: 700; white-space: nowrap; }
+.tj-command-metric strong { display: block; margin-top: 5px; font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tj-stat { padding: 14px 16px; }
 .tj-stat-label { font-size: 10.5px; letter-spacing: 0.5px; color: var(--tj-muted); font-weight: 600; margin-bottom: 6px; }
 .tj-stat-row { display: flex; align-items: center; justify-content: space-between; }
@@ -2851,6 +2881,27 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-history-list { display: flex; flex-direction: column; gap: 8px; }
 .tj-history-row { display: flex; align-items: center; font-size: 12.5px; }
 
+/* AAICOREFX workspace surfaces use the shared tokens above, so the same
+   hierarchy carries cleanly through Light and Dark mode. */
+.tj-panel, .tj-tlog-card, .tj-management-grid > .tj-panel { box-shadow: 0 10px 24px rgba(1,10,20,.07); }
+.tj-panel { background: linear-gradient(150deg, color-mix(in srgb, var(--tj-panel) 98%, transparent), color-mix(in srgb, var(--tj-panel-alt) 46%, var(--tj-panel) 54%)); }
+.tj-page-intro { display: flex; align-items: end; justify-content: space-between; gap: 18px; padding: 4px 2px 15px; margin-bottom: 2px; border-bottom: 1px solid var(--tj-border); }
+.tj-management-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.tj-management-grid > .tj-panel { min-height: 270px; position: relative; overflow: hidden; }
+.tj-management-grid > .tj-panel::before { content: ""; display: block; width: 30px; height: 3px; border-radius: 99px; background: var(--tj-green); margin-bottom: 12px; }
+.tj-toolbar { background: color-mix(in srgb, var(--tj-panel) 94%, transparent); box-shadow: 0 8px 20px rgba(1,10,20,.05); }
+.tj-toolbar-search, .tj-toolbar-dd, .tj-toolbar-pill { background: color-mix(in srgb, var(--tj-input-bg) 94%, transparent); }
+.tj-tlog-card { border-radius: 10px; background: color-mix(in srgb, var(--tj-panel) 97%, transparent); transition: border-color .16s ease, transform .16s ease, box-shadow .16s ease; }
+.tj-tlog-card:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--tj-border) 65%, var(--tj-green) 35%); box-shadow: 0 13px 26px rgba(1,10,20,.10); }
+.tj-tlog-row { min-height: 58px; }
+.tj-tlog-date { font-variant-numeric: tabular-nums; }
+.tj-tradelog-stats > .tj-card, .tj-stat { position: relative; overflow: hidden; }
+.tj-tradelog-stats > .tj-card::before, .tj-stat::before { content: ""; position: absolute; top: 0; left: 0; width: 26px; height: 2px; border-radius: 0 0 99px 0; background: var(--tj-green); opacity: .8; }
+.tj-tlog-expand { background: color-mix(in srgb, var(--tj-panel-alt) 78%, transparent); }
+.tj-markup-image-section, .tj-setup-card, .tj-session-card { background: color-mix(in srgb, var(--tj-panel-alt) 72%, var(--tj-panel) 28%); }
+.tj-cal-cell { transition: border-color .16s ease, background .16s ease, transform .16s cubic-bezier(.2,.8,.2,1); }
+.tj-cal-cell:hover { border-color: color-mix(in srgb, var(--tj-border) 55%, var(--tj-green) 45%); }
+
 @media (max-width: 900px) {
   .tj-toolbar { overflow-x: auto; }
   .tj-toolbar-search { flex: 0 0 180px; }
@@ -2871,6 +2922,9 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
   .tj-setup-tags { grid-template-columns: 1fr; }
   .tj-session-grid { grid-template-columns: 1fr; }
   .tj-grid4 { grid-template-columns: repeat(2, 1fr); }
+  .tj-command-panel { align-items: stretch; flex-direction: column; gap: 16px; }
+  .tj-command-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); min-width: 0; }
+  .tj-management-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 700px) {
   .tj-toolbar { flex-direction: column; height: auto; align-items: stretch; padding: 12px; gap: 10px; overflow-x: visible; }
@@ -2879,6 +2933,9 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
   .tj-toolbar-dd, .tj-toolbar-pill { width: 100%; height: 38px; text-align: center; justify-content: center; }
 }
 @media (max-width: 520px) {
+  .tj-command-panel { padding: 16px; }
+  .tj-command-title { font-size: 20px; }
+  .tj-command-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tj-stats-grid { grid-template-columns: 1fr 1fr; }
   .tj-tradelog-stats { grid-template-columns: 1fr 1fr; }
   .tj-tlog-row { gap: 8px; }
