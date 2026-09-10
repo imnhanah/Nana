@@ -12,6 +12,7 @@ import {
   ImagePlus, ClipboardCheck, ScanLine, CheckCircle2, SlidersHorizontal, ArrowDownUp,
 } from "lucide-react";
 import AuthPage from "./AuthPage";
+import ChallengePage from "./ChallengePage";
 import ResetPasswordForm from "./ResetPasswordForm";
 import logoUrl from "./assets/aaicorefx-logo.png";
 import { supabase } from "./supabaseClient";
@@ -43,6 +44,7 @@ const NAV = [
   { id: "reviews", label: "Trade Review", icon: ClipboardCheck },
   { id: "analytics", label: "Analytics", icon: BarChart2 },
   { id: "calendar", label: "Calendar", icon: CalendarIcon },
+  { id: "challenge", label: "Challenge", icon: Trophy },
   { id: "psychology", label: "Psychology", icon: Brain },
   { id: "insights", label: "Insights", icon: Lightbulb },
   { id: "rules", label: "Rules", icon: ListChecks },
@@ -2678,6 +2680,7 @@ function TradingJournalApp({ user, onLogout }) {
           {page === "dashboard" && <ReferenceDashboardPage account={account} stats={stats} monthCursor={monthCursor} setMonthCursor={setMonthCursor} onDayClick={openDayDetails} guardrails={guardrails} />}
           {page === "tradelog" && <TradeLogPage account={account} reviews={reviews.filter((review) => review.accountId === account.id)} markups={markups.filter((markup) => markup.accountId === account.id)} onNewTrade={() => openNewTrade()} onEdit={(t) => { setNewTradeDraft(null); setEditingTrade(t); setModal("newtrade"); }} onDelete={handleDeleteTrade} />}
           {page === "analytics" && <AnalyticsPage account={account} />}
+          {page === "challenge" && <ChallengePage key={account.id} account={account} userId={user.id} />}
           {page === "calendar" && <CalendarPage account={account} markups={markups.filter((markup)=>markup.accountId===account.id)} reviews={reviews.filter((review)=>review.accountId===account.id)} monthCursor={monthCursor} setMonthCursor={setMonthCursor} onDayClick={openDayDetails} />}
           {page === "psychology" && <PsychologyPage account={account} />}
           {page === "insights" && <InsightsPage account={account} />}
