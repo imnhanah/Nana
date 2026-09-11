@@ -1,0 +1,44 @@
+.tj-challenge { display:grid; gap:14px; min-width:0; color:var(--tj-text); }
+.tj-challenge-heading,.tj-challenge-actions,.tj-challenge-table-head { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.tj-challenge h2 { display:flex; align-items:center; gap:8px; margin:0; font-size:20px; }
+.tj-challenge h3 { margin:0; font-size:16px; }
+.tj-challenge p { margin:5px 0 0; color:var(--tj-muted); font-size:13px; line-height:1.5; }
+.tj-challenge-actions span { font-size:13px; color:var(--tj-muted); }
+.tj-challenge .tj-panel { border:1px solid var(--tj-border); border-radius:16px; background:var(--tj-panel); }
+.tj-challenge-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+.tj-challenge-metrics article { padding:18px; display:grid; gap:9px; min-width:0; }
+.tj-challenge-metrics small { font-size:12px; letter-spacing:.7px; color:var(--tj-muted); }
+.tj-challenge-metrics strong { font-size:25px; font-variant-numeric:tabular-nums; }
+.tj-challenge-metrics span { color:var(--tj-muted); font-size:12px; }
+.tj-challenge progress { width:100%; height:7px; border:0; border-radius:10px; overflow:hidden; accent-color:var(--tj-green); background:var(--tj-panel-alt); }
+.tj-challenge progress::-webkit-progress-bar { background:var(--tj-panel-alt); }
+.tj-challenge progress::-webkit-progress-value { background:var(--tj-green); }
+.tj-challenge progress::-moz-progress-bar { background:var(--tj-green); }
+.tj-challenge-current { display:flex; align-items:center; gap:14px; padding:17px; }
+.tj-challenge-current > svg { color:var(--tj-green); flex-shrink:0; }
+.tj-challenge-current > div { flex:1; }
+.tj-challenge-table-head { padding:18px; }
+.tj-challenge-table-head label { display:flex; gap:8px; align-items:center; font-size:13px; }
+.tj-challenge-table-head input { accent-color:var(--tj-green); }
+.tj-challenge-scroll { overflow:auto; max-height:70vh; border-top:1px solid var(--tj-border); }
+.tj-challenge table { width:100%; border-collapse:separate; border-spacing:0; font-size:14px; font-variant-numeric:tabular-nums; }
+.tj-challenge th,.tj-challenge td { padding:13px 15px; border-bottom:1px solid var(--tj-border); text-align:left; white-space:nowrap; }
+.tj-challenge thead th { position:sticky; top:0; z-index:1; background:var(--tj-panel-alt); color:var(--tj-muted); font-size:12px; }
+.tj-challenge tbody th span { display:inline-flex; margin-left:8px; color:var(--tj-green); font-size:12px; }
+.tj-challenge-active { background:color-mix(in srgb,var(--tj-green) 9%,var(--tj-panel)); }
+.tj-challenge-active th { box-shadow:inset 3px 0 var(--tj-green); }
+.tj-challenge-positive { color:var(--tj-green); }
+.tj-challenge-negative { color:var(--tj-red); }
+.tj-challenge-status { width:135px; padding:7px 10px; border-radius:20px; border:1px solid var(--tj-border); background:var(--tj-panel-alt); color:var(--tj-muted); font:inherit; font-size:13px; }
+.tj-challenge-status.pass { --status:var(--tj-green); }
+.tj-challenge-status.back { --status:var(--tj-red); }
+.tj-challenge-status.progress { --status:var(--tj-amber); }
+.tj-challenge-status:is(.pass,.back,.progress) { color:var(--status); border-color:color-mix(in srgb,var(--status) 45%,var(--tj-border)); background:color-mix(in srgb,var(--status) 13%,var(--tj-panel)); }
+.tj-challenge-status option { background:var(--tj-panel); color:var(--tj-text); }
+.tj-challenge td .tj-input { min-width:180px; font-size:13px; }
+.tj-challenge .tj-challenge-footnote { padding:14px 18px; margin:0; font-size:12px; }
+.tj-challenge-error { padding:14px; border:1px solid var(--tj-red); border-radius:12px; color:var(--tj-red); }
+.tj-challenge-loading { padding:24px; }
+.tj-challenge button:disabled { opacity:.5; cursor:not-allowed; }
+@media(max-width:900px) { .tj-challenge-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:540px) { .tj-challenge-metrics article { padding:12px; } .tj-challenge-metrics strong { font-size:21px; } .tj-challenge-current { flex-wrap:wrap; } .tj-challenge-current > div { min-width:200px; } .tj-challenge-heading { align-items:flex-start; } }
