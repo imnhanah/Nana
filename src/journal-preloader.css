@@ -1,0 +1,21 @@
+.journal-preloader{--intro-bg:#0b1016;--intro-text:#f4f7fa;--intro-muted:#95a1b1;--intro-green:#50c6a0;position:fixed;inset:0;z-index:1000;display:grid;place-items:center;overflow:auto;padding:28px;background:radial-gradient(ellipse at 50% 30%,#50c6a00c,transparent 65%),var(--intro-bg);color:var(--intro-text);font-family:Inter,system-ui,-apple-system,sans-serif;color-scheme:dark}
+.journal-preloader-light{--intro-bg:#f3f8f7;--intro-text:#172c26;--intro-muted:#5a7168;--intro-green:#28896e;color-scheme:light}
+.journal-preloader-content{text-align:center;max-width:620px;width:100%;animation:journal-intro-arrive .55s ease both}
+.journal-preloader-emblem{width:180px;height:180px;position:relative;margin:0 auto 22px;display:grid;place-items:center}
+.journal-preloader-emblem svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;fill:none;stroke:var(--intro-green);stroke-width:1.8;stroke-linecap:round}
+.journal-orbit-track{opacity:.12}
+.journal-orbit-trail{stroke-dasharray:23 77;transform-origin:80px 80px;animation:journal-orbit 1.9s linear infinite;filter:drop-shadow(0 0 3px var(--intro-green))}
+.journal-orbit-secondary{stroke:var(--intro-text);stroke-width:1.1;stroke-dasharray:7 93;animation-duration:2.8s;animation-direction:reverse}
+.journal-preloader-emblem img{width:96px;height:96px;object-fit:contain;border-radius:50%;animation:journal-logo-breathe 2.5s ease-in-out infinite}
+.journal-preloader h1{margin:0;font-size:clamp(1.3rem,4vw,1.8rem);letter-spacing:.16em;font-weight:750}
+.journal-preloader-status{font-size:.9rem;color:var(--intro-muted);margin:12px 0 0;line-height:1.5}
+.journal-preloader blockquote{margin:30px 0 0;font-size:clamp(1.2rem,3.8vw,1.75rem);font-weight:650;line-height:1.45;letter-spacing:-.025em;color:var(--intro-green);background:linear-gradient(105deg,var(--intro-green),var(--intro-text) 52%,var(--intro-green));background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:journal-quote-arrive .8s .25s both}
+.tj-root.journal-dashboard-arrive{animation:journal-dashboard-arrive .75s cubic-bezier(.2,.7,.2,1) both}
+@keyframes journal-orbit{to{transform:rotate(360deg)}}
+@keyframes journal-logo-breathe{50%{transform:scale(.96);opacity:.85}}
+@keyframes journal-intro-arrive{from{opacity:0}to{opacity:1}}
+@keyframes journal-quote-arrive{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes journal-dashboard-arrive{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:480px){.journal-preloader-emblem{width:150px;height:150px}.journal-preloader-emblem img{width:80px;height:80px}}
+@media(prefers-reduced-motion:reduce){.journal-preloader *, .tj-root.journal-dashboard-arrive{animation:none!important}.journal-orbit-trail{filter:none}}
+@media(forced-colors:active){.journal-preloader blockquote{background:none;-webkit-text-fill-color:CanvasText;color:CanvasText}}
