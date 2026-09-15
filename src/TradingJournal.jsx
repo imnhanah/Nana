@@ -2991,32 +2991,45 @@ function TradingJournalApp({ user, onLogout }) {
   const loadFromServer = useCallback(async () => {
     setLoadError("");
     setLoaded(false);
-    try {
-      await ensureDemoAccount(user);
-    } catch (error) {
-      setLoadError(error.message || "Demo account setup could not finish. Please retry.");
-      setLoaded(true);
-      return false;
+    // Existing accounts should render immediately. Demo setup is only needed once
+    // and used to block Safari behind several extra network requests on every load.
+    if (user.user_metadata?.demo_2025_version !== 2) {
+      try { await ensureDemoAccount(user); }
+      catch (error) { setLoadError(error.message || "Journal setup could not finish. Please retry."); setLoaded(true); return false; }
     }
-    const within = (promise, milliseconds, message) => Promise.race([
-      promise,
-      new Promise((_, reject) => window.setTimeout(() => reject(new Error(message)), milliseconds)),
-    ]);
-    const refreshAndRetry = async () => {
-      const refreshed = await within(supabase.auth.refreshSession(), 8000, "Your session refresh timed out.");
-      if (!refreshed?.data?.session) throw new Error("Your saved session could not be refreshed. Please sign in again.");
-      return within(fetchAllUserData(user.id), 12000, "The journal request timed out after refreshing your session.");
+    const isSessionFailure = error => /jwt|token|session|unauthori[sz]ed|401|403/i.test(String(error?.message || error || ""));
+    const pause = milliseconds => new Promise(resolve => window.setTimeout(resolve, milliseconds));
+    // Safari can resume a stored session after the first data request starts.
+    // Do not race that request against a short timer: retry transient failures
+    // in the background and keep the normal preloader on screen instead.
+    const loadJournal = async () => {
+      let lastFailure;
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        try {
+          let result = await fetchAllUserData(user.id);
+          if (!result.error) return result;
+          lastFailure = result.error;
+          if (isSessionFailure(result.error)) {
+            const refreshed = await supabase.auth.refreshSession();
+            if (!refreshed?.data?.session) throw new Error("Your saved session could not be refreshed. Please sign in again.");
+            result = await fetchAllUserData(user.id);
+            if (!result.error) return result;
+            lastFailure = result.error;
+          }
+        } catch (error) {
+          lastFailure = error;
+          if (isSessionFailure(error)) {
+            const refreshed = await supabase.auth.refreshSession();
+            if (!refreshed?.data?.session) throw new Error("Your saved session could not be refreshed. Please sign in again.");
+          }
+        }
+        await pause(Math.min(1000 * 2 ** attempt, 12000));
+      }
+      throw new Error(lastFailure?.message || lastFailure || "The journal could not be loaded. Check your connection and try again.");
     };
     let result;
     try {
-      try {
-        result = await within(fetchAllUserData(user.id), 12000, "The journal request timed out.");
-      } catch (initialError) {
-        result = await refreshAndRetry();
-      }
-      if (result.error) {
-        result = await refreshAndRetry();
-      }
+      result = await loadJournal();
     } catch (error) {
       const message = error?.message || "The journal could not be loaded.";
       setLoadError(message);
