@@ -35,7 +35,7 @@ import { ensureDemoAccount } from "./demoAccount";
 import {
   fetchAllUserData, createAccount, updateAccount, deleteAccount, resetAccountData,
   createTrade, updateTrade, deleteTrade, createRule, updateRule, deleteRule, setCheckin,
-  saveTypeTags, saveManagedLists, createMarkup, updateMarkup, deleteMarkup, saveTradeReview, savePeriodReview, hasMigratedLocalData, markLocalDataMigrated, importLegacyAccount,
+  saveManagedLists, createMarkup, updateMarkup, deleteMarkup, saveTradeReview, savePeriodReview, hasMigratedLocalData, markLocalDataMigrated, importLegacyAccount,
 } from "./db";
 
 /* ----------------------------- constants ----------------------------- */
@@ -43,9 +43,6 @@ import {
 const SESSIONS = ["Asia", "London", "NYC AM", "NYC PM"];
 const normalizeSession = (value) => ({ "NY AM": "NYC AM", "NY PM": "NYC PM" }[value] || value);
 const MOODS = ["Confident", "Neutral", "Fear", "FOMO", "Revenge", "Disciplined", "Anxious", "Excited"];
-const DEFAULT_TYPE_TAGS = ["PDRR", "Breakout", "Reversal", "Trend", "Scalp", "Swing", "News Play"];
-const DEFAULT_MISTAKE_TAGS = ["Overtrading", "Early Exit", "No Stop Loss", "Revenge Trade", "FOMO Entry",
-  "Sized Too Big", "Sized Too Low", "Missed Entry", "Moved Stop", "Chased Entry", "Ignored Rules", "Bad Timing"];
 const DEFAULT_INSTRUMENTS = [
   "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
   "XAU/USD", "XAG/USD", "US30", "US100", "US500", "BTC/USD", "ETH/USD",
@@ -2966,8 +2963,8 @@ function TradingJournalApp({ user, onLogout }) {
   const [editingMarkup, setEditingMarkup] = useState(null);
   const [imageViewerSrc, setImageViewerSrc] = useState(null);
   const [monthCursor, setMonthCursor] = useState(new Date());
-  const [typeTags, setTypeTags] = useState(DEFAULT_TYPE_TAGS);
-  const [mistakeTags, setMistakeTags] = useState(DEFAULT_MISTAKE_TAGS);
+  const [typeTags, setTypeTags] = useState([]);
+  const [mistakeTags, setMistakeTags] = useState([]);
   const [confluenceSessions, setConfluenceSessions] = useState([]);
   const [customInstruments, setCustomInstruments] = useState([]);
   const [markups, setMarkups] = useState([]);
@@ -3042,9 +3039,9 @@ function TradingJournalApp({ user, onLogout }) {
       return false;
     }
     setAccounts(result.data.accounts);
-    setTypeTags(result.data.typeTags || DEFAULT_TYPE_TAGS);
-    setMistakeTags(result.data.mistakeTags || DEFAULT_MISTAKE_TAGS);
-    setConfluenceSessions(result.data.confluenceSessions || []);
+    setTypeTags([]);
+    setMistakeTags([]);
+    setConfluenceSessions([]);
     setCustomInstruments(result.data.customInstruments || []);
     setMarkups(result.data.markups || []);
     setReviews(result.data.reviews || []);
@@ -3113,6 +3110,11 @@ function TradingJournalApp({ user, onLogout }) {
   useEffect(() => {
     if (account && account.id !== activeId) setActiveId(account.id);
   }, [account, activeId]);
+  useEffect(() => {
+    setTypeTags(account?.typeTags || []);
+    setMistakeTags(account?.mistakeTags || []);
+    setConfluenceSessions(account?.confluenceSessions || []);
+  }, [account?.id, account?.typeTags, account?.mistakeTags, account?.confluenceSessions]);
   useEffect(() => {
     if (account && account.id === activeId) rememberActiveAccount(user.id, account.id);
   }, [user.id, account?.id, activeId]);
@@ -3188,13 +3190,6 @@ function TradingJournalApp({ user, onLogout }) {
     setAccounts((accs) => accs.map((a) => (a.id !== account.id ? a : { ...a, trades: a.trades.filter((t) => t.id !== id) })));
   };
 
-  const addTypeTag = async (tag) => {
-    if (typeTags.includes(tag)) return;
-    const next = [...typeTags, tag];
-    setTypeTags(next);
-    const res = await saveTypeTags(user.id, next);
-    if (res.error) showError(res.error);
-  };
   const persistCustomInstrument = async (value) => {
     const instrument = value.trim();
     if (!instrument || DEFAULT_INSTRUMENTS.some((preset) => preset.toLowerCase() === instrument.toLowerCase()) || customInstruments.some((item) => item.toLowerCase() === instrument.toLowerCase())) return;
@@ -3204,9 +3199,17 @@ function TradingJournalApp({ user, onLogout }) {
     setCustomInstruments(next);
   };
   const saveList = async (kind, next) => {
-    const res = await saveManagedLists(user.id, kind === "types" ? {typeTags:next} : kind === "mistakes" ? {mistakeTags:next} : kind === "instruments" ? {instruments:next} : {confluenceSessions:next});
+    if (kind === "instruments") {
+      const res = await saveManagedLists(user.id, { instruments: next });
+      if (res.error) return showError(res.error);
+      setCustomInstruments(next);
+      return;
+    }
+    const field = kind === "types" ? "typeTags" : kind === "mistakes" ? "mistakeTags" : "confluenceSessions";
+    const updated = { ...account, [field]: next };
+    const res = await updateAccount(account.id, updated);
     if (res.error) return showError(res.error);
-    if (kind === "types") setTypeTags(next); else if (kind === "mistakes") setMistakeTags(next); else if (kind === "instruments") setCustomInstruments(next); else setConfluenceSessions(next);
+    setAccounts((items) => items.map((item) => item.id === account.id ? updated : item));
   };
   const handleSaveMarkup = async (markup) => {
     const exists = markups.some((item) => item.id === markup.id);
