@@ -106,8 +106,8 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const norm = (v, max) => clamp((v / max) * 100, 0, 100);
 const classify = (pnl, cap) => (Math.abs(pnl) <= cap ? "be" : pnl > 0 ? "win" : "loss");
 const clsColor = (cls) => (cls === "win" ? "tj-green" : cls === "loss" ? "tj-red" : "tj-blue");
-// Win-rate color system: >50% green, 30-50% yellow, <30% red — applied
-// consistently to every win-rate percentage and its associated bar/ring.
+// Win-rate percentage system: >50% green, 30-50% muted theme amber, <30% red.
+// Bars retain their existing colors so the percentage is the only changing part.
 const wrColorClass = (wr) => (wr > 50 ? "tj-green" : wr >= 30 ? "tj-wr-yellow" : "tj-red");
 const wrBarClass = (wr) => (wr > 50 ? "tj-bar-green" : wr >= 30 ? "tj-bar-yellow" : "tj-bar-red");
 const UI_COLORS = { primary: "var(--tj-green)", danger: "var(--tj-red)", warning: "var(--tj-amber)", info: "var(--tj-blue)", purple: "var(--tj-purple)" };
@@ -1569,7 +1569,18 @@ function AccountGuardrailsPanel({ account, guardrails, stats, periodDate = new D
   </Card>;
 }
 
-function ReferenceDashboardPage({ account, stats, monthCursor, setMonthCursor, onDayClick, guardrails, displayName, loginQuote }) {
+function ChallengeDashboardProgress({ account, challenge }) {
+  if (!isChallengeEnabled(account) || challenge.loading || challenge.error) return null;
+  const passed = Object.values(challenge.state.statuses || {}).filter((status) => status === "Pass").length;
+  const currentLevel = clamp(Number(challenge.state.activeLevel) || 1, 1, 30);
+  const tier = currentLevel <= 10 ? "start" : currentLevel <= 20 ? "middle" : "finish";
+  return <div className={`tj-challenge-dashboard-progress tj-challenge-dashboard-${tier}`}>
+    <div><span>LEVELS PASSED</span><strong>{passed} / 30</strong></div>
+    <i aria-label={`Challenge progress: ${passed} of 30 levels passed`}><b style={{ width: `${passed / 30 * 100}%` }} /></i>
+  </div>;
+}
+
+function ReferenceDashboardPage({ account, stats, monthCursor, setMonthCursor, onDayClick, guardrails, displayName, loginQuote, challenge }) {
   const [view, setView] = useState("flow");
   const year = monthCursor.getFullYear(), month = monthCursor.getMonth();
   const monthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
@@ -1615,7 +1626,7 @@ function ReferenceDashboardPage({ account, stats, monthCursor, setMonthCursor, o
       <Card className="tj-reference-kpi tj-kpi-equity"><div className="tj-kpi-top"><div className="tj-stat-label">ALL-TIME NET P&amp;L</div><span>{allTimeReturn >= 0 ? "+" : ""}{allTimeReturn.toFixed(2)}%</span></div><div className={`tj-reference-kpi-value ${thisYearStats.netPnl >= 0 ? "tj-green" : "tj-red"}`}>{fmtMoney(thisYearStats.netPnl)}</div><div className="tj-stat-sub">{thisYearStats.total} trades across your journal</div><div className="tj-kpi-spark"><ResponsiveContainer width="100%" height={26}><AreaChart data={cumulative}><Area type="monotone" dataKey="cumulative" stroke={UI_COLORS.primary} fill="none" strokeWidth={2} dot={false}/></AreaChart></ResponsiveContainer></div><small>Streak {thisYearStats.streak ? `${thisYearStats.streakType === "loss" ? "-" : "+"}${thisYearStats.streak}` : "—"}</small></Card>
       <Card className="tj-reference-kpi tj-kpi-profit"><div className="tj-kpi-top"><div className="tj-stat-label">PROFIT FACTOR</div><span className={thisYearStats.profitFactor >= 1.5 ? "tj-green" : "tj-red"}>{thisYearStats.profitFactor >= 1.5 ? "healthy" : "needs work"}</span></div><div className="tj-reference-kpi-value">{thisYearStats.profitFactor.toFixed(2)}</div><div className="tj-kpi-line"><i style={{width: `${clamp(norm(thisYearStats.profitFactor, 5), 0, 100)}%`}}/></div><div className="tj-stat-sub">Risk-adjusted payoff quality.</div><small>Recovery {thisYearStats.recovery.toFixed(0)}% <em>Core Score {thisYearStats.thunderScore}</em></small></Card>
       <Card className="tj-reference-kpi tj-kpi-days"><div className="tj-kpi-top"><div className="tj-stat-label">DAY WIN %</div><span>{thisYearStats.dayClasses.length} days</span></div><div className={`tj-reference-kpi-value ${wrColorClass(thisYearStats.dayWinRate)}`}>{thisYearStats.dayWinRate.toFixed(2)}%</div><div className="tj-day-bar-strip">{dayWinBars.length ? dayWinBars.map((day) => <i key={day.date} className={day.cls === "win" ? "tj-day-bar-win" : day.cls === "loss" ? "tj-day-bar-loss" : "tj-day-bar-be"}/>) : <span>No completed days</span>}</div><div className="tj-stat-sub">{thisYearStats.dayClasses.length} trading days · {monthStats.dayClasses.length} this month</div></Card>
-      <Card className="tj-reference-kpi tj-kpi-winrate"><div className="tj-kpi-top"><div className="tj-stat-label">WIN RATE %</div><span>{thisYearStats.total} total</span></div><div className={`tj-reference-kpi-value ${wrColorClass(thisYearStats.winRate)}`}>{thisYearStats.winRate.toFixed(2)}%</div><div className="tj-kpi-split"><i style={{width: `${thisYearStats.winRate}%`}}/><b style={{width: `${100 - thisYearStats.winRate}%`}}/></div><div className="tj-stat-sub"><strong className="tj-green">{thisYearStats.wins} wins</strong><strong className="tj-red">{thisYearStats.losses} losses</strong></div></Card>
+      <Card className="tj-reference-kpi tj-kpi-winrate"><div className="tj-kpi-top"><div className="tj-stat-label">WIN RATE %</div><span>{thisYearStats.total} total</span></div><div className={`tj-reference-kpi-value ${wrColorClass(thisYearStats.winRate)}`}>{thisYearStats.winRate.toFixed(2)}%</div><div className="tj-kpi-split"><i style={{width: `${thisYearStats.winRate}%`}}/><b style={{width: `${100 - thisYearStats.winRate}%`}}/></div><div className="tj-stat-sub"><strong className="tj-green">{thisYearStats.wins} wins</strong><strong className="tj-red">{thisYearStats.losses} losses</strong></div><ChallengeDashboardProgress account={account} challenge={challenge}/></Card>
       <Card className="tj-reference-kpi tj-kpi-payoff"><div className="tj-kpi-top"><div className="tj-stat-label">AVG WIN/LOSS TRADE</div><span>{thisYearStats.avgWinLoss >= 1.5 ? "strong" : "building"}</span></div><div className="tj-reference-kpi-value">{thisYearStats.avgLoss ? thisYearStats.avgWinLoss.toFixed(2) : "—"}</div><div className="tj-kpi-split"><i style={{width: `${payoffSegment}%`}}/><b style={{width: `${100 - payoffSegment}%`}}/></div><div className="tj-stat-sub">Winner vs loser edge.</div><small>Best run {thisYearStats.bestWinStreak}W <em>Max loss run {thisYearStats.bestLossStreak}L</em></small></Card>
     </div>
 
@@ -3397,7 +3408,7 @@ function TradingJournalApp({ user, onLogout }) {
           <div className="tj-content-inner">
           <div className="tj-page-transition" key={`${page}-${account.id}`}>
           {["dashboard", "tradelog", "markups", "reviews", "calendar"].includes(page) && <JournalSignalHeader page={page} trades={account.trades} markups={markups.filter(m=>m.accountId===account.id)} reviews={reviews.filter(r=>r.accountId===account.id)} guardrails={guardrails} monthCursor={monthCursor} loginQuote={loginQuote}/>}
-          {page === "dashboard" && <ReferenceDashboardPage account={account} stats={stats} monthCursor={monthCursor} setMonthCursor={setMonthCursor} onDayClick={openDayDetails} guardrails={guardrails} displayName={displayName} loginQuote={loginQuote} />}
+          {page === "dashboard" && <ReferenceDashboardPage account={account} stats={stats} monthCursor={monthCursor} setMonthCursor={setMonthCursor} onDayClick={openDayDetails} guardrails={guardrails} displayName={displayName} loginQuote={loginQuote} challenge={challenge} />}
           {page === "tradelog" && <TradeLogPage account={account} reviews={reviews.filter((review) => review.accountId === account.id)} markups={markups.filter((markup) => markup.accountId === account.id)} onNewTrade={() => openNewTrade()} onEdit={(t) => { setNewTradeDraft(null); setEditingTrade(t); setModal("newtrade"); }} onDelete={handleDeleteTrade} onLinkMarkup={(trade, markupId) => saveTrade({ ...trade, premarketMarkupId: markupId })} />}
           {page === "analytics" && <AnalyticsPage account={account} />}
           {page === "challenge" && isChallengeEnabled(account) && <ChallengePage key={account.id} account={account} challenge={challenge} loginQuote={loginQuote}/>}
@@ -3449,7 +3460,7 @@ html:has(.tj-root) { font-size: 93.75%; }
 :root {
   --tj-bg: #0B1016; --tj-panel: rgba(23,32,43,.94); --tj-panel-alt: rgba(28,35,43,.96); --tj-chrome: #131B23; --tj-border: #4A525C;
   --tj-text: #F4F7FA; --tj-muted: #95A1B1; --tj-green: #50C6A0; --tj-red: #BC5967;
-  --tj-purple: #8B7CF6; --tj-blue: #60A5FA; --tj-amber: #FBBF24;
+  --tj-purple: #8B7CF6; --tj-blue: #60A5FA; --tj-amber: #FBBF24; --tj-winrate-amber: #D9A441;
   --tj-input-bg: #141B26; --tj-chart-bg: #141B26; --tj-chart-grid: #27313D; --tj-chart-text: #95A1B1;
   --tj-tooltip-bg: #1C232B; --tj-primary-hover: #44A188; --tj-primary-muted: rgba(80,198,160,0.18);
   --tj-shadow: 0 16px 36px rgba(0,0,0,0.32); --tj-primary-contrast: #0B241E; --tj-grid-line: rgba(149,161,177,0.045);
@@ -3459,7 +3470,7 @@ html:has(.tj-root) { font-size: 93.75%; }
 .tj-theme-light {
   --tj-bg: #EEF3F7; --tj-panel: rgba(255,255,255,.76); --tj-panel-alt: rgba(245,248,251,.86); --tj-chrome: #FFFFFF; --tj-border: #D3DEE8;
   --tj-text: #17221A; --tj-muted: #65746A; --tj-green: #44A188; --tj-red: #B95664;
-  --tj-purple: #6D5FD8; --tj-blue: #2563EB; --tj-amber: #B45309;
+  --tj-purple: #6D5FD8; --tj-blue: #2563EB; --tj-amber: #B45309; --tj-winrate-amber: #9A6700;
   --tj-input-bg: #FFFFFF; --tj-chart-bg: #FFFFFF; --tj-chart-grid: #D7E1D9; --tj-chart-text: #536258;
   --tj-tooltip-bg: #FFFFFF; --tj-primary-hover: #357F6D; --tj-primary-muted: rgba(80,198,160,0.14);
   --tj-shadow: 0 14px 30px rgba(19,35,26,0.10); --tj-primary-contrast: #FFFFFF; --tj-grid-line: rgba(52, 86, 113, .075);
@@ -3676,7 +3687,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 
 .tj-bar-track { height: 6px; border-radius: 6px; background: var(--tj-border); overflow: hidden; }
 .tj-bar-fill { height: 100%; } .tj-bar-green { background: var(--tj-green); } .tj-bar-red { background: var(--tj-red); } .tj-bar-yellow { background: var(--tj-amber); }
-.tj-wr-yellow { color: var(--tj-amber); }
+.tj-wr-yellow { color: var(--tj-winrate-amber); }
 
 .tj-month-nav { display: flex; gap: 2px; }
 .tj-month-summary { display: flex; justify-content: space-around; text-align: center; padding: 10px 0 16px; border-bottom: 1px solid var(--tj-border); margin-bottom: 10px; }
@@ -4236,6 +4247,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 
 /* Dashboard card accents mirror the colored depth used by the guardrail deck. */
 .tj-reference-kpi { position: relative; overflow: hidden; }.tj-reference-kpi::after { content: ""; position: absolute; top: -34px; right: -26px; width: 100px; height: 76px; border-radius: 50%; background: color-mix(in srgb, var(--tj-green) 7%, transparent); pointer-events: none; }.tj-kpi-equity { background: linear-gradient(145deg, color-mix(in srgb, var(--tj-green) 10%, var(--tj-panel)), var(--tj-panel) 72%); }.tj-kpi-profit { background: linear-gradient(145deg, color-mix(in srgb, var(--tj-blue) 9%, var(--tj-panel)), var(--tj-panel) 72%); }.tj-kpi-profit::after { background: color-mix(in srgb, var(--tj-blue) 10%, transparent); }.tj-kpi-days { background: linear-gradient(145deg, color-mix(in srgb, var(--tj-purple) 9%, var(--tj-panel)), var(--tj-panel) 72%); }.tj-kpi-days::after { background: color-mix(in srgb, var(--tj-purple) 11%, transparent); }.tj-kpi-winrate { background: linear-gradient(145deg, color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel)), color-mix(in srgb, var(--tj-red) 4%, var(--tj-panel)) 82%); }.tj-kpi-payoff { background: linear-gradient(145deg, color-mix(in srgb, var(--tj-amber) 7%, var(--tj-panel)), color-mix(in srgb, var(--tj-purple) 5%, var(--tj-panel)) 82%); }.tj-kpi-payoff::after { background: color-mix(in srgb, var(--tj-amber) 9%, transparent); }
+.tj-challenge-dashboard-progress { display:grid; gap:6px; margin-top:4px; padding-top:7px; border-top:1px solid var(--tj-border); }.tj-challenge-dashboard-progress > div { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }.tj-challenge-dashboard-progress span { color:var(--tj-muted); font-size:.66rem; font-weight:800; letter-spacing:.65px; }.tj-challenge-dashboard-progress strong { font-size:.9rem; font-variant-numeric:tabular-nums; }.tj-challenge-dashboard-progress > i { display:block; height:5px; overflow:hidden; border-radius:99px; background:var(--tj-panel-alt); }.tj-challenge-dashboard-progress > i > b { display:block; height:100%; border-radius:inherit; background:var(--tj-red); }.tj-challenge-dashboard-middle > i > b { background:var(--tj-blue); }.tj-challenge-dashboard-finish > i > b { background:#82D9C2; }
 .tj-reference-calendar { background: linear-gradient(145deg, color-mix(in srgb, var(--tj-blue) 5%, var(--tj-panel)), color-mix(in srgb, var(--tj-purple) 4%, var(--tj-panel)) 82%); }.tj-reference-flow { background: linear-gradient(145deg, color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel)), color-mix(in srgb, var(--tj-blue) 3%, var(--tj-panel)) 74%); }.tj-dashboard-core-score { background: linear-gradient(145deg, color-mix(in srgb, var(--tj-purple) 8%, var(--tj-panel)), var(--tj-panel) 72%); }.tj-dashboard-equity { background: linear-gradient(145deg, color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel)), var(--tj-panel) 74%); }.tj-dashboard-daily { background: linear-gradient(145deg, color-mix(in srgb, var(--tj-blue) 6%, var(--tj-panel)), color-mix(in srgb, var(--tj-red) 3%, var(--tj-panel)) 86%); }
 .tj-reference-flow-metrics > div:nth-child(1) { background: linear-gradient(135deg, color-mix(in srgb, var(--tj-green) 9%, var(--tj-panel-alt)), color-mix(in srgb, var(--tj-blue) 2%, var(--tj-panel-alt))); }
 .tj-reference-flow-metrics > div:nth-child(2) { background: linear-gradient(135deg, color-mix(in srgb, var(--tj-blue) 7%, var(--tj-panel-alt)), var(--tj-panel-alt)); }
