@@ -13,9 +13,10 @@ export default function ChallengePage({ account, challenge, loginQuote }) {
   return <ActiveChallengePage account={account} challenge={challenge} loginQuote={loginQuote}/>;
 }
 function ActiveChallengePage({ account, challenge, loginQuote }) {
-  const CHALLENGE_PLAN = buildChallengePlan(account.challengeStartingBalance);
   const accountMoney = value => money(value, account.baseCurrency || 'USD');
   const {state, loading, saving, error} = challenge;
+  const mode = state.automation?.mode || 'risk';
+  const CHALLENGE_PLAN = buildChallengePlan(account.challengeStartingBalance, mode);
   const [details, setDetails] = useState(false);
   const activeRow = useRef(null);
   const passed = Object.values(state.statuses).filter(status => status === 'Pass').length;
@@ -23,7 +24,7 @@ function ActiveChallengePage({ account, challenge, loginQuote }) {
   const complete = state.activeLevel === 31;
   return <section className="tj-challenge">
     <JournalSignalHeader page="challenge" challenge={{...state, loading, error}} loginQuote={loginQuote}/>
-    <header className="tj-challenge-heading"><div><h2><Trophy size={21}/> Challenge</h2><p>20-pip compounding · 30 levels · {account.name}</p></div></header>
+    <header className="tj-challenge-heading"><div><h2><Trophy size={21}/> Challenge</h2><p>{account.name}</p></div></header>
     {error && <div role="alert" className="tj-panel">{error} <button type="button" onClick={challenge.retry}>Retry</button></div>}
     {state.automation?.mode && !loading && <div className="tj-panel tj-challenge-auto-progress" role="status"><strong>{state.automation.mode === "risk" ? "Mode 1 — Risk Limit" : "Mode 2 — Two-Loss Streak"}</strong><span>Level gross P&L: {accountMoney(state.levelPnl)} · Loss streak: {state.lossStreak} · {state.counted} logged trades</span><small>Progress recalculates when you edit or delete a counted trade.</small></div>}
     <div className="tj-challenge-metrics">
@@ -32,7 +33,7 @@ function ActiveChallengePage({ account, challenge, loginQuote }) {
       <article className="tj-panel"><small>LEVELS PASSED</small><strong>{passed} / 30</strong><progress aria-label="Levels passed" value={passed} max={30}/></article>
       <article className="tj-panel"><small>PLANNED FINAL BALANCE</small><strong className="tj-challenge-positive">{accountMoney(CHALLENGE_PLAN.at(-1).end)}</strong><span>Small beginnings can grow into a life you are proud of.</span></article>
     </div>
-    <div className="tj-panel tj-challenge-current"><Target size={22}/><div><strong>{complete ? 'Challenge complete' : `Level ${current.level} · ${accountMoney(current.start)} → ${accountMoney(current.end)}`}</strong><p>{complete ? 'Your planned 30-level ladder is complete.' : `Target profit ${accountMoney(current.profit)} becomes the next level’s risk.`} No commissions or swaps.</p></div><button className="tj-btn" onClick={() => activeRow.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}><ArrowDown size={14}/> {complete ? 'Final level' : 'Active level'}</button></div>
+    <div className="tj-panel tj-challenge-current"><Target size={22}/><div><strong>{complete ? 'Challenge complete' : `Level ${current.level} · ${accountMoney(current.start)} → ${accountMoney(current.end)}`}</strong></div><button className="tj-btn" onClick={() => activeRow.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}><ArrowDown size={14}/> {complete ? 'Final level' : 'Active level'}</button></div>
     <div className="tj-panel tj-challenge-plan"><div className="tj-challenge-table-head"><div><h3>Compounding plan</h3><p>One step at a time, build the life you once only imagined.</p></div><label><input type="checkbox" checked={details} onChange={event => setDetails(event.target.checked)}/> Show sizing details</label></div>
       {loading ? <p role="status" className="tj-challenge-loading">Loading Challenge…</p> : <div className="tj-challenge-scroll" role="region" aria-label="30-level compounding plan" tabIndex={0}><table><thead><tr><th>Level</th><th>Starting balance</th><th>Risk amount</th><th>Profit amount</th><th>Ending balance</th>{details && <><th>Risk %</th><th>Profit %</th><th>SL pips</th><th>TP pips</th><th>Std. lots</th></>}<th>Status</th><th>Notes</th></tr></thead><tbody>{CHALLENGE_PLAN.map(row => <tr data-milestone={[10, 20, 30].includes(row.level) ? row.level : undefined} key={row.level} ref={row.level === Math.min(state.activeLevel, 30) ? activeRow : null} className={row.level === state.activeLevel ? 'tj-challenge-active' : ''}>
         <th scope="row">{row.level}{[10, 20, 30].includes(row.level) && <span className="tj-challenge-milestone-badge"><Trophy size={12} aria-hidden="true"/> Milestone</span>}<span>{row.level === state.activeLevel ? 'Active' : state.statuses[row.level] === 'Pass' ? <CheckCircle2 size={14} aria-label="Passed"/> : ''}</span></th>

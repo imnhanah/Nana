@@ -20,7 +20,7 @@ export function replayChallenge(baseline, account) {
   const config=baseline.automation;
   if (!isChallengeEnabled(account) || !validMode(config?.mode) || !config.startedAt) return state;
   const excluded=new Set(config.excludedIds || []);
-  const plan=buildChallengePlan(account.challengeStartingBalance);
+  const plan=buildChallengePlan(account.challengeStartingBalance, config.mode);
   const loggedAt=t=>Date.parse(t.createdAt || `${t.date}T${t.time || '00:00'}`);
   const rows=(account.trades || []).filter(t=>{
     if (excluded.has(t.id) || (t.accountId && t.accountId !== account.id)) return false;

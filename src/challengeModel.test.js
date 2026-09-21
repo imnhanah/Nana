@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CHALLENGE_PLAN as plan, emptyChallenge, changeChallengeStatus as change } from './challengeModel.js';
+import { CHALLENGE_PLAN as plan, STREAK_CHALLENGE_PLAN, emptyChallenge, changeChallengeStatus as change } from './challengeModel.js';
 import { buildChallengePlan, isChallengeEnabled } from './challengeModel.js';
 
 test('Custom deposit preserves the original ladder; absent balance keeps challenge off', () => {
@@ -41,6 +41,19 @@ test('30 worksheet levels retain exact dollar calculations', () => {
       assert.equal(row.risk, plan[i - 1].profit);
     }
   });
+});
+test('Mode 2 retains the old risk, stop-loss and lot ladder but uses 3.1R profits', () => {
+  const streak = buildChallengePlan(20, 'streak');
+  assert.equal(streak.length, 30);
+  assert.equal(streak[0].risk, 4.5);
+  assert.equal(streak[0].sl, 15);
+  assert.equal(streak[0].lots, .03);
+  assert.equal(streak[0].tp, 46.5);
+  assert.equal(streak[0].profit, 13.95);
+  assert.equal(streak[1].risk, 6);
+  assert.equal(streak[1].start, 33.95);
+  assert.equal(streak.at(-1).end, 124939.15);
+  assert.deepEqual(streak, STREAK_CHALLENGE_PLAN);
 });
 test('Pass advances, step back reactivates previous level without changing plan', () => {
   let state = change(emptyChallenge(), 1, 'Pass');

@@ -43,6 +43,15 @@ import {
 const SESSIONS = ["Asia", "London", "NYC AM", "NYC PM"];
 const normalizeSession = (value) => ({ "NY AM": "NYC AM", "NY PM": "NYC PM" }[value] || value);
 const MOODS = ["Confident", "Neutral", "Fear", "FOMO", "Revenge", "Disciplined", "Anxious", "Excited"];
+const DEFAULT_MISTAKE_TAGS = [
+  "Overtrading", "Early Exit", "No Stop Loss", "Revenge Trade", "FOMO Entry",
+  "Sized Too Big", "Sized Too Low", "Missed Entry", "Moved Stop", "Chased Entry",
+  "Ignored Rules", "Bad Timing",
+];
+const allMistakeTags = (customTags = []) => [
+  ...DEFAULT_MISTAKE_TAGS,
+  ...customTags.filter((tag) => !DEFAULT_MISTAKE_TAGS.some((preset) => preset.toLowerCase() === String(tag).toLowerCase())),
+];
 const DEFAULT_INSTRUMENTS = [
   "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
   "XAU/USD", "XAG/USD", "US30", "US100", "US500", "BTC/USD", "ETH/USD",
@@ -64,7 +73,7 @@ const NAV = [
   { id: "challenge", label: "Challenge", icon: Trophy },
   { id: "finance", label: "Finance", icon: Landmark },
   { id: "psychology", label: "Psychology", icon: Brain },
-  { id: "insights", label: "Insights", icon: Lightbulb },
+  { id: "insights", label: "Insights & AI Coach", icon: Lightbulb },
   { id: "news", label: "News", icon: Newspaper },
   { id: "management", label: "Management", symbol: managementSettingsSymbol },
 ];
@@ -74,6 +83,8 @@ const MONTH_ABBR = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP
 const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 const uid = () => Math.random().toString(36).slice(2, 10);
+const cTraderOpeningIsUnknown = (trade) => /Imported cTrader position #.*\[close-only\]/i.test(trade?.context || "") && !trade?.time;
+const cTraderOpeningWasEnteredManually = (trade) => /\[opening-time:manual\]/i.test(trade?.context || "");
 const NavSymbol = ({ src, className = "" }) => <img className={`tj-nav-symbol ${className}`.trim()} src={src} alt="" aria-hidden="true" />;
 const uuid = () => globalThis.crypto?.randomUUID?.() || "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (character) => {
   const value = Math.random() * 16 | 0;
@@ -236,12 +247,16 @@ function accountGuardrails(account, trades, now = new Date()) {
   // Loss limits move with live trading balance: starting balance, realised
   // trade P&L, deposits, withdrawals, and transfers affecting trading capital.
   const guardrailBalance = Math.max(0, Number(financeTotals(account).tradingBalance) || 0);
-  const monthlyGoalPct = Math.max(0, Number(account.monthlyGoalPct) || 0);
-  const yearlyGoalPct = Math.max(0, Number(account.yearlyGoalPct) || 0);
+  const monthlyGoalSource = account.monthlyGoalSource === "amount" ? "amount" : "percentage";
+  const yearlyGoalSource = account.yearlyGoalSource === "amount" ? "amount" : "percentage";
+  const monthlyGoalAmount = Math.max(0, Number(account.monthlyGoalAmount) || 0);
+  const yearlyGoalAmount = Math.max(0, Number(account.yearlyGoalAmount) || 0);
+  const monthlyGoal = monthlyGoalSource === "amount" && monthlyGoalAmount > 0 ? monthlyGoalAmount : balance * Math.max(0, Number(account.monthlyGoalPct) || 0) / 100;
+  const yearlyGoal = yearlyGoalSource === "amount" && yearlyGoalAmount > 0 ? yearlyGoalAmount : balance * Math.max(0, Number(account.yearlyGoalPct) || 0) / 100;
+  const monthlyGoalPct = balance > 0 ? monthlyGoal / balance * 100 : Math.max(0, Number(account.monthlyGoalPct) || 0);
+  const yearlyGoalPct = balance > 0 ? yearlyGoal / balance * 100 : Math.max(0, Number(account.yearlyGoalPct) || 0);
   const dailyLossLimitPct = Math.max(0, Number(account.dailyLossLimitPct) || 0);
   const monthlyLossLimitPct = Math.max(0, Number(account.monthlyLossLimitPct) || 0);
-  const monthlyGoal = balance * monthlyGoalPct / 100;
-  const yearlyGoal = balance * yearlyGoalPct / 100;
   const dailyLossCap = guardrailBalance * dailyLossLimitPct / 100;
   const monthlyLossCap = guardrailBalance * monthlyLossLimitPct / 100;
   const dailyLossHit = dailyLossCap > 0 && dailyPnl <= -dailyLossCap;
@@ -516,6 +531,9 @@ function ImagePreview({ src, alt = "Uploaded image", className = "", selected = 
   return <button type="button" className={`tj-image-preview ${selected ? "tj-image-preview-selected" : ""} ${className}`} onClick={(event) => { event.stopPropagation(); onSelect?.(src); openImage(src); }} aria-label={`View ${alt}`}><img src={src} alt={alt} /></button>;
 }
 
+const screenshotSource = (screenshot) => typeof screenshot === "string" ? screenshot : screenshot?.src || "";
+const screenshotCaption = (screenshot) => typeof screenshot === "object" && screenshot ? screenshot.caption || "" : "";
+
 /* ============================ SCREENSHOT UPLOADER ======================= */
 
 function downscaleImage(file) {
@@ -551,7 +569,7 @@ function resizeProfileImage(file) {
   });
 }
 
-function ScreenshotUploader({ screenshots, onChange, max = 2 }) {
+function ScreenshotUploader({ screenshots, onChange, max = 2, captions = false }) {
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef(null);
 
@@ -561,7 +579,7 @@ function ScreenshotUploader({ screenshots, onChange, max = 2 }) {
     for (const f of list) {
       try {
         const dataUrl = await downscaleImage(f);
-        onChange((prev) => (prev.length >= max ? prev : [...prev, dataUrl]));
+        onChange((prev) => (prev.length >= max ? prev : [...prev, captions ? { src: dataUrl, caption: "" } : dataUrl]));
       } catch (e) { /* ignore unreadable file */ }
     }
   }, [screenshots.length, onChange, max]);
@@ -589,13 +607,14 @@ function ScreenshotUploader({ screenshots, onChange, max = 2 }) {
           <ImagePlus size={20} color="var(--tj-muted)" aria-label="Add screenshots" />
         ) : (
           <div className="tj-shot-grid">
-            {screenshots.map((src, i) => (
+            {screenshots.map((screenshot, i) => (
               <div key={i} className="tj-shot-thumb">
-                <ImagePreview src={src} alt={`Screenshot ${i + 1}`} />
+                <ImagePreview src={screenshotSource(screenshot)} alt={`Screenshot ${i + 1}`} />
                 <ConfirmDeleteButton type="button" className="tj-shot-remove"
                   aria-label="Remove screenshot" onClick={async (e) => { e.stopPropagation(); onChange((prev) => prev.filter((_, idx) => idx !== i)); }}>
                   <X size={12} />
                 </ConfirmDeleteButton>
+                {captions && <input className="tj-shot-caption" value={screenshotCaption(screenshot)} placeholder="Caption" aria-label={`Caption for screenshot ${i + 1}`} onClick={(event) => event.stopPropagation()} onChange={(event) => onChange((prev) => prev.map((item, index) => index === i ? { src: screenshotSource(item), caption: event.target.value } : item))} />}
               </div>
             ))}
             {screenshots.length < max && (
@@ -619,7 +638,7 @@ const tradeImageSessions = (screenshots) => {
 
 function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags, confluenceSessions, markups, rules, instruments = [], defaultCommission, account }) {
   const [form, setForm] = useState(() => {
-    const base = { id: uid(), date: todayISO(), time: nowTime(), asset: "", direction: "BUY", riskPct: account?.defaultRiskPct || 1, stopLossPips: account?.defaultStopLossPips || "", entryPrice: "", stopLossPrice: "", grossPnl: "", commission: defaultCommission || 0, swap: 0, pnl: "", rr: "", entryType: "", entrySession: SESSIONS[2], session: SESSIONS[2], confluence: [], types: [], mistakes: [], moodBefore: "Neutral", moodAfter: "Neutral", context: "", screenshots: [], premarketMarkupId: null, ruleEvaluations: [] };
+    const base = { id: uid(), date: todayISO(), time: nowTime(), closeDate: todayISO(), closeTime: nowTime(), asset: "", direction: "BUY", riskPct: account?.defaultRiskPct || 1, stopLossPips: account?.defaultStopLossPips || "", entryPrice: "", stopLossPrice: "", grossPnl: "", commission: defaultCommission || 0, swap: 0, pnl: "", rr: "", entryType: "", entrySession: SESSIONS[2], session: SESSIONS[2], confluence: [], types: [], mistakes: [], moodBefore: "Neutral", moodAfter: "Neutral", context: "", screenshots: [], premarketMarkupId: null, ruleEvaluations: [] };
     if (!editing && !draft) return base;
     const source = editing || draft;
     return { ...base, ...source, time: editing ? (source.time || "") : (source.time || nowTime()), entryType: source.entryType || source.confluenceSession || "", entrySession: normalizeSession(source.entrySession || source.session || SESSIONS[2]), confluence: source.confluence || source.types || [], ruleEvaluations: source.ruleEvaluations || [] };
@@ -674,7 +693,9 @@ function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags,
     if (!form.asset.trim() || form.grossPnl === "" || !form.time || timingError) return;
     const grossPnl = Number(form.grossPnl), commission = Number(form.commission) || 0, swap = Number(form.swap) || 0;
     if (!Number.isFinite(grossPnl)) return;
-    onSave({ ...form, session: form.entrySession, types: form.confluence, confluenceSession: form.entryType, grossPnl, commission, swap, pnl: grossPnl - commission - swap, rr: parseFloat(form.rr) || 0, rating: calculatedRating });
+    const manualCTraderOpening = /Imported cTrader position #.*\[close-only\]/i.test(form.context || "") && !cTraderOpeningWasEnteredManually(form) && form.date && form.time;
+    const context = manualCTraderOpening ? `${form.context} [opening-time:manual]` : form.context;
+    onSave({ ...form, context, session: form.entrySession, types: form.confluence, confluenceSession: form.entryType, grossPnl, commission, swap, pnl: grossPnl - commission - swap, rr: parseFloat(form.rr) || 0, rating: calculatedRating });
   };
   const timingError = tradeTimingError(form);
   return <Modal title={editing ? "Edit Trade" : "Log Trade"} onClose={onClose} onConfirm={save} confirmDisabled={!form.asset.trim() || form.grossPnl === "" || !form.time || !!timingError} wide>
@@ -698,8 +719,8 @@ function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags,
     <div className="tj-trade-timing-row">
       <Field label="Open date *"><input type="date" value={form.date} onChange={event=>set('date',event.target.value)}/></Field>
       <Field label="Open time *"><input type="time" value={form.time} onChange={event=>set('time',event.target.value)}/></Field>
-      <Field label="Close date (optional)"><input type="date" value={form.closeDate || ''} onChange={event=>set('closeDate',event.target.value)}/></Field>
-      <Field label="Close time"><input type="time" value={form.closeTime || ''} onChange={event=>set('closeTime',event.target.value)}/></Field>
+      <Field label="Close date *"><input type="date" required value={form.closeDate || ''} onChange={event=>set('closeDate',event.target.value)}/></Field>
+      <Field label="Close time *"><input type="time" required value={form.closeTime || ''} onChange={event=>set('closeTime',event.target.value)}/></Field>
     </div>
     {timingError && <p role="alert" className="tj-trade-timing-error">{timingError}</p>}
     <div className="tj-grid2">
@@ -741,11 +762,18 @@ function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags,
 
 /* ============================ ACCOUNT MODALS =========================== */
 
-function AccountSettingsNumberField({ label, value, onChange, placeholder, hint }) {
+function AccountSettingsNumberField({ label, value, onChange, placeholder, hint, step = "0.1" }) {
   return <Field label={label}>
-    <input type="number" min="0" step="0.1" className="tj-input" value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+    <input type="number" min="0" step={step} className="tj-input" value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
     {hint && <div className="tj-muted-txt tj-settings-hint">{hint}</div>}
   </Field>;
+}
+
+function LinkedPercentageAmountCards({ label, currency, percentage, amount, onPercentageChange, onAmountChange }) {
+  return <>
+    <AccountSettingsNumberField label={`${label} (%)`} value={percentage} onChange={onPercentageChange} />
+    <AccountSettingsNumberField label={`${label} (${currency || "Currency"})`} value={amount} onChange={onAmountChange} step="0.01" />
+  </>;
 }
 
 function AccountSettingsSection({ title, children, note, status, icon, danger = false, isOpen, onToggle }) {
@@ -778,6 +806,10 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, onImport, ch
   const [defaultCommission, setDefaultCommission] = useState(account.defaultCommission || 0);
   const [monthlyGoalPct, setMonthlyGoalPct] = useState(account.monthlyGoalPct || 0);
   const [yearlyGoalPct, setYearlyGoalPct] = useState(account.yearlyGoalPct || 0);
+  const [monthlyGoalAmount, setMonthlyGoalAmount] = useState(account.monthlyGoalSource === "amount" ? (account.monthlyGoalAmount || "") : (Number(account.balance || 0) * Number(account.monthlyGoalPct || 0) / 100 || ""));
+  const [yearlyGoalAmount, setYearlyGoalAmount] = useState(account.yearlyGoalSource === "amount" ? (account.yearlyGoalAmount || "") : (Number(account.balance || 0) * Number(account.yearlyGoalPct || 0) / 100 || ""));
+  const [monthlyGoalSource, setMonthlyGoalSource] = useState(account.monthlyGoalSource === "amount" ? "amount" : "percentage");
+  const [yearlyGoalSource, setYearlyGoalSource] = useState(account.yearlyGoalSource === "amount" ? "amount" : "percentage");
   const [dailyLossLimitPct, setDailyLossLimitPct] = useState(account.dailyLossLimitPct || 0);
   const [monthlyLossLimitPct, setMonthlyLossLimitPct] = useState(account.monthlyLossLimitPct || 0);
   const [positionSizeEnabled, setPositionSizeEnabled] = useState(!!account.positionSizeEnabled);
@@ -793,16 +825,30 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, onImport, ch
   const goalsEnabled = Number(monthlyGoalPct) > 0 || Number(yearlyGoalPct) > 0;
   const guardrailsEnabled = Number(dailyLossLimitPct) > 0 || Number(monthlyLossLimitPct) > 0;
   const accountBase = Number(balance) || 0;
-  const monthlyTarget = accountBase * (Number(monthlyGoalPct) || 0) / 100;
-  const yearlyTarget = accountBase * (Number(yearlyGoalPct) || 0) / 100;
-  const guardrailBase = Math.max(0, Number(financeTotals(account).tradingBalance) || accountBase);
+  const moneyFromPercentage = (percentage, base) => Number(percentage) > 0 && base > 0 ? Number((Number(percentage) * base / 100).toFixed(2)) : "";
+  const percentageFromMoney = (amount, base) => Number(amount) > 0 && base > 0 ? Number((Number(amount) / base * 100).toFixed(4)) : "";
+  const monthlyTarget = monthlyGoalSource === "amount" ? Number(monthlyGoalAmount) || 0 : accountBase * (Number(monthlyGoalPct) || 0) / 100;
+  const yearlyTarget = yearlyGoalSource === "amount" ? Number(yearlyGoalAmount) || 0 : accountBase * (Number(yearlyGoalPct) || 0) / 100;
+  const guardrailBase = Math.max(0, Number(financeTotals({ ...account, balance: accountBase }).tradingBalance) || accountBase);
   const dailyLimit = guardrailBase * (Number(dailyLossLimitPct) || 0) / 100;
   const monthlyLimit = guardrailBase * (Number(monthlyLossLimitPct) || 0) / 100;
+  const setMonthlyGoalPercentage = (value) => { setMonthlyGoalPct(value); setMonthlyGoalAmount(moneyFromPercentage(value, accountBase)); setMonthlyGoalSource("percentage"); };
+  const setYearlyGoalPercentage = (value) => { setYearlyGoalPct(value); setYearlyGoalAmount(moneyFromPercentage(value, accountBase)); setYearlyGoalSource("percentage"); };
+  const setMonthlyGoalMoney = (value) => { setMonthlyGoalAmount(value); setMonthlyGoalPct(percentageFromMoney(value, accountBase)); setMonthlyGoalSource("amount"); };
+  const setYearlyGoalMoney = (value) => { setYearlyGoalAmount(value); setYearlyGoalPct(percentageFromMoney(value, accountBase)); setYearlyGoalSource("amount"); };
+  const setDailyLossMoney = (value) => setDailyLossLimitPct(percentageFromMoney(value, guardrailBase));
+  const setMonthlyLossMoney = (value) => setMonthlyLossLimitPct(percentageFromMoney(value, guardrailBase));
+  const setStartingBalance = (value) => {
+    const nextBase = Number(value) || 0;
+    setBalance(value);
+    if (monthlyGoalSource === "amount") setMonthlyGoalPct(percentageFromMoney(monthlyGoalAmount, nextBase)); else setMonthlyGoalAmount(moneyFromPercentage(monthlyGoalPct, nextBase));
+    if (yearlyGoalSource === "amount") setYearlyGoalPct(percentageFromMoney(yearlyGoalAmount, nextBase)); else setYearlyGoalAmount(moneyFromPercentage(yearlyGoalPct, nextBase));
+  };
   const saveSettings = async () => {
     if (!name.trim() || !baseCurrency || savingSettings) return;
     setSavingSettings(true);
     try {
-    await onSave({ ...account, challengeEnabled: isChallengeEnabled({ challengeEnabled, challengeStartingBalance }), challengeStartingBalance: Number(challengeStartingBalance) > 0 ? Number(challengeStartingBalance) : 0, financeEnabled, platform, name: name.trim() || "Main Account", icon: baseCurrency, balance: parseFloat(balance) || 0, breakevenCap: parseFloat(beCap) || 0, defaultCommission: parseFloat(defaultCommission) || 0, monthlyGoalPct: parseFloat(monthlyGoalPct) || 0, yearlyGoalPct: parseFloat(yearlyGoalPct) || 0, dailyLossLimitPct: parseFloat(dailyLossLimitPct) || 0, monthlyLossLimitPct: parseFloat(monthlyLossLimitPct) || 0, positionSizeEnabled, baseCurrency, defaultRiskPct: parseFloat(defaultRiskPct) || 0, defaultStopLossPips: parseFloat(defaultStopLossPips) || 0 }, challengeDraft, { enabled: financeEnabled, savingsAccounts: savingsDraft });
+    await onSave({ ...account, challengeEnabled: isChallengeEnabled({ challengeEnabled, challengeStartingBalance }), challengeStartingBalance: Number(challengeStartingBalance) > 0 ? Number(challengeStartingBalance) : 0, financeEnabled, platform, name: name.trim() || "Main Account", icon: baseCurrency, balance: parseFloat(balance) || 0, breakevenCap: parseFloat(beCap) || 0, defaultCommission: parseFloat(defaultCommission) || 0, monthlyGoalPct: parseFloat(monthlyGoalPct) || 0, yearlyGoalPct: parseFloat(yearlyGoalPct) || 0, monthlyGoalAmount: parseFloat(monthlyGoalAmount) || 0, yearlyGoalAmount: parseFloat(yearlyGoalAmount) || 0, monthlyGoalSource, yearlyGoalSource, dailyLossLimitPct: parseFloat(dailyLossLimitPct) || 0, monthlyLossLimitPct: parseFloat(monthlyLossLimitPct) || 0, positionSizeEnabled, baseCurrency, defaultRiskPct: parseFloat(defaultRiskPct) || 0, defaultStopLossPips: parseFloat(defaultStopLossPips) || 0 }, challengeDraft, { enabled: financeEnabled, savingsAccounts: savingsDraft });
     } finally { setSavingSettings(false); }
   };
   return (
@@ -812,7 +858,7 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, onImport, ch
         <div className="tj-settings-hero-metrics"><div className="tj-settings-balance-tile"><small>STARTING BALANCE</small><b>{fmtMoneyShort(accountBase, baseCurrency)}</b><span>Account base</span></div><div className={`tj-settings-month-goal ${goalsEnabled ? "tj-settings-goal-on" : ""}`}><small>MONTHLY GOAL</small><b>{monthlyGoalPct ? fmtMoneyShort(monthlyTarget, baseCurrency) : "Optional"}</b><span>{monthlyGoalPct ? `+${Number(monthlyGoalPct).toFixed(2)}% target` : "Not set"}</span></div><div className={`tj-settings-year-goal ${goalsEnabled ? "tj-settings-goal-on" : ""}`}><small>YEARLY GOAL</small><b>{yearlyGoalPct ? fmtMoneyShort(yearlyTarget, baseCurrency) : "Optional"}</b><span>{yearlyGoalPct ? `+${Number(yearlyGoalPct).toFixed(2)}% target` : "Not set"}</span></div><div className={`tj-settings-daily-loss ${guardrailsEnabled ? "tj-settings-risk-on" : ""}`}><small>DAILY LOSS</small><b>{dailyLossLimitPct ? fmtMoneyShort(-dailyLimit, baseCurrency) : "Optional"}</b><span>{dailyLossLimitPct ? `${Number(dailyLossLimitPct).toFixed(2)}% cap` : "Not set"}</span></div><div className={`tj-settings-month-loss ${guardrailsEnabled ? "tj-settings-risk-on" : ""}`}><small>MONTHLY LOSS</small><b>{monthlyLossLimitPct ? fmtMoneyShort(-monthlyLimit, baseCurrency) : "Optional"}</b><span>{monthlyLossLimitPct ? `${Number(monthlyLossLimitPct).toFixed(2)}% cap` : "Not set"}</span></div></div>
       </div>
       <AccountSettingsSection title="Identity & Account Currency" icon={<ImagePlus size={15}/>} note="Set the account name, starting balance, and currency used across every page." isOpen={open.identity} onToggle={() => toggle("identity")}>
-        <div className="tj-grid2"><Field label="Display Name"><input className="tj-input" value={name} onChange={(e) => setName(e.target.value)} /></Field><Field label="Trading platform"><select className="tj-input" value={platform} onChange={(event) => setPlatform(event.target.value)}><option>Manual</option><option>MetaTrader 4/5</option><option>cTrader</option></select></Field></div><Field label={`Starting Balance (${baseCurrency || "Currency"})`}><input type="number" min="0" className="tj-input" value={balance} onChange={(e) => setBalance(e.target.value)} /></Field>
+        <div className="tj-grid2"><Field label="Display Name"><input className="tj-input" value={name} onChange={(e) => setName(e.target.value)} /></Field><Field label="Trading platform"><select className="tj-input" value={platform} onChange={(event) => setPlatform(event.target.value)}><option>Manual</option><option>MetaTrader 4/5</option><option>cTrader</option></select></Field></div><Field label={`Starting Balance (${baseCurrency || "Currency"})`}><input type="number" min="0" className="tj-input" value={balance} onChange={(e) => setStartingBalance(e.target.value)} /></Field>
         <Field label="Import trade history"><input className="tj-input" type="file" accept=".html,.htm,.csv,.txt,.tsv" onChange={async (event) => { const file = event.target.files?.[0] || null; setImportFile(file); setImportError(""); setImportPreview([]); setImportProgress(0); if (!file) return; const parsed = await parseBrokerFile(file); if (!parsed.trades.length) setImportError("No completed BUY or SELL trades were found in this file."); else setImportPreview(parsed); }} />{importFile && <div className="tj-settings-hint">{importFile.name}{importPreview.trades?.length ? ` · ${importPreview.trades.length} trades ready${importPreview.cashMovements?.length ? ` · ${importPreview.cashMovements.length} cash movement${importPreview.cashMovements.length === 1 ? "" : "s"}` : ""}` : ""}</div>}{importError && <div className="tj-import-error">{importError}</div>}{importPreview.trades?.length > 0 && <button type="button" className="tj-btn-primary tj-btn-small tj-import-button" disabled={importingTrades} onClick={async () => { setImportingTrades(true); setImportProgress(0); const ok = await onImport(importPreview, setImportProgress); if (ok) { setImportFile(null); setImportPreview([]); } setImportingTrades(false); }}>{importingTrades ? <><i className="tj-import-progress" style={{ "--progress": `${importProgress}%` }}>{importProgress}%</i>Importing trades</> : `Import ${importPreview.trades.length} trades now`}</button>}</Field>
         <Field label="Account Base Currency *"><select required className="tj-input" value={baseCurrency} onChange={(event) => setBaseCurrency(event.target.value)}><option value="" disabled>Select a currency</option>{ACCOUNT_CURRENCIES.map((currency) => <option key={currency.code} value={currency.code}>{currency.code} — {currency.label} ({currency.symbol})</option>)}</select></Field>
       </AccountSettingsSection>
@@ -820,10 +866,10 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, onImport, ch
         <div className="tj-grid2"><Field label={`Breakeven Cap (${baseCurrency || "Currency"})`}><input type="number" min="0" className="tj-input" value={beCap} onChange={(e) => setBeCap(e.target.value)} /><div className="tj-chip-row">{[0, 10, 20, 35, 50].map((v) => <button type="button" key={v} className={`tj-chip ${Number(beCap) === v ? "tj-chip-active" : ""}`} onClick={() => setBeCap(v)}>{fmtMoneyShort(v, baseCurrency)}</button>)}</div></Field><Field label={`Default Commission (${baseCurrency || "Currency"} per trade)`}><input type="number" min="0" className="tj-input" value={defaultCommission} onChange={(e) => setDefaultCommission(e.target.value)} /></Field></div>
       </AccountSettingsSection>
       <AccountSettingsSection title="Goals" icon={<Trophy size={15}/>} note="Optional monthly and yearly targets that appear in analytics and review summaries." status={goalsEnabled ? "Active" : "Optional"} isOpen={open.goals} onToggle={() => toggle("goals")}>
-        <div className="tj-grid2"><AccountSettingsNumberField label="Monthly Growth Goal (%)" value={monthlyGoalPct} onChange={setMonthlyGoalPct} placeholder="e.g. 15" hint={monthlyGoalPct ? `Current target: ${fmtMoneyShort(monthlyTarget, baseCurrency)} for a +${Number(monthlyGoalPct).toFixed(2)}% month.` : "Optional"} /><AccountSettingsNumberField label="Yearly Growth Goal (%)" value={yearlyGoalPct} onChange={setYearlyGoalPct} placeholder="e.g. 50" hint={yearlyGoalPct ? `Current target: ${fmtMoneyShort(yearlyTarget, baseCurrency)} for a +${Number(yearlyGoalPct).toFixed(2)}% year.` : "Optional"} /></div><div className="tj-settings-info-grid"><div><small>WHAT THIS POWERS</small><span>Monthly pacing and yearly runway appear throughout analytics.</span></div><div><small>HOW TO USE BOTH</small><span>Use the monthly goal for short-cycle focus and the yearly goal for long-term growth.</span></div></div>
+        <div className="tj-grid4 tj-settings-linked-grid"><LinkedPercentageAmountCards label="Monthly Growth Goal" currency={baseCurrency} percentage={monthlyGoalPct} amount={monthlyGoalAmount} onPercentageChange={setMonthlyGoalPercentage} onAmountChange={setMonthlyGoalMoney} /><LinkedPercentageAmountCards label="Yearly Growth Goal" currency={baseCurrency} percentage={yearlyGoalPct} amount={yearlyGoalAmount} onPercentageChange={setYearlyGoalPercentage} onAmountChange={setYearlyGoalMoney} /></div><div className="tj-settings-info-grid"><div><small>WHAT THIS POWERS</small><span>Monthly pacing and yearly runway appear throughout analytics.</span></div><div><small>LINKED VALUES</small><span>Type either percentage or amount; the matching value updates immediately.</span></div></div>
       </AccountSettingsSection>
       <AccountSettingsSection title="Risk Guardrails" icon={<ShieldCheck size={15}/>} note="Optional loss caps that pause trade execution once the limit is hit." status={guardrailsEnabled ? "Active" : "Off"} isOpen={open.guardrails} onToggle={() => toggle("guardrails")}>
-        <div className="tj-grid2"><AccountSettingsNumberField label="Daily Loss Limit (%)" value={dailyLossLimitPct} onChange={setDailyLossLimitPct} placeholder="e.g. 2" hint={dailyLossLimitPct ? `Locks workflow after ${fmtMoneyShort(-dailyLimit, baseCurrency)} net on the day, based on ${fmtMoneyShort(guardrailBase, baseCurrency)} current balance.` : "Optional"} /><AccountSettingsNumberField label="Monthly Loss Limit (%)" value={monthlyLossLimitPct} onChange={setMonthlyLossLimitPct} placeholder="e.g. 15" hint={monthlyLossLimitPct ? `Locks workflow after ${fmtMoneyShort(-monthlyLimit, baseCurrency)} net for the month, based on ${fmtMoneyShort(guardrailBase, baseCurrency)} current balance.` : "Optional"} /></div><div className="tj-settings-reset-grid"><div><small>DAILY RESET</small><strong>Next day</strong><span>Stops revenge-trading after a bad session.</span></div><div><small>MONTHLY RESET</small><strong>Next month</strong><span>Caps deeper drawdowns before they compound.</span></div></div><div className="tj-settings-info-block"><small>WHAT THIS LOCKS</small><span>Loss limits recalculate from current trading balance. Once reached, calendar drill-down and new trade logging pause until the reset window opens. Markups remain available.</span></div>
+        <div className="tj-grid4 tj-settings-linked-grid"><LinkedPercentageAmountCards label="Daily Loss Limit" currency={baseCurrency} percentage={dailyLossLimitPct} amount={dailyLimit ? Number(dailyLimit.toFixed(2)) : ""} onPercentageChange={setDailyLossLimitPct} onAmountChange={setDailyLossMoney} /><LinkedPercentageAmountCards label="Monthly Loss Limit" currency={baseCurrency} percentage={monthlyLossLimitPct} amount={monthlyLimit ? Number(monthlyLimit.toFixed(2)) : ""} onPercentageChange={setMonthlyLossLimitPct} onAmountChange={setMonthlyLossMoney} /></div><div className="tj-settings-reset-grid"><div><small>DAILY RESET</small><strong>Next day</strong><span>Stops revenge-trading after a bad session.</span></div><div><small>MONTHLY RESET</small><strong>Next month</strong><span>Caps deeper drawdowns before they compound.</span></div></div><div className="tj-settings-info-block"><small>WHAT THIS LOCKS</small><span>Loss limits recalculate from current trading balance. Once reached, calendar drill-down and new trade logging pause until the reset window opens. Markups remain available.</span></div>
       </AccountSettingsSection>
       <AccountSettingsSection title="Challenge" icon={<Trophy size={15}/>} note="Build a compounding plan from your own starting amount." status={challengeEnabled && Number(challengeStartingBalance) > 0 ? "On" : "Off"} isOpen={open.challenge} onToggle={() => toggle("challenge")}>
         <Field label={`Challenge starting balance (${baseCurrency || "USD"})`}><input className="tj-input" type="number" min="0.01" step="any" placeholder="Enter a starting amount" value={challengeStartingBalance} onChange={event => { setChallengeStartingBalance(event.target.value); if (!(Number(event.target.value) > 0)) setChallengeEnabled(false); }}/></Field>
@@ -934,19 +980,40 @@ function InstrumentManager({ instruments, onSave }) {
   return <Card className="tj-panel tj-instrument-manager"><div className="tj-bold" style={{fontSize: 17.28}}>Instrument Management</div><div className="tj-muted-txt" style={{fontSize: 14,margin:"5px 0 12px"}}>Controls the instrument list in Trade Logs and Premarket Markups.</div><div className="tj-inline-add"><input className="tj-input" value={value} placeholder="Add an instrument..." onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => event.key === "Enter" && add()} /><button className="tj-btn-primary" onClick={add}>Add</button></div><div className="tj-management-list">{available.map((instrument) => { const fixed = isDefault(instrument); return <div className="tj-rule-row" key={instrument}>{editing?.old === instrument ? <input autoFocus className="tj-input" value={editing.value} onChange={(event) => setEditing({ ...editing, value: event.target.value })} onKeyDown={(event) => event.key === "Enter" && rename(instrument)} /> : <span>{instrument}</span>}<span className="tj-management-row-actions">{fixed ? <em className="tj-management-default">Default</em> : <><button className="tj-icon-btn" title="Edit custom instrument" onClick={() => editing?.old === instrument ? rename(instrument) : setEditing({ old: instrument, value: instrument })}><Pencil size={14}/></button><ConfirmDeleteButton className="tj-icon-btn" title="Remove custom instrument" onClick={async () => { onSave(instruments.filter((item) => item !== instrument)); }}><Trash2 size={14}/></ConfirmDeleteButton></>}</span></div>; })}</div></Card>;
 }
 
+function MistakeManager({ mistakes, onSave }) {
+  const [value, setValue] = useState("");
+  const [editing, setEditing] = useState(null);
+  const isDefault = (mistake) => DEFAULT_MISTAKE_TAGS.some((item) => item.toLowerCase() === mistake.toLowerCase());
+  const customMistakes = mistakes.filter((mistake) => !isDefault(mistake));
+  const add = () => {
+    const next = value.trim();
+    if (!next || isDefault(next) || customMistakes.some((item) => item.toLowerCase() === next.toLowerCase())) return;
+    onSave([...customMistakes, next]);
+    setValue("");
+  };
+  const rename = (old) => {
+    const next = editing?.value?.trim();
+    if (!next || isDefault(next) || customMistakes.some((item) => item !== old && item.toLowerCase() === next.toLowerCase())) return setEditing(null);
+    onSave(customMistakes.map((item) => item === old ? next : item));
+    setEditing(null);
+  };
+  const available = allMistakeTags(customMistakes);
+  return <Card className="tj-panel"><div className="tj-bold" style={{fontSize: 17.28}}>Mistake Management</div><div className="tj-muted-txt" style={{fontSize: 14,margin:"5px 0 12px"}}>Preset mistakes are available when logging a trade. Add your own below.</div><div className="tj-inline-add"><input className="tj-input" value={value} placeholder="Add a mistake..." onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => event.key === "Enter" && add()} /><button className="tj-btn-primary" onClick={add}>Add</button></div><div className="tj-management-list">{available.map((mistake) => { const fixed = isDefault(mistake); return <div className="tj-rule-row" key={mistake}>{editing?.old === mistake ? <input autoFocus className="tj-input" value={editing.value} onChange={(event) => setEditing({ ...editing, value: event.target.value })} onKeyDown={(event) => event.key === "Enter" && rename(mistake)} /> : <span>{mistake}</span>}<span className="tj-management-row-actions">{fixed ? <em className="tj-management-default">Preset</em> : <><button className="tj-icon-btn" title="Edit custom mistake" onClick={() => editing?.old === mistake ? rename(mistake) : setEditing({ old: mistake, value: mistake })}><Pencil size={14}/></button><ConfirmDeleteButton className="tj-icon-btn" title="Remove custom mistake" onClick={() => onSave(customMistakes.filter((item) => item !== mistake))}><Trash2 size={14}/></ConfirmDeleteButton></>}</span></div>; })}</div></Card>;
+}
+
 function ManagementPage({ account, typeTags, mistakeTags, confluenceSessions, instruments, onTypeTags, onMistakes, onConfluence, onInstruments, onAddRule, onUpdateRule, onRemoveRule }) {
   return <div className="tj-management-workspace"><div className="tj-page-intro"><div><div className="tj-bold tj-management-title" style={{fontSize: 19.44}}><NavSymbol src={managementSettingsSymbol} />Management</div><div className="tj-muted-txt" style={{fontSize: 14}}>Manage the options available on future trades and markups. Historical records remain unchanged.</div></div></div><div className="tj-management-grid">
     <RulesPage account={account} onAddRule={onAddRule} onUpdateRule={onUpdateRule} onRemoveRule={onRemoveRule} />
     <InstrumentManager instruments={instruments} onSave={onInstruments} />
     <ListManager title="Confluence" items={typeTags} onSave={onTypeTags} note="Former tag records. Select one or more confluences while logging a trade." />
     <ListManager title="Entry Type" items={confluenceSessions} onSave={onConfluence} note="Former Confluence Session records. Drives Entry Type analytics and setup cards." />
-    <ListManager title="Mistake Management" items={mistakeTags} onSave={onMistakes} note="Multi-select mistakes available when logging a trade." />
+    <MistakeManager mistakes={mistakeTags} onSave={onMistakes} />
   </div></div>;
 }
 
 function MarkupModal({ onClose, onSave, editing, instruments = [] }) {
   const [f,setF]=useState(() => {
-    const base = { id: uid(), date:todayISO(), time:nowTime(), market:"", instrument:"", bias:"", status:"Planned", levels:"", structure:"", notes:"", sessionReview:{marketOutcome:"",waitedForConditions:"",outsidePlanReason:""}, screenshots:{preM15:[],preH4:[],postD1:[],postH4:[],postM15:[]} };
+    const base = { id: uid(), date:todayISO(), time:nowTime(), market:"", instrument:"", bias:"", status:"Planned", levels:"", structure:"", notes:"", sessionReview:{marketOutcome:"",waitedForConditions:"",outsidePlanReason:""}, screenshots:{preHTF:[],preH4:[],preM15:[],postH4:[],postM15:[]} };
     if (!editing) return base;
     return { ...base, ...editing, market: normalizeSession(editing.market || ""), time: editing.time || nowTime(), sessionReview:{...base.sessionReview,...(editing.sessionReview||{})}, screenshots: { ...base.screenshots, ...(editing.screenshots && !Array.isArray(editing.screenshots) ? editing.screenshots : {}) } };
   });
@@ -958,16 +1025,16 @@ function MarkupModal({ onClose, onSave, editing, instruments = [] }) {
   return <Modal title={editing ? "Edit Premarket Markup" : "New Premarket Markup"} onClose={onClose} onConfirm={save} confirmDisabled={!f.time} wide>
     <div className="tj-markup-meta-row"><Field label="Date"><input type="date" className="tj-input" value={f.date} onChange={e=>set("date",e.target.value)}/></Field><Field label="Time *"><input type="time" required className="tj-input" value={f.time} onChange={e=>set("time",e.target.value)}/></Field><Field label="Session"><select className="tj-input" value={f.market} onChange={e=>set("market",e.target.value)}><option value="">Select session</option>{SESSIONS.map((session)=><option key={session} value={session}>{session}</option>)}</select></Field></div>
     <div className="tj-markup-pair-row"><Field label="Status"><select className="tj-input" value={f.status} onChange={e=>set("status",e.target.value)}>{["Planned","Watching","Executed","Passed"].map((status)=><option key={status} value={status}>{status}</option>)}</select></Field><Field label="Instrument"><InstrumentPicker value={f.instrument} onChange={(value) => set("instrument", value)} /></Field></div>
-    <div className="tj-markup-section"><div className="tj-section-label">Pre-Session Analysis</div><div className="tj-markup-pair-row"><Field label="Bias"><select className="tj-input" value={f.bias} onChange={e=>set("bias",e.target.value)}><option value="">Select bias</option>{MARKUP_BIASES.map((bias)=><option key={bias} value={bias}>{bias}</option>)}</select></Field><Field label="Key levels, liquidity & zones"><input className="tj-input" value={f.levels} onChange={e=>set("levels",e.target.value)}/></Field></div><Field label="Market structure / narrative"><textarea className="tj-input tj-textarea" placeholder="HTF context, structure and key areas..." value={f.structure} onChange={e=>set("structure",e.target.value)}/></Field><div className="tj-grid2"><div><div className="tj-field-label">LTF (M15) chart</div><ScreenshotUploader max={2} screenshots={f.screenshots.preM15} onChange={setShots("preM15")}/></div><div><div className="tj-field-label">MTF (H4) chart</div><ScreenshotUploader max={2} screenshots={f.screenshots.preH4} onChange={setShots("preH4")}/></div></div></div>
+    <div className="tj-markup-section"><div className="tj-section-label">Pre-Session Analysis</div><div className="tj-markup-pair-row"><Field label="Bias"><select className="tj-input" value={f.bias} onChange={e=>set("bias",e.target.value)}><option value="">Select bias</option>{MARKUP_BIASES.map((bias)=><option key={bias} value={bias}>{bias}</option>)}</select></Field><Field label="Key levels, liquidity & zones"><input className="tj-input" value={f.levels} onChange={e=>set("levels",e.target.value)}/></Field></div><Field label="Market structure / narrative"><textarea className="tj-input tj-textarea" placeholder="HTF context, structure and key areas..." value={f.structure} onChange={e=>set("structure",e.target.value)}/></Field><div className="tj-grid3"><div><div className="tj-field-label">HTF chart</div><ScreenshotUploader max={2} captions screenshots={f.screenshots.preHTF} onChange={setShots("preHTF")}/></div><div><div className="tj-field-label">MTF chart</div><ScreenshotUploader max={2} captions screenshots={f.screenshots.preH4} onChange={setShots("preH4")}/></div><div><div className="tj-field-label">LTF chart</div><ScreenshotUploader max={2} captions screenshots={f.screenshots.preM15} onChange={setShots("preM15")}/></div></div></div>
     <div className="tj-markup-section"><div className="tj-section-label">Expectations</div><Field label="Core narrative / what am I expecting?"><textarea className="tj-input tj-textarea" value={f.notes} onChange={e=>set("notes",e.target.value)} placeholder="What needs to happen for the idea to be valid? Include entry conditions and invalidation."/></Field></div>
-    <div className="tj-markup-section"><div className="tj-section-label">Post-Session Markup</div><div className="tj-grid3"><div><div className="tj-field-label">HTF (D1) chart</div><ScreenshotUploader max={2} screenshots={f.screenshots.postD1} onChange={setShots("postD1")}/></div><div><div className="tj-field-label">MTF (H4) chart</div><ScreenshotUploader max={2} screenshots={f.screenshots.postH4} onChange={setShots("postH4")}/></div><div><div className="tj-field-label">LTF (M15) chart</div><ScreenshotUploader max={2} screenshots={f.screenshots.postM15} onChange={setShots("postM15")}/></div></div></div>
+    <div className="tj-markup-section"><div className="tj-section-label">Post-Session Markup</div><div className="tj-grid2"><div><div className="tj-field-label">MTF chart</div><ScreenshotUploader max={2} captions screenshots={f.screenshots.postH4} onChange={setShots("postH4")}/></div><div><div className="tj-field-label">LTF chart</div><ScreenshotUploader max={2} captions screenshots={f.screenshots.postM15} onChange={setShots("postM15")}/></div></div></div>
     <div className="tj-markup-session-review"><button type="button" className="tj-markup-session-review-toggle" aria-expanded={sessionReviewOpen} onClick={()=>setSessionReviewOpen(open=>!open)}><span><ChevronDown size={15} style={{transform:sessionReviewOpen?"rotate(0deg)":"rotate(-90deg)"}}/> Session Review</span></button>{sessionReviewOpen&&<div className="tj-markup-session-review-body"><Field label="Did the market play out as expected? If not, how did it differ?"><textarea className="tj-input tj-textarea" value={f.sessionReview?.marketOutcome||""} onChange={e=>setReview("marketOutcome",e.target.value)}/></Field><Field label="Did I wait for my key conditions before entering?"><textarea className="tj-input tj-textarea" value={f.sessionReview?.waitedForConditions||""} onChange={e=>setReview("waitedForConditions",e.target.value)}/></Field><Field label="If I took trades outside the plan, what drove that decision?"><textarea className="tj-input tj-textarea" value={f.sessionReview?.outsidePlanReason||""} onChange={e=>setReview("outsidePlanReason",e.target.value)}/></Field></div>}</div>
     <div className="tj-modal-actions"><button className="tj-btn-outline" onClick={onClose}>Cancel</button><button className="tj-btn-primary" onClick={save}>{editing ? "Save Changes" : "Save Markup"}</button></div>
   </Modal>;
 }
 function MarkupsPage({ markups, trades, onNew, onEdit, onDelete }) {
   const [open,setOpen]=useState({});
-  const slots = [["preM15", "LTF (M15)"], ["preH4", "MTF (H4)"], ["postD1", "Post Market HTF (D1)"], ["postH4", "Post Market MTF (H4)"], ["postM15", "Post Market LTF (M15)"]];
+  const slots = [["preHTF", "HTF"], ["preH4", "MTF"], ["preM15", "LTF"], ["postH4", "Post Market MTF"], ["postM15", "Post Market LTF"]];
   return <><div className="tj-rules-head"><div><div className="tj-bold" style={{fontSize: 17.28}}>Premarket Markups</div><div className="tj-muted-txt" style={{fontSize: 14}}>Prepare context before execution, then attach the resulting trades.</div></div><button className="tj-btn-primary" onClick={onNew}><Plus size={15}/> New Markup</button></div><div className="tj-tlog-list">{markups.length ? markups.map((markup) => {
     const linked=trades.filter((trade)=>trade.premarketMarkupId===markup.id), pnl=linked.reduce((sum,trade)=>sum+trade.pnl,0), expanded=!!open[markup.id];
     return <Card key={markup.id} className="tj-tlog-card"><div className="tj-tlog-row" onClick={()=>setOpen((state)=>({...state,[markup.id]:!state[markup.id]}))}><div className="tj-tlog-main"><div className="tj-tlog-asset">{markup.instrument||markup.market||"Untitled markup"} <span className="tj-sesspill">{markup.bias||"No bias"}</span> <span className={`tj-markup-status tj-markup-status-${String(markup.status||"Planned").toLowerCase()}`}>{markup.status||"Planned"}</span></div><div className="tj-muted-txt" style={{fontSize: 14}}>{markup.date} · {formatTime(markup.time)} · {markup.market||"No session"} · {linked.length} linked trade{linked.length===1?"":"s"}</div></div><div className={`tj-tlog-pnl ${pnl>=0?"tj-green":"tj-red"}`}>{fmtMoney(pnl)}</div><button className="tj-btn-edit" onClick={(event)=>{event.stopPropagation();onEdit(markup)}}>Edit</button><ConfirmDeleteButton className="tj-icon-btn" title="Delete markup" onClick={(event)=>{event.stopPropagation();onDelete(markup.id)}}><Trash2 size={14}/></ConfirmDeleteButton><ChevronDown size={16} style={{transform:expanded?"rotate(180deg)":"none"}}/></div>{expanded&&<div className="tj-tlog-detail"><div className="tj-tlog-detail-grid"><div><div className="tj-mlabel">STATUS</div><div>{markup.status||"Planned"}</div></div><div><div className="tj-mlabel">LEVELS / ZONES</div><div>{markup.levels||"—"}</div></div><div><div className="tj-mlabel">STRUCTURE</div><div>{markup.structure||"—"}</div></div><div><div className="tj-mlabel">EXPECTATIONS</div><div>{markup.notes||"—"}</div></div></div><div className="tj-section-label">Markup Images</div><div className="tj-markup-images">{slots.map(([slot,label])=>{const images=markup.screenshots?.[slot]||[];return images.length?<div key={slot} className="tj-markup-image-section"><div className="tj-mlabel">{label}</div><div className="tj-tlog-shots">{images.map((src,index)=><ImagePreview key={index} src={src} alt={`${label} chart`}/>)}</div></div>:null;})}</div><div className="tj-section-label">Linked Trades</div>{linked.length?linked.map((trade)=><div key={trade.id} className="tj-rule-row"><span>{trade.date} · {formatTime(trade.time)} · {trade.asset} · {trade.direction} <span className="tj-muted-txt">· {trade.entryType||trade.confluenceSession||"No entry type"}</span></span><span className="tj-linked-trade-metrics"><RatingDisplay value={trade.rating} noRules={!trade.ruleEvaluations?.length&&!trade.rating}/><strong className={trade.pnl>=0?"tj-green":"tj-red"}>{fmtMoney(trade.pnl)}</strong></span></div>):<div className="tj-empty">No trades linked yet.</div>}</div>}</Card>;
@@ -1025,9 +1092,9 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
   const [listPage, setListPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
   const toolbarRef = useCloseOnOutside(filtersOpen || sortOpen, () => { setFiltersOpen(false); setSortOpen(false); });
-  const slots = [["preM15", "Pre-session M15"], ["preH4", "Pre-session H4"], ["postD1", "Post-session D1"], ["postH4", "Post-session H4"], ["postM15", "Post-session M15"]];
-  const preSlots = slots.slice(0, 2);
-  const postSlots = slots.slice(2);
+  const slots = [["preHTF", "HTF"], ["preH4", "MTF"], ["preM15", "LTF"], ["postH4", "MTF"], ["postM15", "LTF"]];
+  const preSlots = slots.slice(0, 3);
+  const postSlots = slots.slice(3);
   const linkedTrades = (markup) => trades.filter((trade) => trade.premarketMarkupId === markup.id);
   const totalLinkedPnl = (markup) => linkedTrades(markup).reduce((sum, trade) => sum + trade.pnl, 0);
   const effectiveStatus = (markup) => linkedTrades(markup).length ? "Executed" : (markup.status || "Planned");
@@ -1038,8 +1105,8 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
   const coverage = (predicate) => markups.length ? Math.round(markups.filter(predicate).length / markups.length * 100) : 0;
   const countWith = (keys) => (markup) => keys.some((key) => markup.screenshots?.[key]?.length);
   const planCoverage = coverage((markup) => markup.levels || markup.structure || markup.notes || markup.bias);
-  const preCoverage = coverage(countWith(["preM15", "preH4"]));
-  const postCoverage = coverage(countWith(["postD1", "postH4", "postM15"]));
+  const preCoverage = coverage(countWith(["preHTF", "preH4", "preM15"]));
+  const postCoverage = coverage(countWith(["postH4", "postM15"]));
   const instruments = ["All", ...Array.from(new Set(markups.map((markup) => markup.instrument).filter(Boolean))).sort()];
   const months = ["All", ...Array.from(new Set(markups.map((markup) => markup.date?.slice(0, 7)).filter(Boolean))).sort().reverse()];
   const weekOfMonth = (date) => {
@@ -1105,8 +1172,8 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
       const planFields = [markup.structure, markup.levels, markup.notes];
       const planFilled = Math.round(planFields.filter((value) => String(value || "").trim()).length / planFields.length * 100);
       const renderChartGroup = (groupSlots, emptyText) => {
-        const chartItems = groupSlots.flatMap(([key, label]) => (markup.screenshots?.[key] || []).map((source, index) => ({ key: `${markup.id}:${key}:${index}`, label, source })));
-        return <div className="tj-markup-chart-group">{chartItems.length ? chartItems.map((chart) => <button type="button" key={chart.key} className={`tj-markup-chart-card ${selectedChart === chart.key ? "tj-markup-chart-card-selected" : ""}`} onClick={() => { setSelectedChart(chart.key); openImage(chart.source); }}><img src={chart.source} alt={chart.label}/><strong>{chart.label}</strong></button>) : <div className="tj-markup-chart-empty">{emptyText}</div>}</div>;
+        const chartItems = groupSlots.flatMap(([key, label]) => (markup.screenshots?.[key] || []).map((screenshot, index) => ({ key: `${markup.id}:${key}:${index}`, label, source: screenshotSource(screenshot), caption: screenshotCaption(screenshot) })));
+        return <div className="tj-markup-chart-group">{chartItems.length ? chartItems.map((chart) => <button type="button" key={chart.key} className={`tj-markup-chart-card ${selectedChart === chart.key ? "tj-markup-chart-card-selected" : ""}`} onClick={() => { setSelectedChart(chart.key); openImage(chart.source); }}><img src={chart.source} alt={chart.caption || chart.label}/><strong>{chart.caption || chart.label}</strong>{chart.caption && <small>{chart.label}</small>}</button>) : <div className="tj-markup-chart-empty">{emptyText}</div>}</div>;
       };
       return <Card key={markup.id} className={`tj-tlog-card tj-reference-markup-card ${expanded ? "tj-reference-markup-expanded" : ""}`}>
         <div className="tj-reference-markup-row" onClick={() => setOpen((current) => ({ ...current, [markup.id]: !current[markup.id] }))}>
@@ -1187,8 +1254,8 @@ function TradeReviewEditorModal({ trade, trades = [], existing, reviews = [], ma
   const activeTrade = allTrades.find((item) => item.id === selectedTradeId) || trade;
   const linkedMarkup = markups.find((markup) => markup.id === activeTrade.premarketMarkupId);
   const markupScreenshots = linkedMarkup ? [
-    ["preM15", "Pre M15"], ["preH4", "Pre H4"], ["postD1", "Post D1"], ["postH4", "Post H4"], ["postM15", "Post M15"],
-  ].flatMap(([key, label]) => (linkedMarkup.screenshots?.[key] || []).map((src, index) => ({ key: `${key}-${index}`, label, src }))) : [];
+    ["preHTF", "Pre-session HTF"], ["preH4", "Pre-session MTF"], ["preM15", "Pre-session LTF"], ["postH4", "Post-session MTF"], ["postM15", "Post-session LTF"],
+  ].flatMap(([key, label]) => (linkedMarkup.screenshots?.[key] || []).map((screenshot, index) => ({ key: `${key}-${index}`, label, src: screenshotSource(screenshot), caption: screenshotCaption(screenshot) }))) : [];
   const resultClass = classify(activeTrade.pnl, account?.breakevenCap || 0);
   const resultLabel = resultClass === "win" ? "Win" : resultClass === "loss" ? "Loss" : "Break-even";
   const accountBase = Number(account?.balance) || 0;
@@ -1336,6 +1403,10 @@ function AddAccountModal({ onClose, onCreate }) {
   const [defaultCommission, setDefaultCommission] = useState(0);
   const [monthlyGoalPct, setMonthlyGoalPct] = useState("");
   const [yearlyGoalPct, setYearlyGoalPct] = useState("");
+  const [monthlyGoalAmount, setMonthlyGoalAmount] = useState("");
+  const [yearlyGoalAmount, setYearlyGoalAmount] = useState("");
+  const [monthlyGoalSource, setMonthlyGoalSource] = useState("percentage");
+  const [yearlyGoalSource, setYearlyGoalSource] = useState("percentage");
   const [dailyLossLimitPct, setDailyLossLimitPct] = useState("");
   const [monthlyLossLimitPct, setMonthlyLossLimitPct] = useState("");
   const [positionSizeEnabled, setPositionSizeEnabled] = useState(false);
@@ -1346,15 +1417,29 @@ function AddAccountModal({ onClose, onCreate }) {
   const accountId = useRef(uuid()).current;
   const toggle = (section) => setOpen((current) => ({ ...current, [section]: !current[section] }));
   const accountBase = Number(balance) || 0;
-  const monthlyTarget = accountBase * (Number(monthlyGoalPct) || 0) / 100;
-  const yearlyTarget = accountBase * (Number(yearlyGoalPct) || 0) / 100;
+  const moneyFromPercentage = (percentage, base) => Number(percentage) > 0 && base > 0 ? Number((Number(percentage) * base / 100).toFixed(2)) : "";
+  const percentageFromMoney = (amount, base) => Number(amount) > 0 && base > 0 ? Number((Number(amount) / base * 100).toFixed(4)) : "";
+  const monthlyTarget = monthlyGoalSource === "amount" ? Number(monthlyGoalAmount) || 0 : accountBase * (Number(monthlyGoalPct) || 0) / 100;
+  const yearlyTarget = yearlyGoalSource === "amount" ? Number(yearlyGoalAmount) || 0 : accountBase * (Number(yearlyGoalPct) || 0) / 100;
   const dailyLimit = accountBase * (Number(dailyLossLimitPct) || 0) / 100;
   const monthlyLimit = accountBase * (Number(monthlyLossLimitPct) || 0) / 100;
+  const setMonthlyGoalPercentage = (value) => { setMonthlyGoalPct(value); setMonthlyGoalAmount(moneyFromPercentage(value, accountBase)); setMonthlyGoalSource("percentage"); };
+  const setYearlyGoalPercentage = (value) => { setYearlyGoalPct(value); setYearlyGoalAmount(moneyFromPercentage(value, accountBase)); setYearlyGoalSource("percentage"); };
+  const setMonthlyGoalMoney = (value) => { setMonthlyGoalAmount(value); setMonthlyGoalPct(percentageFromMoney(value, accountBase)); setMonthlyGoalSource("amount"); };
+  const setYearlyGoalMoney = (value) => { setYearlyGoalAmount(value); setYearlyGoalPct(percentageFromMoney(value, accountBase)); setYearlyGoalSource("amount"); };
+  const setDailyLossMoney = (value) => setDailyLossLimitPct(percentageFromMoney(value, accountBase));
+  const setMonthlyLossMoney = (value) => setMonthlyLossLimitPct(percentageFromMoney(value, accountBase));
+  const setStartingBalance = (value) => {
+    const nextBase = Number(value) || 0;
+    setBalance(value);
+    if (monthlyGoalSource === "amount") setMonthlyGoalPct(percentageFromMoney(monthlyGoalAmount, nextBase)); else setMonthlyGoalAmount(moneyFromPercentage(monthlyGoalPct, nextBase));
+    if (yearlyGoalSource === "amount") setYearlyGoalPct(percentageFromMoney(yearlyGoalAmount, nextBase)); else setYearlyGoalAmount(moneyFromPercentage(yearlyGoalPct, nextBase));
+  };
   const create = async () => {
     if (!name.trim() || !baseCurrency || (platform === "Manual" && !(Number(balance) > 0)) || creating) return;
     setCreating(true);
     setImportProgress(0); setImportingTrades(!!importPreview.trades?.length);
-    const created = await onCreate({ challengeEnabled: isChallengeEnabled({challengeEnabled, challengeStartingBalance}), challengeStartingBalance: Number(challengeStartingBalance) || 0, id: accountId, name: name.trim(), icon: baseCurrency, profileImage: "", platform, balance: accountBase, breakevenCap: parseFloat(breakevenCap) || 0, ratingStyle: "stars", theme: "dark", defaultCommission: parseFloat(defaultCommission) || 0, monthlyGoalPct: parseFloat(monthlyGoalPct) || 0, yearlyGoalPct: parseFloat(yearlyGoalPct) || 0, dailyLossLimitPct: parseFloat(dailyLossLimitPct) || 0, monthlyLossLimitPct: parseFloat(monthlyLossLimitPct) || 0, positionSizeEnabled, baseCurrency, defaultRiskPct: parseFloat(defaultRiskPct) || 0, defaultStopLossPips: parseFloat(defaultStopLossPips) || 0, trades: [], rules: [], checkins: {} }, importPreview, setImportProgress);
+    const created = await onCreate({ challengeEnabled: isChallengeEnabled({challengeEnabled, challengeStartingBalance}), challengeStartingBalance: Number(challengeStartingBalance) || 0, id: accountId, name: name.trim(), icon: baseCurrency, profileImage: "", platform, balance: accountBase, breakevenCap: parseFloat(breakevenCap) || 0, ratingStyle: "stars", theme: "dark", defaultCommission: parseFloat(defaultCommission) || 0, monthlyGoalPct: parseFloat(monthlyGoalPct) || 0, yearlyGoalPct: parseFloat(yearlyGoalPct) || 0, monthlyGoalAmount: parseFloat(monthlyGoalAmount) || 0, yearlyGoalAmount: parseFloat(yearlyGoalAmount) || 0, monthlyGoalSource, yearlyGoalSource, dailyLossLimitPct: parseFloat(dailyLossLimitPct) || 0, monthlyLossLimitPct: parseFloat(monthlyLossLimitPct) || 0, positionSizeEnabled, baseCurrency, defaultRiskPct: parseFloat(defaultRiskPct) || 0, defaultStopLossPips: parseFloat(defaultStopLossPips) || 0, trades: [], rules: [], checkins: {} }, importPreview, setImportProgress);
     if (!created) { setCreating(false); setImportingTrades(false); }
   };
   return (
@@ -1365,7 +1450,7 @@ function AddAccountModal({ onClose, onCreate }) {
       </div>
       <AccountSettingsSection title="Identity & Account Currency" note="Choose how this account is normally logged. Imports never remove manual trade entry." status={baseCurrency || "Currency required"} isOpen={open.identity} onToggle={() => toggle("identity")}>
         <div className="tj-grid2"><Field label="Display Name"><input className="tj-input" placeholder="e.g. Photon Prop Eval" value={name} onChange={(event) => setName(event.target.value)} /></Field><Field label="Trading platform"><select className="tj-input" value={platform} onChange={(event) => setPlatform(event.target.value)}><option>Manual</option><option>MetaTrader 4/5</option><option>cTrader</option></select></Field></div>
-        <Field label={`Starting Balance (${baseCurrency || "Currency"}) ${platform === "Manual" ? "*" : "(optional for import accounts)"}`}><input type="number" min="0" className="tj-input" value={balance} onChange={(event) => setBalance(event.target.value)} /></Field>
+        <Field label={`Starting Balance (${baseCurrency || "Currency"}) ${platform === "Manual" ? "*" : "(optional for import accounts)"}`}><input type="number" min="0" className="tj-input" value={balance} onChange={(event) => setStartingBalance(event.target.value)} /></Field>
         <Field label="Import trade history (optional)"><input className="tj-input" type="file" accept=".html,.htm,.csv,.txt,.tsv" disabled={creating} onChange={async (event) => { const file = event.target.files?.[0] || null; setImportFile(file); setImportPreview([]); setImportError(""); setImportProgress(0); if (!file) return; const parsed = await parseBrokerFile(file); if (!parsed.trades.length) setImportError("No completed BUY or SELL trades were found in this file."); else setImportPreview(parsed); }} />{importFile && <div className="tj-settings-hint">{importFile.name}{importPreview.trades?.length ? ` · ${importPreview.trades.length} trades${importPreview.cashMovements?.length ? ` and ${importPreview.cashMovements.length} cash movement${importPreview.cashMovements.length === 1 ? "" : "s"}` : ""} will import when you create this account` : ""}</div>}{importingTrades && <div className="tj-settings-hint tj-import-live"><i className="tj-import-progress" style={{ "--progress": `${importProgress}%` }}>{importProgress}%</i>Importing {platform} trades…</div>}{importError && <div className="tj-import-error">{importError}</div>}</Field>
         <Field label="Account Base Currency *"><select required className="tj-input" value={baseCurrency} onChange={(event) => setBaseCurrency(event.target.value)}><option value="" disabled>Select a currency</option>{ACCOUNT_CURRENCIES.map((currency) => <option key={currency.code} value={currency.code}>{currency.code} — {currency.label} ({currency.symbol})</option>)}</select></Field>
       </AccountSettingsSection>
@@ -1373,10 +1458,10 @@ function AddAccountModal({ onClose, onCreate }) {
         <div className="tj-grid2"><Field label={`Breakeven Cap (${baseCurrency || "Currency"})`}><input type="number" min="0" className="tj-input" value={breakevenCap} onChange={(event) => setBreakevenCap(event.target.value)} /><div className="tj-chip-row">{[0, 10, 20, 35, 50].map((value) => <button type="button" key={value} className={`tj-chip ${Number(breakevenCap) === value ? "tj-chip-active" : ""}`} onClick={() => setBreakevenCap(value)}>{fmtMoneyShort(value, baseCurrency)}</button>)}</div></Field><Field label={`Default Commission (${baseCurrency || "Currency"} per trade)`}><input type="number" min="0" className="tj-input" value={defaultCommission} onChange={(event) => setDefaultCommission(event.target.value)} /></Field></div>
       </AccountSettingsSection>
       <AccountSettingsSection title="Goals" note="Optional monthly and yearly targets that appear in analytics and review summaries." status={monthlyGoalPct || yearlyGoalPct ? "Active" : "Optional"} isOpen={open.goals} onToggle={() => toggle("goals")}>
-        <div className="tj-grid2"><AccountSettingsNumberField label="Monthly Growth Goal (%)" value={monthlyGoalPct} onChange={setMonthlyGoalPct} placeholder="e.g. 4" hint={monthlyGoalPct ? `Current target: ${fmtMoneyShort(monthlyTarget, baseCurrency)} for a +${Number(monthlyGoalPct).toFixed(2)}% month.` : "Leave blank if you do not want a monthly target."} /><AccountSettingsNumberField label="Yearly Growth Goal (%)" value={yearlyGoalPct} onChange={setYearlyGoalPct} placeholder="e.g. 25" hint={yearlyGoalPct ? `Current target: ${fmtMoneyShort(yearlyTarget, baseCurrency)} for a +${Number(yearlyGoalPct).toFixed(2)}% year.` : "Leave blank to keep the annual runway open."} /></div>
+        <div className="tj-grid4 tj-settings-linked-grid"><LinkedPercentageAmountCards label="Monthly Growth Goal" currency={baseCurrency} percentage={monthlyGoalPct} amount={monthlyGoalAmount} onPercentageChange={setMonthlyGoalPercentage} onAmountChange={setMonthlyGoalMoney} /><LinkedPercentageAmountCards label="Yearly Growth Goal" currency={baseCurrency} percentage={yearlyGoalPct} amount={yearlyGoalAmount} onPercentageChange={setYearlyGoalPercentage} onAmountChange={setYearlyGoalMoney} /></div>
       </AccountSettingsSection>
       <AccountSettingsSection title="Risk Guardrails" note="Optional loss caps that pause trade execution when a limit is reached." status={dailyLossLimitPct || monthlyLossLimitPct ? "Active" : "Optional"} isOpen={open.guardrails} onToggle={() => toggle("guardrails")}>
-        <div className="tj-grid2"><AccountSettingsNumberField label="Daily Loss Limit (%)" value={dailyLossLimitPct} onChange={setDailyLossLimitPct} placeholder="e.g. 2" hint={dailyLossLimitPct ? `Locks workflow after ${fmtMoneyShort(-dailyLimit, baseCurrency)} net on the day.` : "Leave blank for no daily lock."} /><AccountSettingsNumberField label="Monthly Loss Limit (%)" value={monthlyLossLimitPct} onChange={setMonthlyLossLimitPct} placeholder="e.g. 10" hint={monthlyLossLimitPct ? `Locks workflow after ${fmtMoneyShort(-monthlyLimit, baseCurrency)} net for the month.` : "Leave blank for no monthly lock."} /></div>
+        <div className="tj-grid4 tj-settings-linked-grid"><LinkedPercentageAmountCards label="Daily Loss Limit" currency={baseCurrency} percentage={dailyLossLimitPct} amount={dailyLimit ? Number(dailyLimit.toFixed(2)) : ""} onPercentageChange={setDailyLossLimitPct} onAmountChange={setDailyLossMoney} /><LinkedPercentageAmountCards label="Monthly Loss Limit" currency={baseCurrency} percentage={monthlyLossLimitPct} amount={monthlyLimit ? Number(monthlyLimit.toFixed(2)) : ""} onPercentageChange={setMonthlyLossLimitPct} onAmountChange={setMonthlyLossMoney} /></div>
       </AccountSettingsSection>
       <AccountSettingsSection title="Challenge" note="Enable the 30 Level Challenge for this account." status={challengeEnabled ? "On" : "Off"} isOpen={open.challenge} onToggle={() => toggle("challenge")}>
         <Field label={`Challenge starting balance (${baseCurrency || "USD"})`}><input className="tj-input" type="number" min="0.01" step="any" value={challengeStartingBalance} placeholder="Enter a starting amount" onChange={event => {setChallengeStartingBalance(event.target.value); if (!(Number(event.target.value) > 0)) setChallengeEnabled(false);}}/></Field>
@@ -2026,7 +2111,7 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
             const grossTradeReturn = account.balance ? (Number(t.grossPnl ?? t.pnl) / account.balance) * 100 : 0;
             const confluenceCount = (t.confluence || t.types || []).length;
             const screenshotCount = t.screenshots?.length || 0;
-            const linkedMarkupScreenshots = linkedMarkup ? Object.entries(linkedMarkup.screenshots || {}).filter(([, images]) => Array.isArray(images)).flatMap(([slot, images]) => images.map((source, index) => ({ source, key: `${slot}-${index}` }))) : [];
+            const linkedMarkupScreenshots = linkedMarkup ? Object.entries(linkedMarkup.screenshots || {}).filter(([, images]) => Array.isArray(images)).flatMap(([slot, images]) => images.map((screenshot, index) => ({ source: screenshotSource(screenshot), key: `${slot}-${index}` }))) : [];
             const linkDraft = linkDrafts[t.id] ?? t.premarketMarkupId ?? "";
             return (
               <Card key={t.id} className={`tj-tlog-card tj-reference-tradelog-row tj-tlog-${cls}`}>
@@ -2036,7 +2121,7 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
                       <div className="tj-tlog-asset">{t.asset || "No instrument"}</div>
                     </div>
                     <span className={`tj-dirpill-sm tj-reference-trade-direction ${t.direction === "BUY" ? "tj-green" : "tj-red"}`}>{t.direction}</span>
-                    <div className="tj-reference-trade-meta"><span>Opened: {/Imported cTrader position #.*\[close-only\]/i.test(t.context || "") ? "Not included in cTrader report" : `${new Date(t.date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })} · ${formatTime(t.time)}`}</span><span>Closed: {t.closeDate ? `${new Date(t.closeDate + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })} · ${t.closeTime ? formatTime(t.closeTime) : "Time not logged"}` : "Not logged"}</span></div>
+                    <div className="tj-reference-trade-meta"><span>Opened: {cTraderOpeningIsUnknown(t) ? "Not included in cTrader report" : `${new Date(t.date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })} · ${formatTime(t.time)}`}</span><span>Closed: {t.closeDate ? `${new Date(t.closeDate + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })} · ${t.closeTime ? formatTime(t.closeTime) : "Time not logged"}` : "Not logged"}</span></div>
                     <span className="tj-reference-trade-session">{t.entrySession || t.session || "No session"}</span>
                   </div>
                   <div className="tj-reference-trade-right" onClick={(e) => e.stopPropagation()}>
@@ -2874,6 +2959,30 @@ function PsychologyPage({ account }) {
 
 /* ================================ INSIGHTS =============================== */
 
+function AICoachPanel({ account, stats }) {
+  const [status, setStatus] = useState("idle");
+  const [report, setReport] = useState("");
+  const [message, setMessage] = useState("");
+  const generate = async () => {
+    setStatus("loading");
+    setMessage("");
+    try {
+      const { data, error } = await supabase.functions.invoke("ai-coach", { body: { accountId: account.id } });
+      if (error || !data?.report) throw error || new Error(data?.error || "AI Coach is not connected yet.");
+      setReport(data.report);
+      setStatus("ready");
+    } catch (error) {
+      setStatus("unavailable");
+      setMessage("AI Coach is ready in the journal, but it needs your OpenAI API key in the secure Supabase function before it can generate an analysis.");
+    }
+  };
+  return <Card className="tj-ai-coach-card">
+    <div className="tj-ai-coach-head"><div><span>AI COACH</span><strong>Your evidence-based trading review</strong><p>Generate a private coaching report from this account’s trades, markups, reviews, risk settings, and recurring mistakes. It looks for patterns; it does not provide trade signals or financial advice.</p></div><i className={status === "ready" ? "tj-ai-coach-ready" : ""}>{status === "ready" ? "Report ready" : "Secure connection"}</i></div>
+    {report ? <div className="tj-ai-coach-report"><div className="tj-ai-coach-report-head"><strong>Latest AI coaching report</strong><button type="button" className="tj-btn-outline tj-btn-small" onClick={generate}>Refresh analysis</button></div><p>{report}</p></div> : <div className="tj-ai-coach-empty"><div><strong>What it will examine</strong><span>{stats.total} trades · setup and session results · risk consistency · loss streaks · mistakes · plan adherence</span></div><button type="button" className="tj-btn-primary" disabled={status === "loading"} onClick={generate}>{status === "loading" ? "Analyzing journal…" : "Generate AI analysis"}</button></div>}
+    {message && <div className="tj-ai-coach-message">{message}</div>}
+  </Card>;
+}
+
 function InsightsPage({ account }) {
   const trades = account.trades || [];
   const cap = account.breakevenCap;
@@ -2907,9 +3016,10 @@ function InsightsPage({ account }) {
   return (
     <div className="tj-insights-workspace">
       <Card className="tj-insights-hero">
-        <div className="tj-insights-hero-copy"><span>JOURNAL INTELLIGENCE</span><h2>Edge Optimization</h2><p>Turn real execution history into clearer decisions on risk, growth, and where discipline needs tightening.</p><div className="tj-insights-pills"><i>{bestSession ? `${bestSession.session} is the strongest session` : "Build a session sample"}</i><i>{bestTag ? `${bestTag.tag} is the strongest tagged setup` : "Tag entry models to find the edge"}</i><i>{fmtMoney(expectancy)} expectancy per trade</i></div></div>
+        <div className="tj-insights-hero-copy"><span>INSIGHTS &amp; AI COACH</span><h2>Edge Optimization</h2><p>Turn real execution history into clearer decisions on risk, growth, and where discipline needs tightening.</p><div className="tj-insights-pills"><i>{bestSession ? `${bestSession.session} is the strongest session` : "Build a session sample"}</i><i>{bestTag ? `${bestTag.tag} is the strongest tagged setup` : "Tag entry models to find the edge"}</i><i>{fmtMoney(expectancy)} expectancy per trade</i></div></div>
         <div className="tj-insights-return"><small>COMPOUNDED RETURN</small><strong className={compoundedReturn >= 0 ? "tj-green" : "tj-red"}>{compoundedReturn >= 0 ? "+" : ""}{compoundedReturn.toFixed(2)}%</strong><span>{fmtMoney(currentEquity)} live balance</span></div>
       </Card>
+      <AICoachPanel account={account} stats={stats} />
       <RiskManagementInsightsView account={account} trades={trades} stats={stats} />
     </div>
   );
@@ -3612,9 +3722,9 @@ function TradingJournalApp({ user, onLogout }) {
         // Re-uploading a broker report also repairs old imports made before
         // close timestamps were mapped correctly. It never creates a duplicate.
         const needsCloseTiming = trade.closeDate && (existing.closeDate !== trade.closeDate || existing.closeTime !== trade.closeTime);
-        const needsOpeningRepair = trade.openingTimestampMissing && ((existing.time || "") || !/\[close-only\]/i.test(existing.context || ""));
+        const needsOpeningRepair = trade.openingTimestampMissing && !cTraderOpeningWasEnteredManually(existing) && !/\[close-only\]/i.test(existing.context || "") && !!existing.time;
         if (needsCloseTiming || needsOpeningRepair) {
-          closeTimingUpdates.push({ ...existing, time: trade.openingTimestampMissing ? "" : existing.time, closeDate: trade.closeDate, closeTime: trade.closeTime || "", context: trade.openingTimestampMissing ? trade.context : existing.context });
+          closeTimingUpdates.push({ ...existing, time: needsOpeningRepair ? "" : existing.time, closeDate: trade.closeDate, closeTime: trade.closeTime || "", context: needsOpeningRepair ? trade.context : existing.context });
         }
         return false;
       }
@@ -3916,7 +4026,7 @@ function TradingJournalApp({ user, onLogout }) {
           </div>
         </div>
       </div>
-      {modal === "newtrade" && <NewTradeModal editing={editingTrade} draft={newTradeDraft} typeTags={typeTags} mistakeTags={mistakeTags} confluenceSessions={confluenceSessions} instruments={knownInstruments} markups={markups.filter((markup)=>markup.accountId===account.id)} rules={account.rules} defaultCommission={account.defaultCommission} account={account} onClose={() => { setModal(null); setEditingTrade(null); setNewTradeDraft(null); }} onSave={saveTrade} />}
+      {modal === "newtrade" && <NewTradeModal editing={editingTrade} draft={newTradeDraft} typeTags={typeTags} mistakeTags={allMistakeTags(mistakeTags)} confluenceSessions={confluenceSessions} instruments={knownInstruments} markups={markups.filter((markup)=>markup.accountId===account.id)} rules={account.rules} defaultCommission={account.defaultCommission} account={account} onClose={() => { setModal(null); setEditingTrade(null); setNewTradeDraft(null); }} onSave={saveTrade} />}
       {modal === "account" && !guardrails.tradeEntryLocked && <AccountSettingsModal key={account.id} account={account} challenge={challenge} onClose={() => setModal(null)} onSave={handleSaveAccountSettings} onImport={(trades, onProgress) => importTradesToAccount(account, trades, onProgress)} onDelete={handleDeleteAccount} />}
       {modal === "profile" && <ProfileSettingsModal user={user} account={account} themeValue={profileTheme} onClose={() => setModal(null)} onSave={handleSaveProfileSettings} />}
       {modal === "markup" && <MarkupModal editing={editingMarkup} instruments={knownInstruments} onClose={()=>{setModal(null);setEditingMarkup(null);}} onSave={handleSaveMarkup} />}
@@ -4375,6 +4485,8 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-image-preview img { display: block; width: 100%; height: 100%; object-fit: contain; background: var(--tj-panel-alt); }
 .tj-shot-thumb .tj-image-preview { width: 100%; height: 100%; border: none; border-radius: 0; }
 .tj-shot-remove { position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.7); border: none; color: #fff; border-radius: 50%; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+.tj-shot-caption { position: absolute; z-index: 1; left: 5px; right: 5px; bottom: 5px; width: calc(100% - 10px); min-width: 0; border: 1px solid color-mix(in srgb, var(--tj-text) 35%, transparent); border-radius: 5px; background: color-mix(in srgb, var(--tj-panel) 88%, transparent); color: var(--tj-text); padding: 4px 6px; font: inherit; font-size: 0.7rem; line-height: 1.2; }
+.tj-shot-caption::placeholder { color: var(--tj-muted); }
 .tj-shot-add { width: 100%; height: auto; aspect-ratio: 3 / 2; border-radius: 8px; border: 1px dashed var(--tj-border); display: flex; align-items: center; justify-content: center; }
 .tj-tlog-shots { display: flex; gap: 10px; flex-wrap: wrap; }
 .tj-tlog-shots .tj-image-preview { width: min(260px, 100%); height: 180px; }
@@ -4457,6 +4569,9 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-insights-return span { color: var(--tj-muted); font-size: 0.75rem; }
 .tj-insights-workspace .tj-risk-insights-workspace { gap: 12px; }
 .tj-insights-workspace .tj-risk-insights-summary, .tj-insights-workspace .tj-risk-growth, .tj-insights-workspace .tj-risk-recommendations { border-radius: 16px; }
+.tj-ai-coach-card { display: grid; gap: 14px; padding: 17px; border-color: color-mix(in srgb, var(--tj-purple) 42%, var(--tj-border)); background: linear-gradient(112deg, color-mix(in srgb, var(--tj-purple) 9%, var(--tj-panel)), var(--tj-panel) 58%, color-mix(in srgb, var(--tj-green) 6%, var(--tj-panel))); }
+.tj-ai-coach-head { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }.tj-ai-coach-head > div { display: grid; gap: 5px; }.tj-ai-coach-head span { color: var(--tj-purple); font-size: .75rem; font-weight: 850; letter-spacing: 1.2px; }.tj-ai-coach-head strong { font-size: 1.125rem; }.tj-ai-coach-head p { max-width: 750px; margin: 0; color: var(--tj-muted); font-size: .8125rem; line-height: 1.5; }.tj-ai-coach-head > i { flex: 0 0 auto; padding: 5px 8px; border: 1px solid var(--tj-border); border-radius: 99px; color: var(--tj-muted); font-size: .7rem; font-style: normal; font-weight: 800; }.tj-ai-coach-head > i.tj-ai-coach-ready { border-color: color-mix(in srgb, var(--tj-green) 45%, var(--tj-border)); color: var(--tj-green); }
+.tj-ai-coach-empty { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px; border: 1px solid var(--tj-border); border-radius: 11px; background: var(--tj-panel-alt); }.tj-ai-coach-empty > div { display: grid; gap: 4px; }.tj-ai-coach-empty strong { font-size: .8125rem; }.tj-ai-coach-empty span, .tj-ai-coach-message { color: var(--tj-muted); font-size: .75rem; line-height: 1.45; }.tj-ai-coach-empty .tj-btn-primary { flex: 0 0 auto; }.tj-ai-coach-message { padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--tj-amber) 38%, var(--tj-border)); border-radius: 9px; background: color-mix(in srgb, var(--tj-amber) 7%, var(--tj-panel-alt)); }.tj-ai-coach-report { display: grid; gap: 9px; padding: 13px; border: 1px solid color-mix(in srgb, var(--tj-green) 35%, var(--tj-border)); border-radius: 11px; background: var(--tj-panel-alt); }.tj-ai-coach-report-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }.tj-ai-coach-report p { margin: 0; white-space: pre-wrap; color: var(--tj-text); font-size: .8125rem; line-height: 1.55; }
 
 /* analytics */
 .tj-perf-list { display: flex; flex-direction: column; gap: 10px; }
@@ -4696,6 +4811,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-markup-chart-card { min-height: 54px; display: flex; align-items: center; gap: 8px; padding: 6px; border: 1px solid var(--tj-border); border-radius: 9px; background: var(--tj-panel-alt); color: var(--tj-text); text-align: left; cursor: zoom-in; }
 .tj-markup-chart-card img { width: 52px; height: 38px; flex: 0 0 52px; object-fit: contain; border-radius: 6px; background: var(--tj-panel); }
 .tj-markup-chart-card strong { overflow: hidden; font-size: 0.75rem; text-overflow: ellipsis; white-space: nowrap; }
+.tj-markup-chart-card small { color: var(--tj-muted); font-size: 0.65rem; white-space: nowrap; }
 .tj-markup-chart-card:hover, .tj-markup-chart-card-selected { border-color: var(--tj-green); background: color-mix(in srgb, var(--tj-green) 15%, var(--tj-panel-alt)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tj-green) 20%, transparent); }
 .tj-markup-chart-empty { min-height: 54px; display: flex; align-items: center; padding: 8px 0; }
 
@@ -5401,6 +5517,8 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 @media (max-width: 900px) { .tj-finance-layout { grid-template-columns: 1fr; }.tj-finance-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tj-finance-hero aside { width: 43%; }.tj-finance-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tj-finance-saving { grid-template-columns: 1fr 1fr; }.tj-finance-saving-transfer { justify-self: start; text-align: left; } }
 @media (max-width: 580px) { .tj-finance-hero { display: grid; padding: 15px; }.tj-finance-hero aside { width: auto; }.tj-finance-summary { grid-template-columns: 1fr; }.tj-finance-form { grid-template-columns: 1fr; }.tj-finance-saving { grid-template-columns: 1fr; gap: 10px; }.tj-finance-movement { grid-template-columns: auto minmax(0, 1fr) auto; }.tj-finance-delete { grid-column: 3; }.tj-finance-movement > b { grid-column: 2; }.tj-finance-movement > div { grid-column: 2; }.tj-finance-movement > i { grid-row: span 2; }.tj-tradelog-actions { right: 14px; bottom: 14px; }.tj-import-modal { width: min(100%, calc(100vw - 24px)); }.tj-import-preview > div { font-size: .74rem; } }
 .tj-reference-trade-meta, .tj-reference-trade-meta span:first-child { color: var(--tj-text); }
+.tj-settings-linked-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 480px) { .tj-settings-linked-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 `;
 
 /* =============================== AUTH ROOT =============================== */

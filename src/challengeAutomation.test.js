@@ -26,6 +26,10 @@ test('Mode 2 steps back on any two losses, including tiny ones',()=>{
   assert.equal(state.activeLevel,3);assert.equal(state.lossStreak,0);
   assert.equal(replay(start('streak',4),[row(1,-100)]).activeLevel,4);
 });
+test('Mode 2 uses the 3.1R target while retaining its two-loss step-back rule',()=>{
+  assert.equal(replay(start('streak'),[row(1,6)]).activeLevel,1);
+  assert.equal(replay(start('streak'),[row(1,13.95)]).activeLevel,2);
+});
 test('breakeven preserves streak; a win resets it',()=>{
   assert.equal(replay(start('streak',4),[row(1,-1),row(2,0),row(3,-1)]).activeLevel,3);
   const state=replay(start('streak',4),[row(1,-1),row(2,.1),row(3,-1)]);

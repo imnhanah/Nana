@@ -12,12 +12,34 @@ export const CHALLENGE_PLAN = (() => {
     return row;
   });
 })();
+// Mode 2 keeps the exact risk, stop-loss and lot-size ladder above. Only its
+// target is 3.1R, so each level's displayed balance compounds from the real
+// 3.1R profit instead of the original 20-pip / 1.33R target.
+export const STREAK_CHALLENGE_PLAN = (() => {
+  let balance = 20;
+  return CHALLENGE_PLAN.map((row) => {
+    const profit = Math.round(row.risk * 3.1 * 100) / 100;
+    const start = balance;
+    const end = Math.round((start + profit) * 100) / 100;
+    balance = end;
+    return {
+      ...row,
+      start,
+      profit,
+      end,
+      tp: Math.round(row.sl * 3.1 * 100) / 100,
+      riskPct: row.risk / start * 100,
+      profitPct: profit / start * 100,
+    };
+  });
+})();
 export const emptyChallenge = () => ({ activeLevel: 1, statuses: {}, notes: {} });
 export const isChallengeEnabled = account => !!account?.challengeEnabled && Number.isFinite(Number(account.challengeStartingBalance)) && Number(account.challengeStartingBalance) > 0;
-export function buildChallengePlan(startingBalance) {
+export function buildChallengePlan(startingBalance, mode = 'risk') {
   const start = Number(startingBalance);
   if (!Number.isFinite(start) || start <= 0) return [];
-  return CHALLENGE_PLAN.map(row => ({ ...row }));
+  const plan = mode === 'streak' ? STREAK_CHALLENGE_PLAN : CHALLENGE_PLAN;
+  return plan.map(row => ({ ...row }));
 }
 export function changeChallengeStatus(state, level, status) {
   if (!Number.isInteger(level) || level < 1 || level > 30 || !['', 'Pass', 'In progress', 'Step back'].includes(status)) throw new Error('Invalid challenge status');
