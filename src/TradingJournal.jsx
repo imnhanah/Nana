@@ -3299,7 +3299,10 @@ function TradingJournalApp({ user, onLogout }) {
   const [newTradeDraft, setNewTradeDraft] = useState(null);
   const [editingMarkup, setEditingMarkup] = useState(null);
   const [imageViewerSrc, setImageViewerSrc] = useState(null);
-  const [monthCursor, setMonthCursor] = useState(new Date());
+  const [monthCursor, setMonthCursor] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
   const [typeTags, setTypeTags] = useState([]);
   const [mistakeTags, setMistakeTags] = useState([]);
   const [confluenceSessions, setConfluenceSessions] = useState([]);
@@ -3485,9 +3488,6 @@ function TradingJournalApp({ user, onLogout }) {
     if (account && account.id === activeId) rememberActiveAccount(user.id, account.id);
   }, [user.id, account?.id, activeId]);
   useEffect(() => { rememberActivePage(user.id, page); }, [user.id, page]);
-  useEffect(() => {
-    if (account?.trades.some(t => t.context?.startsWith("Synthetic demo trade."))) setMonthCursor(new Date(2025, 11, 1));
-  }, [account?.id]);
   useEffect(() => { if (page === 'challenge' && !isChallengeEnabled(account)) setPage('dashboard'); }, [page, account]);
   useEffect(() => { if (page === 'finance' && !account?.finance?.enabled) setPage('dashboard'); }, [page, account]);
   const stats = useMemo(() => (account ? computeStats(account.trades, account.breakevenCap) : null), [account]);
