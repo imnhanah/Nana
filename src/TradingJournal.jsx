@@ -233,19 +233,22 @@ function accountGuardrails(account, trades, now = new Date()) {
   const yearlyPnl = total(trades.filter((trade) => trade.date?.slice(0, 4) === yearKey));
   const dailyPnl = total(trades.filter((trade) => trade.date === dateKey));
   const balance = Number(account.balance) || 0;
+  // Loss limits move with live trading balance: starting balance, realised
+  // trade P&L, deposits, withdrawals, and transfers affecting trading capital.
+  const guardrailBalance = Math.max(0, Number(financeTotals(account).tradingBalance) || 0);
   const monthlyGoalPct = Math.max(0, Number(account.monthlyGoalPct) || 0);
   const yearlyGoalPct = Math.max(0, Number(account.yearlyGoalPct) || 0);
   const dailyLossLimitPct = Math.max(0, Number(account.dailyLossLimitPct) || 0);
   const monthlyLossLimitPct = Math.max(0, Number(account.monthlyLossLimitPct) || 0);
   const monthlyGoal = balance * monthlyGoalPct / 100;
   const yearlyGoal = balance * yearlyGoalPct / 100;
-  const dailyLossCap = balance * dailyLossLimitPct / 100;
-  const monthlyLossCap = balance * monthlyLossLimitPct / 100;
+  const dailyLossCap = guardrailBalance * dailyLossLimitPct / 100;
+  const monthlyLossCap = guardrailBalance * monthlyLossLimitPct / 100;
   const dailyLossHit = dailyLossCap > 0 && dailyPnl <= -dailyLossCap;
   const monthlyLossHit = monthlyLossCap > 0 && monthlyPnl <= -monthlyLossCap;
   return {
     enabled: [monthlyGoalPct, yearlyGoalPct, dailyLossLimitPct, monthlyLossLimitPct].some((value) => value > 0),
-    monthlyPnl, yearlyPnl, dailyPnl, monthlyGoal, yearlyGoal, dailyLossCap, monthlyLossCap,
+    monthlyPnl, yearlyPnl, dailyPnl, monthlyGoal, yearlyGoal, dailyLossCap, monthlyLossCap, guardrailBalance,
     monthlyGoalPct, yearlyGoalPct, dailyLossLimitPct, monthlyLossLimitPct,
     dailyLossHit, monthlyLossHit, tradeEntryLocked: dailyLossHit || monthlyLossHit,
   };
@@ -792,8 +795,9 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, onImport, ch
   const accountBase = Number(balance) || 0;
   const monthlyTarget = accountBase * (Number(monthlyGoalPct) || 0) / 100;
   const yearlyTarget = accountBase * (Number(yearlyGoalPct) || 0) / 100;
-  const dailyLimit = accountBase * (Number(dailyLossLimitPct) || 0) / 100;
-  const monthlyLimit = accountBase * (Number(monthlyLossLimitPct) || 0) / 100;
+  const guardrailBase = Math.max(0, Number(financeTotals(account).tradingBalance) || accountBase);
+  const dailyLimit = guardrailBase * (Number(dailyLossLimitPct) || 0) / 100;
+  const monthlyLimit = guardrailBase * (Number(monthlyLossLimitPct) || 0) / 100;
   const saveSettings = async () => {
     if (!name.trim() || !baseCurrency || savingSettings) return;
     setSavingSettings(true);
@@ -819,7 +823,7 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, onImport, ch
         <div className="tj-grid2"><AccountSettingsNumberField label="Monthly Growth Goal (%)" value={monthlyGoalPct} onChange={setMonthlyGoalPct} placeholder="e.g. 15" hint={monthlyGoalPct ? `Current target: ${fmtMoneyShort(monthlyTarget, baseCurrency)} for a +${Number(monthlyGoalPct).toFixed(2)}% month.` : "Optional"} /><AccountSettingsNumberField label="Yearly Growth Goal (%)" value={yearlyGoalPct} onChange={setYearlyGoalPct} placeholder="e.g. 50" hint={yearlyGoalPct ? `Current target: ${fmtMoneyShort(yearlyTarget, baseCurrency)} for a +${Number(yearlyGoalPct).toFixed(2)}% year.` : "Optional"} /></div><div className="tj-settings-info-grid"><div><small>WHAT THIS POWERS</small><span>Monthly pacing and yearly runway appear throughout analytics.</span></div><div><small>HOW TO USE BOTH</small><span>Use the monthly goal for short-cycle focus and the yearly goal for long-term growth.</span></div></div>
       </AccountSettingsSection>
       <AccountSettingsSection title="Risk Guardrails" icon={<ShieldCheck size={15}/>} note="Optional loss caps that pause trade execution once the limit is hit." status={guardrailsEnabled ? "Active" : "Off"} isOpen={open.guardrails} onToggle={() => toggle("guardrails")}>
-        <div className="tj-grid2"><AccountSettingsNumberField label="Daily Loss Limit (%)" value={dailyLossLimitPct} onChange={setDailyLossLimitPct} placeholder="e.g. 2" hint={dailyLossLimitPct ? `Locks workflow after ${fmtMoneyShort(-dailyLimit, baseCurrency)} net on the day.` : "Optional"} /><AccountSettingsNumberField label="Monthly Loss Limit (%)" value={monthlyLossLimitPct} onChange={setMonthlyLossLimitPct} placeholder="e.g. 15" hint={monthlyLossLimitPct ? `Locks workflow after ${fmtMoneyShort(-monthlyLimit, baseCurrency)} net for the month.` : "Optional"} /></div><div className="tj-settings-reset-grid"><div><small>DAILY RESET</small><strong>Next day</strong><span>Stops revenge-trading after a bad session.</span></div><div><small>MONTHLY RESET</small><strong>Next month</strong><span>Caps deeper drawdowns before they compound.</span></div></div><div className="tj-settings-info-block"><small>WHAT THIS LOCKS</small><span>Once a loss limit is reached, calendar drill-down and new trade logging pause until the reset window opens. Markups remain available.</span></div>
+        <div className="tj-grid2"><AccountSettingsNumberField label="Daily Loss Limit (%)" value={dailyLossLimitPct} onChange={setDailyLossLimitPct} placeholder="e.g. 2" hint={dailyLossLimitPct ? `Locks workflow after ${fmtMoneyShort(-dailyLimit, baseCurrency)} net on the day, based on ${fmtMoneyShort(guardrailBase, baseCurrency)} current balance.` : "Optional"} /><AccountSettingsNumberField label="Monthly Loss Limit (%)" value={monthlyLossLimitPct} onChange={setMonthlyLossLimitPct} placeholder="e.g. 15" hint={monthlyLossLimitPct ? `Locks workflow after ${fmtMoneyShort(-monthlyLimit, baseCurrency)} net for the month, based on ${fmtMoneyShort(guardrailBase, baseCurrency)} current balance.` : "Optional"} /></div><div className="tj-settings-reset-grid"><div><small>DAILY RESET</small><strong>Next day</strong><span>Stops revenge-trading after a bad session.</span></div><div><small>MONTHLY RESET</small><strong>Next month</strong><span>Caps deeper drawdowns before they compound.</span></div></div><div className="tj-settings-info-block"><small>WHAT THIS LOCKS</small><span>Loss limits recalculate from current trading balance. Once reached, calendar drill-down and new trade logging pause until the reset window opens. Markups remain available.</span></div>
       </AccountSettingsSection>
       <AccountSettingsSection title="Challenge" icon={<Trophy size={15}/>} note="Build a compounding plan from your own starting amount." status={challengeEnabled && Number(challengeStartingBalance) > 0 ? "On" : "Off"} isOpen={open.challenge} onToggle={() => toggle("challenge")}>
         <Field label={`Challenge starting balance (${baseCurrency || "USD"})`}><input className="tj-input" type="number" min="0.01" step="any" placeholder="Enter a starting amount" value={challengeStartingBalance} onChange={event => { setChallengeStartingBalance(event.target.value); if (!(Number(event.target.value) > 0)) setChallengeEnabled(false); }}/></Field>
@@ -1673,12 +1677,12 @@ function AccountGuardrailsPanel({ account, guardrails, stats, periodDate = new D
   const monthGoalProgress = guardrails.monthlyGoal ? Math.max(0, guardrails.monthlyPnl) / guardrails.monthlyGoal * 100 : 0;
   const yearGoalProgress = guardrails.yearlyGoal ? Math.max(0, guardrails.yearlyPnl) / guardrails.yearlyGoal * 100 : 0;
   return <Card className="tj-panel tj-guardrails">
-    <div className="tj-guardrails-head"><div><span>ACCOUNT GUARDRAILS</span><strong>Targets and limits are active</strong><p>Tilted progress tiles keep your goal pace, drawdown buffer, and live percentages readable at a glance.</p></div><span className={`tj-pill ${guardrails.tradeEntryLocked ? "tj-pill-red" : "tj-pill-green"}`}>{guardrails.tradeEntryLocked ? "Paused" : "Live"}</span></div>
+    <div className="tj-guardrails-head"><div><span>ACCOUNT GUARDRAILS</span><strong>Targets and limits are active</strong><p>Loss caps use the live trading balance of {fmtMoney(guardrails.guardrailBalance)}, rather than the original starting balance.</p></div><span className={`tj-pill ${guardrails.tradeEntryLocked ? "tj-pill-red" : "tj-pill-green"}`}>{guardrails.tradeEntryLocked ? "Paused" : "Live"}</span></div>
     <div className="tj-guardrail-grid">
       {guardrails.monthlyGoalPct > 0 && <GuardrailMetric label={`${MONTH_NAMES[month].toUpperCase()} ${year} GOAL`} value={guardrails.monthlyPnl} target={guardrails.monthlyGoal} meterLabel="OF TARGET" status={monthGoalProgress >= 100 ? "CLEARED" : "BUILDING"} note={`${fmtMoney(Math.max(0, guardrails.monthlyGoal - guardrails.monthlyPnl))} left this month`} footerLeft={`${monthStats.total} trade${monthStats.total === 1 ? "" : "s"} this month`} footerRight="Month pace" />}
       {guardrails.yearlyGoalPct > 0 && <GuardrailMetric tone="blue" label={`${year} GOAL`} value={guardrails.yearlyPnl} target={guardrails.yearlyGoal} meterLabel="YEAR PACE" status={yearGoalProgress >= 100 ? "CLEARED" : "BUILDING"} note={yearGoalProgress >= 100 ? `${fmtMoney(guardrails.yearlyPnl - guardrails.yearlyGoal)} above target` : `${fmtMoney(guardrails.yearlyGoal - guardrails.yearlyPnl)} left this year`} footerLeft={`${stats.total} trade${stats.total === 1 ? "" : "s"} this year`} footerRight={yearGoalProgress >= 100 ? "Year cleared" : "Year pace"} />}
-      {guardrails.dailyLossLimitPct > 0 && <GuardrailMetric loss label="DAILY LOSS CAP" value={Math.max(0, -guardrails.dailyPnl)} target={guardrails.dailyLossCap} meterLabel="USED TODAY" status={guardrails.dailyLossHit ? "PAUSED" : "OPEN"} note={`${fmtMoney(Math.max(0, guardrails.dailyLossCap + Math.min(0, guardrails.dailyPnl)))} buffer left today`} footerLeft={`${todayTrades} trade${todayTrades === 1 ? "" : "s"} today`} footerRight="Daily buffer" hit={guardrails.dailyLossHit} />}
-      {guardrails.monthlyLossLimitPct > 0 && <GuardrailMetric loss label="MONTHLY LOSS CAP" value={Math.max(0, -guardrails.monthlyPnl)} target={guardrails.monthlyLossCap} meterLabel="USED THIS MONTH" status={guardrails.monthlyLossHit ? "PAUSED" : "OPEN"} note={`${fmtMoney(Math.max(0, guardrails.monthlyLossCap + Math.min(0, guardrails.monthlyPnl)))} buffer left this month`} footerLeft={`${monthStats.total} trade${monthStats.total === 1 ? "" : "s"} this month`} footerRight="Monthly buffer" hit={guardrails.monthlyLossHit} />}
+      {guardrails.dailyLossLimitPct > 0 && <GuardrailMetric loss label="DAILY LOSS CAP" value={Math.max(0, -guardrails.dailyPnl)} target={guardrails.dailyLossCap} meterLabel="USED TODAY" status={guardrails.dailyLossHit ? "PAUSED" : "OPEN"} note={`${fmtMoney(Math.max(0, guardrails.dailyLossCap + Math.min(0, guardrails.dailyPnl)))} buffer left today`} footerLeft={`${todayTrades} trade${todayTrades === 1 ? "" : "s"} today`} footerRight="Live-balance cap" hit={guardrails.dailyLossHit} />}
+      {guardrails.monthlyLossLimitPct > 0 && <GuardrailMetric loss label="MONTHLY LOSS CAP" value={Math.max(0, -guardrails.monthlyPnl)} target={guardrails.monthlyLossCap} meterLabel="USED THIS MONTH" status={guardrails.monthlyLossHit ? "PAUSED" : "OPEN"} note={`${fmtMoney(Math.max(0, guardrails.monthlyLossCap + Math.min(0, guardrails.monthlyPnl)))} buffer left this month`} footerLeft={`${monthStats.total} trade${monthStats.total === 1 ? "" : "s"} this month`} footerRight="Live-balance cap" hit={guardrails.monthlyLossHit} />}
     </div>
     <div className="tj-guardrails-footer">When a loss limit is hit, trade logging pauses until the next reset period while markups stay open for preparation and review.</div>
   </Card>;
@@ -1766,7 +1770,7 @@ function ReferenceDashboardPage({ account, stats, monthCursor, setMonthCursor, o
 
 const importNumber = value => Number(String(value ?? "").replace(/[^0-9.-]/g, "")) || 0;
 const importDate = value => { const raw=String(value||"").trim(); if (!raw) return ""; const match=raw.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})|(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/); if(!match)return ""; const [,y,m,d,a,b,c]=match; return y ? `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}` : `${c}-${String(b).padStart(2,"0")}-${String(a).padStart(2,"0")}`; };
-const importTime = value => { const match=String(value||"").match(/(\d{1,2}):(\d{2})/); return match ? `${String(match[1]).padStart(2,"0")}:${match[2]}` : ""; };
+const importTime = value => { const match=String(value||"").match(/(\d{1,2}):(\d{2})/); if (!match) return ""; let hours=Number(match[1]); const suffix=String(value||"").match(/\b(am|pm)\b/i)?.[1]?.toLowerCase(); if (suffix === "pm" && hours < 12) hours += 12; if (suffix === "am" && hours === 12) hours = 0; return `${String(hours).padStart(2,"0")}:${match[2]}`; };
 const splitImportLine = (line, delimiter) => { const cells = []; let value = ""; let quoted = false; for (let index = 0; index < line.length; index += 1) { const character = line[index]; if (character === '"') { if (quoted && line[index + 1] === '"') { value += '"'; index += 1; } else quoted = !quoted; } else if (character === delimiter && !quoted) { cells.push(value.trim()); value = ""; } else value += character; } cells.push(value.trim()); return cells; };
 const parseBrokerTrades = (text) => {
   const lines = String(text || "").split(/\r?\n/).filter((line) => line.trim());
@@ -1785,13 +1789,25 @@ const parseBrokerTrades = (text) => {
     return header;
   });
   const valueAt = (row, ...keys) => { const index = headers.findIndex((header) => keys.some((key) => header === key || header.includes(key))); return index < 0 ? "" : row[index]; };
+  const hasOpeningTimestamp = headers.some((header) => ["opentime", "openingtime", "entrytime", "opendate", "openingdate", "entrydate", "openingtimeutc", "opentimeutc"].some((key) => header === key || header.includes(key)));
+  const isCTraderHistory = headers.some((header) => header === "openingdirection") && headers.some((header) => header === "closingtime" || header.includes("closingtime"));
   return rows.map((row) => {
     const side = String(valueAt(row, "type", "side", "tradetype", "direction")).toUpperCase();
     const entryMarker = String(valueAt(row, "entry", "direction")).trim().toUpperCase();
     if (!/(BUY|SELL)/.test(side)) return null; // skips broker balance, credit, and fee rows
     if (["IN", "OPEN"].includes(entryMarker)) return null; // MT5 deal reports list opening and closing legs separately
-    const opened = valueAt(row, "opentime", "opendate", "entrytime", "entrydate", "time");
-    const closed = valueAt(row, "closetime", "closedate", "exittime", "exitdate");
+    // cTrader uses “Opening Time” and “Closing Time”, while exports from
+    // other brokers commonly use “Open Time” and “Close Time”.
+    // Some cTrader exports provide one timestamp column; others split the
+    // date and time into two columns. Join either version before normalising.
+    const timestampAt = (dateKeys, timeKeys) => {
+      const date = valueAt(row, ...dateKeys);
+      const time = valueAt(row, ...timeKeys);
+      if (importDate(time)) return time;
+      return [date, time].filter(Boolean).join(" ");
+    };
+    const opened = hasOpeningTimestamp ? timestampAt(["opendate", "openingdate", "entrydate", "openingdatetime"], ["opentime", "openingtime", "entrytime", "openingtimeutc", "opentimeutc", "time"]) : "";
+    const closed = timestampAt(["closedate", "closingdate", "exitdate", "closingdatetime", "closedatetime"], ["closetime", "closingtime", "closedtime", "exittime", "closingtimeutc", "closetimeutc", "closetimestamp"]);
     const rawCommission = importNumber(valueAt(row, "commission"));
     const rawSwap = importNumber(valueAt(row, "swap"));
     // cTrader's closed-position CSV names this column "Net $" (normalised to
@@ -1806,7 +1822,12 @@ const parseBrokerTrades = (text) => {
     // closing timestamp and net result together identify a closed position well
     // enough to keep repeated uploads from creating duplicates.
     const importKey = `ctrader:${asset}:${direction}:${closed || opened}:${pnl}`;
-    return { id: `import-${uid()}`, importKey, date: importDate(opened || closed), time: importTime(opened || closed), closeDate: importDate(closed), closeTime: importTime(closed), asset, direction, grossPnl: hasNetColumn ? pnl + Math.abs(rawCommission) + Math.abs(rawSwap) : rawProfit, commission: Math.abs(rawCommission), swap: Math.abs(rawSwap), pnl, rr: 0, session: "", entrySession: "", rating: 0, types: [], confluence: [], mistakes: [], screenshots: [], context: `Imported cTrader position #${importKey}` };
+    const legacyImportKey = `ctrader:${asset}:${direction}:${opened || closed}:${pnl}`;
+    // This cTrader statement has Closing Time but no Opening Time column.
+    // Use the closing day for journal grouping, but never pretend it was the
+    // trade's entry time.
+    const openingTimestampMissing = isCTraderHistory && !opened && !!closed;
+    return { id: `import-${uid()}`, importKey, legacyImportKey, date: importDate(opened || closed), time: importTime(opened), closeDate: importDate(closed), closeTime: importTime(closed), openingTimestampMissing, asset, direction, grossPnl: hasNetColumn ? pnl + Math.abs(rawCommission) + Math.abs(rawSwap) : rawProfit, commission: Math.abs(rawCommission), swap: Math.abs(rawSwap), pnl, rr: 0, session: "", entrySession: "", rating: 0, types: [], confluence: [], mistakes: [], screenshots: [], context: `Imported cTrader position #${importKey}${openingTimestampMissing ? " [close-only]" : ""}` };
   }).filter((trade) => trade?.date && trade.asset && trade.asset.length <= 32 && /[a-z]/i.test(trade.asset));
 };
 
@@ -2015,7 +2036,7 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
                       <div className="tj-tlog-asset">{t.asset || "No instrument"}</div>
                     </div>
                     <span className={`tj-dirpill-sm tj-reference-trade-direction ${t.direction === "BUY" ? "tj-green" : "tj-red"}`}>{t.direction}</span>
-                    <div className="tj-reference-trade-meta"><span>Opened: {new Date(t.date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })} · {formatTime(t.time)}</span><span>Closed: {t.closeDate ? `${t.closeDate} · ${t.closeTime || "Time not logged"}` : "Not logged"}</span></div>
+                    <div className="tj-reference-trade-meta"><span>Opened: {/Imported cTrader position #.*\[close-only\]/i.test(t.context || "") ? "Not included in cTrader report" : `${new Date(t.date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })} · ${formatTime(t.time)}`}</span><span>Closed: {t.closeDate ? `${new Date(t.closeDate + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })} · ${t.closeTime ? formatTime(t.closeTime) : "Time not logged"}` : "Not logged"}</span></div>
                     <span className="tj-reference-trade-session">{t.entrySession || t.session || "No session"}</span>
                   </div>
                   <div className="tj-reference-trade-right" onClick={(e) => e.stopPropagation()}>
@@ -3570,16 +3591,45 @@ function TradingJournalApp({ user, onLogout }) {
       const cTraderKey = trade.context?.match(/Imported cTrader position #(ctrader:\S+)/)?.[1];
       return cTraderKey || [trade.date, trade.time || "", trade.closeDate || "", trade.closeTime || "", trade.asset, trade.direction, Number(trade.pnl || 0).toFixed(2)].join("|");
     };
-    const seen = new Set((targetAccount.trades || []).map(tradeKey));
+    const existingByKey = new Map((targetAccount.trades || []).map((trade) => [tradeKey(trade), trade]));
+    const seen = new Set(existingByKey.keys());
+    const closeTimingUpdates = [];
     const unique = trades.filter((trade) => {
       const key = tradeKey(trade);
+      // Older cTrader imports used their opening timestamp in the import key.
+      // Fall back to the immutable position details so re-uploading repairs
+      // their close timing instead of adding another trade.
+      const cTraderMatch = trade.importKey?.startsWith("ctrader:")
+        ? (targetAccount.trades || []).find((item) => /Imported cTrader position #/i.test(item.context || "")
+          && item.asset === trade.asset && item.direction === trade.direction
+          && item.date === trade.date && (trade.openingTimestampMissing
+            ? (item.closeDate === trade.closeDate && ((item.closeTime || "") === (trade.closeTime || "") || (item.time || "") === (trade.closeTime || "")))
+            : (item.time || "") === (trade.time || ""))
+          && Number(item.pnl || 0).toFixed(2) === Number(trade.pnl || 0).toFixed(2))
+        : null;
+      const existing = existingByKey.get(key) || (trade.legacyImportKey ? existingByKey.get(trade.legacyImportKey) : null) || cTraderMatch;
+      if (existing) {
+        // Re-uploading a broker report also repairs old imports made before
+        // close timestamps were mapped correctly. It never creates a duplicate.
+        const needsCloseTiming = trade.closeDate && (existing.closeDate !== trade.closeDate || existing.closeTime !== trade.closeTime);
+        const needsOpeningRepair = trade.openingTimestampMissing && ((existing.time || "") || !/\[close-only\]/i.test(existing.context || ""));
+        if (needsCloseTiming || needsOpeningRepair) {
+          closeTimingUpdates.push({ ...existing, time: trade.openingTimestampMissing ? "" : existing.time, closeDate: trade.closeDate, closeTime: trade.closeTime || "", context: trade.openingTimestampMissing ? trade.context : existing.context });
+        }
+        return false;
+      }
       if (seen.has(key)) return false;
       seen.add(key); return true;
     });
-    if (!unique.length && !cashMovements.length) { showInfo("Those trades are already in this account."); return false; }
+    if (!unique.length && !cashMovements.length && !closeTimingUpdates.length) { showInfo("Those trades are already in this account."); return false; }
     const imported = [];
-    const total = unique.length + cashMovements.length;
+    const total = unique.length + cashMovements.length + closeTimingUpdates.length;
     let completed = 0;
+    for (const trade of closeTimingUpdates) {
+      const result = await updateTrade(trade.id, { ...trade, userId: user.id, accountId: targetAccount.id });
+      if (result.error) { showError(result.error); return false; }
+      completed += 1; onProgress?.(Math.round(completed / total * 100));
+    }
     for (const trade of unique) {
       const result = await createTrade(user.id, targetAccount.id, trade);
       if (result.error) { showError(result.error); return false; }
@@ -3617,9 +3667,9 @@ function TradingJournalApp({ user, onLogout }) {
       const result = await updateAccount(targetAccount.id, nextAccount);
       if (result.error) { showError(result.error); return false; }
     }
-    setAccounts((items) => items.map((item) => item.id === targetAccount.id ? { ...nextAccount, trades: [...(item.trades || []), ...imported], financeMovements: [...importedCash, ...relabelledCash, ...(item.financeMovements || []).filter((movement) => !relabelledCash.some((updated) => updated.id === movement.id))] } : item));
+    setAccounts((items) => items.map((item) => item.id === targetAccount.id ? { ...nextAccount, trades: [...(item.trades || []).map((trade) => closeTimingUpdates.find((updated) => updated.id === trade.id) || trade), ...imported], financeMovements: [...importedCash, ...relabelledCash, ...(item.financeMovements || []).filter((movement) => !relabelledCash.some((updated) => updated.id === movement.id))] } : item));
     for (const instrument of [...new Set(imported.map((trade) => trade.asset))]) await persistCustomInstrument(instrument);
-    showInfo(`${imported.length} trade${imported.length === 1 ? "" : "s"}${importedCash.length ? ` and ${importedCash.length} cash movement${importedCash.length === 1 ? "" : "s"}` : ""}${importedDepositBase ? `; ${fmtMoney(importedDepositBase)} added to the account base` : ""}${unique.length !== trades.length ? `; ${trades.length - unique.length} duplicate${trades.length - unique.length === 1 ? " was" : "s were"} skipped` : ""}.`);
+    showInfo(`${imported.length} trade${imported.length === 1 ? "" : "s"}${importedCash.length ? ` and ${importedCash.length} cash movement${importedCash.length === 1 ? "" : "s"}` : ""}${closeTimingUpdates.length ? `; close date/time repaired on ${closeTimingUpdates.length} existing trade${closeTimingUpdates.length === 1 ? "" : "s"}` : ""}${importedDepositBase ? `; ${fmtMoney(importedDepositBase)} added to the account base` : ""}${unique.length !== trades.length ? `; ${trades.length - unique.length} duplicate${trades.length - unique.length === 1 ? " was" : "s were"} skipped` : ""}.`);
     return true;
   };
 
@@ -5350,6 +5400,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-list-pagination { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 9px; padding-top: 4px; color: var(--tj-muted); font-size: .8125rem; }.tj-list-pagination > span, .tj-pagination-arrows > span { font-variant-numeric: tabular-nums; }.tj-pagination-arrows { display: inline-flex; align-items: center; gap: 7px; }.tj-pagination-arrows > span { min-width: 42px; text-align: center; }
 @media (max-width: 900px) { .tj-finance-layout { grid-template-columns: 1fr; }.tj-finance-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tj-finance-hero aside { width: 43%; }.tj-finance-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tj-finance-saving { grid-template-columns: 1fr 1fr; }.tj-finance-saving-transfer { justify-self: start; text-align: left; } }
 @media (max-width: 580px) { .tj-finance-hero { display: grid; padding: 15px; }.tj-finance-hero aside { width: auto; }.tj-finance-summary { grid-template-columns: 1fr; }.tj-finance-form { grid-template-columns: 1fr; }.tj-finance-saving { grid-template-columns: 1fr; gap: 10px; }.tj-finance-movement { grid-template-columns: auto minmax(0, 1fr) auto; }.tj-finance-delete { grid-column: 3; }.tj-finance-movement > b { grid-column: 2; }.tj-finance-movement > div { grid-column: 2; }.tj-finance-movement > i { grid-row: span 2; }.tj-tradelog-actions { right: 14px; bottom: 14px; }.tj-import-modal { width: min(100%, calc(100vw - 24px)); }.tj-import-preview > div { font-size: .74rem; } }
+.tj-reference-trade-meta, .tj-reference-trade-meta span:first-child { color: var(--tj-text); }
 `;
 
 /* =============================== AUTH ROOT =============================== */

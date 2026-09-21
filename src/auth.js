@@ -159,7 +159,13 @@ export async function updateProfile({ displayName, avatarUrl, sessionTimeoutMinu
 
 export async function getSession() {
   try {
-    const { data, error } = await supabase.auth.getSession();
+    // Never keep the whole site on the splash screen if a browser restores a
+    // stale session request. A visitor can still reach the landing/sign-in
+    // screen and retry normally once connectivity is available.
+    const timeout = new Promise((resolve) => {
+      window.setTimeout(() => resolve({ data: { session: null }, error: new Error("Session check timed out") }), 8000);
+    });
+    const { data, error } = await Promise.race([supabase.auth.getSession(), timeout]);
     if (error) return null;
     return data.session;
   } catch (e) {
