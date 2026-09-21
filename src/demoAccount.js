@@ -9,7 +9,7 @@ async function stableId(value) {
   return `${hex.slice(0,8)}-${hex.slice(8,12)}-5${hex.slice(13,16)}-a${hex.slice(17,20)}-${hex.slice(20)}`;
 }
 async function seed(user) {
-  if (user.user_metadata?.demo_2025_version === 2) return;
+  if (user.user_metadata?.demo_history_version === 3) return;
   const id = await stableId(user.id + ":demo-2025-v1");
   const result = await createAccount(user.id, {id, name:"Demo", balance:1000, baseCurrency:"USD", positionSizeEnabled:true, defaultRiskPct:1});
   if (result.error) throw new Error(result.error);
@@ -29,7 +29,8 @@ async function seed(user) {
     psychology:"Stayed neutral and accepted the planned outcome.", lessons:t.pnl > 0 ? "Let the planned target play out." : t.pnl === 0 ? "A breakeven exit preserved capital without a profit or loss." : "A controlled loss is part of the trading sample.",
     action_items:"Recalculate risk from updated equity before the next trade.", notes:"Automatically written synthetic demo review.", screenshots:[]
   })));
-  // Version 2 intentionally replaces the requested generated demo history in place.
+  // Version 3 keeps the prior synthetic history and appends the 70 requested
+  // January–September 2026 trades. Stable IDs prevent duplicate records.
   // Stable IDs keep retries from duplicating trades or reviews; other accounts are untouched.
   const batches = [["trades", rows], ["trade_reviews", reviews], ["period_reviews", await Promise.all(history.periods.map(async p => ({
     id:await stableId(id + ":" + p.type + ":" + p.key), user_id:user.id, account_id:id, period_type:p.type, period_key:p.key, content:p.content, completed:true
@@ -38,7 +39,7 @@ async function seed(user) {
     const {error} = await supabase.from(table).upsert(data, {onConflict:"id"});
     if (error) throw new Error("Demo setup: " + error.message);
   }
-  const {error} = await supabase.auth.updateUser({data:{demo_2025_seeded:true, demo_2025_version:2}});
+  const {error} = await supabase.auth.updateUser({data:{demo_2025_seeded:true, demo_2025_version:3, demo_history_version:3}});
   if (error) throw new Error(error.message);
 }
 export function ensureDemoAccount(user) {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readActiveAccount, rememberActiveAccount, resolveActiveAccount } from './activeAccount.js';
+import { readActiveAccount, rememberActiveAccount, readActivePage, rememberActivePage, resolveActiveAccount } from './activeAccount.js';
 
 const accounts = [{id:'first'}, {id:'second'}];
 function memoryStorage() {
@@ -17,7 +17,14 @@ test('last account survives a fresh load and another login', () => {
 test('preferences are isolated between users', () => {
   const storage = memoryStorage();
   rememberActiveAccount('user-a', 'second', storage);
+  rememberActivePage('user-a', 'tradelog', storage);
   assert.equal(readActiveAccount('user-b', storage), null);
+  assert.equal(readActivePage('user-b', storage), null);
+});
+test('last page survives a refresh and a later login', () => {
+  const storage = memoryStorage();
+  rememberActivePage('user-a', 'calendar', storage);
+  for (let login = 0; login < 2; login++) assert.equal(readActivePage('user-a', storage), 'calendar');
 });
 test('refresh preserves current selection and deleted/foreign IDs fall back safely', () => {
   assert.equal(resolveActiveAccount(accounts, 'second', 'first'), 'second');
@@ -28,5 +35,7 @@ test('refresh preserves current selection and deleted/foreign IDs fall back safe
 test('unavailable storage does not prevent using the journal', () => {
   const storage = {getItem() {throw Error('blocked');}, setItem() {throw Error('blocked');}};
   assert.equal(readActiveAccount('user-a', storage), null);
+  assert.equal(readActivePage('user-a', storage), null);
   assert.doesNotThrow(() => rememberActiveAccount('user-a', 'second', storage));
+  assert.doesNotThrow(() => rememberActivePage('user-a', 'tradelog', storage));
 });

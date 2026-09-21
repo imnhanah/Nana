@@ -10,11 +10,11 @@ import {
   ChevronLeft, ChevronRight, Trash2, Pencil, PanelLeftClose, PanelLeftOpen, Search, ChevronDown,
   ChevronUp, Trophy, Key, DollarSign, ShieldCheck, Satellite, Snowflake,
   ImagePlus, ClipboardCheck, ScanLine, CheckCircle2, SlidersHorizontal, ArrowDownUp,
-  AlertTriangle, Sun, Moon,
+  AlertTriangle, Sun, Moon, Landmark, ArrowDownToLine, ArrowUpFromLine, Repeat2, WalletCards,
 } from "lucide-react";
 import PublicSite from "./PublicSite";
 import { useSiteTheme } from './siteTheme';
-import { readActiveAccount, rememberActiveAccount, resolveActiveAccount } from './activeAccount';
+import { readActiveAccount, rememberActiveAccount, readActivePage, rememberActivePage, resolveActiveAccount } from './activeAccount';
 import JournalPreloader from './JournalPreloader';
 import { ThemedFields, ThemeSelect, ThemeTime, ThemeDate, ConfirmDeleteButton, ThemeInstrument } from './JournalControls';
 import JournalSignalHeader from './JournalSignalHeader';
@@ -35,7 +35,7 @@ import { ensureDemoAccount } from "./demoAccount";
 import {
   fetchAllUserData, createAccount, updateAccount, deleteAccount, resetAccountData,
   createTrade, updateTrade, deleteTrade, createRule, updateRule, deleteRule, setCheckin,
-  saveManagedLists, createMarkup, updateMarkup, deleteMarkup, saveTradeReview, savePeriodReview, hasMigratedLocalData, markLocalDataMigrated, importLegacyAccount,
+  saveManagedLists, createMarkup, updateMarkup, deleteMarkup, saveTradeReview, savePeriodReview, hasMigratedLocalData, markLocalDataMigrated, importLegacyAccount, saveFinanceSettings, createSavingsAccount, updateSavingsAccount, deleteSavingsAccount, createFinanceMovement, updateFinanceMovement, deleteFinanceMovement,
 } from "./db";
 
 /* ----------------------------- constants ----------------------------- */
@@ -62,6 +62,7 @@ const NAV = [
   { id: "analytics", label: "Analytics", icon: BarChart2 },
   { id: "calendar", label: "Calendar", icon: CalendarIcon },
   { id: "challenge", label: "Challenge", icon: Trophy },
+  { id: "finance", label: "Finance", icon: Landmark },
   { id: "psychology", label: "Psychology", icon: Brain },
   { id: "insights", label: "Insights", icon: Lightbulb },
   { id: "news", label: "News", icon: Newspaper },
@@ -103,6 +104,43 @@ const fmtMoneyShort = (n, currency = activeMoneyCurrency) => {
   return `${sign}${currencySymbol(currency)}${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 };
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const importedAccountBaseNote = "[Imported account base]";
+const financeTradingImpact = (movement) => movement.type === "deposit" ? (movement.note?.startsWith(importedAccountBaseNote) ? 0 : movement.amount) : movement.source === "trading" ? -movement.amount : 0;
+const financeSavingsBalance = (account, savingsId) => (account.financeMovements || []).reduce((sum, movement) => {
+  if (movement.savingsAccountId !== savingsId) return sum;
+  if (movement.type === "transfer") return sum + movement.amount;
+  if (movement.type === "withdrawal" && movement.source === "savings") return sum - movement.amount;
+  return sum;
+}, 0);
+const financeTotals = (account) => {
+  const movementTotal = (account.financeMovements || []).reduce((sum, movement) => sum + financeTradingImpact(movement), 0);
+  const tradeTotal = (account.trades || []).reduce((sum, trade) => sum + Number(trade.pnl || 0), 0);
+  const tradingBalance = Number(account.balance || 0) + tradeTotal + movementTotal;
+  const savings = (account.savingsAccounts || []).reduce((sum, item) => sum + financeSavingsBalance(account, item.id), 0);
+  const deposits = (account.financeMovements || []).filter((item) => item.type === "deposit").reduce((sum, item) => sum + item.amount, 0);
+  const withdrawals = (account.financeMovements || []).filter((item) => item.type === "withdrawal").reduce((sum, item) => sum + item.amount, 0);
+  return { tradingBalance, savings, totalCapital: tradingBalance + savings, deposits, withdrawals, movementTotal };
+};
+const financeProfitCycle = (account) => {
+  let running = Number(account.balance || 0);
+  let baseline = running;
+  let profit = 0;
+  const events = [...(account.trades || []).map((trade) => ({date:trade.date, kind:"trade", value:Number(trade.pnl || 0)})), ...(account.financeMovements || []).map((movement) => ({date:movement.date, kind:"cash", value:financeTradingImpact(movement), createdAt:movement.createdAt}))].sort((left, right) => String(left.date).localeCompare(String(right.date)) || ({trade:0,cash:1}[left.kind] - {trade:0,cash:1}[right.kind]) || String(left.createdAt || "").localeCompare(String(right.createdAt || "")));
+  events.forEach((event) => { running += event.value; if (event.kind === "trade") profit += event.value; else { baseline = running; profit = 0; } });
+  return { baseline, profit, availableCapital:running };
+};
+const reminderScheduleDue = (saving, movements, now = new Date()) => {
+  const interval = saving.interval || "Manual";
+  if (interval === "Manual" || now.getHours() < 12) return false;
+  const today = now.toISOString().slice(0, 10);
+  const transfers = (movements || []).filter((movement) => movement.type === "transfer" && movement.savingsAccountId === saving.id);
+  const startOfWeek = new Date(now); startOfWeek.setHours(0, 0, 0, 0); startOfWeek.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+  const wasTransferredSince = (date) => transfers.some((movement) => String(movement.date) >= date);
+  if (interval === "Weekly") return now.getDay() === 5 && !wasTransferredSince(startOfWeek.toISOString().slice(0, 10));
+  if (interval === "Bi-weekly") return now.getDate() >= 15 && !wasTransferredSince(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`);
+  if (interval === "Monthly") { const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate(); return now.getDate() >= monthEnd && !wasTransferredSince(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`); }
+  return false;
+};
 const norm = (v, max) => clamp((v / max) * 100, 0, 100);
 const classify = (pnl, cap) => (Math.abs(pnl) <= cap ? "be" : pnl > 0 ? "win" : "loss");
 const clsColor = (cls) => (cls === "win" ? "tj-green" : cls === "loss" ? "tj-red" : "tj-blue");
@@ -240,7 +278,7 @@ function buildMonthGrid(year, month, byDay) {
   for (let d = 1; d <= daysInMonth; d++) {
     const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
     const info = byDay[iso];
-    cells.push({ day: d, iso, pnl: info?.pnl || 0, count: info?.count || 0, cls: info?.cls });
+    cells.push({ day: d, iso, pnl: info?.pnl || 0, count: info?.count || 0, cls: info?.cls, cash:info?.cash || 0, cashCount:info?.cashCount || 0, cashType:info?.cashType || "transfer" });
   }
   while (cells.length % 7 !== 0) cells.push(null);
   const weeks = [];
@@ -281,6 +319,14 @@ function AttachedPnlCalendar({ account, monthCursor, setMonthCursor, onDayClick,
   const month = monthCursor.getMonth();
   const monthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
   const byDay = groupByDay(account.trades, account.breakevenCap);
+  (account.financeMovements || []).forEach((movement) => {
+    if (!movement.date) return;
+    const item = byDay[movement.date] || {pnl:0,count:0,cls:"be"};
+    item.cash = (item.cash || 0) + financeTradingImpact(movement);
+    item.cashCount = (item.cashCount || 0) + 1;
+    item.cashType = movement.type;
+    byDay[movement.date] = item;
+  });
   const weeks = buildMonthGrid(year, month, byDay);
   const monthTrades = account.trades.filter((trade) => trade.date?.slice(0, 7) === monthKey);
   const monthStats = computeStats(monthTrades, account.breakevenCap);
@@ -306,9 +352,9 @@ function AttachedPnlCalendar({ account, monthCursor, setMonthCursor, onDayClick,
         {DOW.map((day) => <div className="tj-attached-dow" key={day}>{day}</div>)}
         <div className="tj-attached-dow tj-attached-week-heading">Week</div>
         {weeks.map((week, weekIndex) => <React.Fragment key={`week-${weekIndex}`}>
-          {week.map((cell, dayIndex) => cell ? <button type="button" key={cell.iso} className={`tj-attached-day ${cell.count ? `tj-attached-day-${cell.cls || "be"}` : "tj-attached-day-quiet"} ${cell.iso === todayISO() ? "tj-attached-day-today" : ""}`} onClick={() => cell.count && onDayClick(cell.iso)} aria-label={`${cell.iso}${cell.count ? `, ${cell.count} trade${cell.count === 1 ? "" : "s"}, ${fmtMoney(cell.pnl)}` : ", no trades"}`}>
+          {week.map((cell, dayIndex) => cell ? <button type="button" key={cell.iso} className={`tj-attached-day ${cell.cashCount ? "tj-attached-day-finance" : cell.count ? `tj-attached-day-${cell.cls || "be"}` : "tj-attached-day-quiet"} ${cell.iso === todayISO() ? "tj-attached-day-today" : ""}`} onClick={() => (cell.count || cell.cashCount) && onDayClick(cell.iso)} aria-label={`${cell.iso}${cell.count ? `, ${cell.count} trade${cell.count === 1 ? "" : "s"}, ${fmtMoney(cell.pnl)}` : ", no trades"}${cell.cashCount ? `, ${cell.cashCount} cash movement${cell.cashCount === 1 ? "" : "s"}, ${fmtMoney(cell.cash)}` : ""}`}>
             <span className="tj-attached-day-number">{cell.day}</span>
-            {cell.count ? <span className="tj-attached-day-pill"><b>{fmtMoneyShort(cell.pnl)}</b><i>{cell.count}</i></span> : <span className="tj-attached-day-placeholder"/>}
+            {cell.cashCount ? <span className={`tj-attached-day-pill tj-attached-day-cash tj-attached-day-cash-${cell.cashType}`}><b>{fmtMoneyShort(cell.cash)}</b><i>$</i></span> : cell.count ? <span className="tj-attached-day-pill"><b>{fmtMoneyShort(cell.pnl)}</b><i>{cell.count}</i></span> : <span className="tj-attached-day-placeholder"/>}
           </button> : <div className="tj-attached-day-empty" key={`empty-${weekIndex}-${dayIndex}`}/>) }
           {(() => { const snapshot = snapshots[weekIndex]; const percent = account.balance ? snapshot.pnl / account.balance * 100 : 0; return <div key={`snapshot-${weekIndex}`} className={`tj-attached-week ${snapshot.count ? `tj-attached-week-active ${snapshot.pnl >= 0 ? "tj-attached-week-win" : "tj-attached-week-loss"}` : ""}`}>
             <small>WEEK {weekIndex + 1}</small>
@@ -708,7 +754,7 @@ function AccountSettingsSection({ title, children, note, status, icon, danger = 
   </section>;
 }
 
-function AccountSettingsModal({ account, onClose, onSave, onDelete, challenge }) {
+function AccountSettingsModal({ account, onClose, onSave, onDelete, onImport, challenge }) {
   const [name, setName] = useState(account.name);
   const [challengeDraft, setChallengeDraft] = useState(null);
   const [savingSettings, setSavingSettings] = useState(false);
@@ -719,6 +765,12 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, challenge })
     setLevel: level => setChallengeDraft(current => ({level, mode: current ? current.mode : challenge.state.automation?.mode ?? null}))
   };
   const [balance, setBalance] = useState(account.balance);
+  const [platform, setPlatform] = useState(account.platform || "Manual");
+  const [importFile, setImportFile] = useState(null);
+  const [importPreview, setImportPreview] = useState([]);
+  const [importError, setImportError] = useState("");
+  const [importingTrades, setImportingTrades] = useState(false);
+  const [importProgress, setImportProgress] = useState(0);
   const [beCap, setBeCap] = useState(account.breakevenCap);
   const [defaultCommission, setDefaultCommission] = useState(account.defaultCommission || 0);
   const [monthlyGoalPct, setMonthlyGoalPct] = useState(account.monthlyGoalPct || 0);
@@ -731,7 +783,9 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, challenge })
   const [baseCurrency, setBaseCurrency] = useState(account.baseCurrency || "");
   const [defaultRiskPct, setDefaultRiskPct] = useState(account.defaultRiskPct || 1);
   const [defaultStopLossPips, setDefaultStopLossPips] = useState(account.defaultStopLossPips || "");
-  const [open, setOpen] = useState({ identity: false, defaults: false, goals: false, guardrails: false, position: false, danger: false });
+  const [financeEnabled, setFinanceEnabled] = useState(!!account.finance?.enabled);
+  const [savingsDraft, setSavingsDraft] = useState(account.savingsAccounts || []);
+  const [open, setOpen] = useState({ identity: false, defaults: false, goals: false, guardrails: false, challenge: false, finance: false, position: false, danger: false });
   const toggle = (section) => setOpen((current) => ({ ...current, [section]: !current[section] }));
   const goalsEnabled = Number(monthlyGoalPct) > 0 || Number(yearlyGoalPct) > 0;
   const guardrailsEnabled = Number(dailyLossLimitPct) > 0 || Number(monthlyLossLimitPct) > 0;
@@ -744,7 +798,7 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, challenge })
     if (!name.trim() || !baseCurrency || savingSettings) return;
     setSavingSettings(true);
     try {
-    await onSave({ ...account, challengeEnabled: isChallengeEnabled({ challengeEnabled, challengeStartingBalance }), challengeStartingBalance: Number(challengeStartingBalance) > 0 ? Number(challengeStartingBalance) : 0, name: name.trim() || "Main Account", icon: baseCurrency, balance: parseFloat(balance) || 0, breakevenCap: parseFloat(beCap) || 0, defaultCommission: parseFloat(defaultCommission) || 0, monthlyGoalPct: parseFloat(monthlyGoalPct) || 0, yearlyGoalPct: parseFloat(yearlyGoalPct) || 0, dailyLossLimitPct: parseFloat(dailyLossLimitPct) || 0, monthlyLossLimitPct: parseFloat(monthlyLossLimitPct) || 0, positionSizeEnabled, baseCurrency, defaultRiskPct: parseFloat(defaultRiskPct) || 0, defaultStopLossPips: parseFloat(defaultStopLossPips) || 0 }, challengeDraft);
+    await onSave({ ...account, challengeEnabled: isChallengeEnabled({ challengeEnabled, challengeStartingBalance }), challengeStartingBalance: Number(challengeStartingBalance) > 0 ? Number(challengeStartingBalance) : 0, financeEnabled, platform, name: name.trim() || "Main Account", icon: baseCurrency, balance: parseFloat(balance) || 0, breakevenCap: parseFloat(beCap) || 0, defaultCommission: parseFloat(defaultCommission) || 0, monthlyGoalPct: parseFloat(monthlyGoalPct) || 0, yearlyGoalPct: parseFloat(yearlyGoalPct) || 0, dailyLossLimitPct: parseFloat(dailyLossLimitPct) || 0, monthlyLossLimitPct: parseFloat(monthlyLossLimitPct) || 0, positionSizeEnabled, baseCurrency, defaultRiskPct: parseFloat(defaultRiskPct) || 0, defaultStopLossPips: parseFloat(defaultStopLossPips) || 0 }, challengeDraft, { enabled: financeEnabled, savingsAccounts: savingsDraft });
     } finally { setSavingSettings(false); }
   };
   return (
@@ -754,7 +808,8 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, challenge })
         <div className="tj-settings-hero-metrics"><div className="tj-settings-balance-tile"><small>STARTING BALANCE</small><b>{fmtMoneyShort(accountBase, baseCurrency)}</b><span>Account base</span></div><div className={`tj-settings-month-goal ${goalsEnabled ? "tj-settings-goal-on" : ""}`}><small>MONTHLY GOAL</small><b>{monthlyGoalPct ? fmtMoneyShort(monthlyTarget, baseCurrency) : "Optional"}</b><span>{monthlyGoalPct ? `+${Number(monthlyGoalPct).toFixed(2)}% target` : "Not set"}</span></div><div className={`tj-settings-year-goal ${goalsEnabled ? "tj-settings-goal-on" : ""}`}><small>YEARLY GOAL</small><b>{yearlyGoalPct ? fmtMoneyShort(yearlyTarget, baseCurrency) : "Optional"}</b><span>{yearlyGoalPct ? `+${Number(yearlyGoalPct).toFixed(2)}% target` : "Not set"}</span></div><div className={`tj-settings-daily-loss ${guardrailsEnabled ? "tj-settings-risk-on" : ""}`}><small>DAILY LOSS</small><b>{dailyLossLimitPct ? fmtMoneyShort(-dailyLimit, baseCurrency) : "Optional"}</b><span>{dailyLossLimitPct ? `${Number(dailyLossLimitPct).toFixed(2)}% cap` : "Not set"}</span></div><div className={`tj-settings-month-loss ${guardrailsEnabled ? "tj-settings-risk-on" : ""}`}><small>MONTHLY LOSS</small><b>{monthlyLossLimitPct ? fmtMoneyShort(-monthlyLimit, baseCurrency) : "Optional"}</b><span>{monthlyLossLimitPct ? `${Number(monthlyLossLimitPct).toFixed(2)}% cap` : "Not set"}</span></div></div>
       </div>
       <AccountSettingsSection title="Identity & Account Currency" icon={<ImagePlus size={15}/>} note="Set the account name, starting balance, and currency used across every page." isOpen={open.identity} onToggle={() => toggle("identity")}>
-        <div className="tj-grid2"><Field label="Display Name"><input className="tj-input" value={name} onChange={(e) => setName(e.target.value)} /></Field><Field label={`Starting Balance (${baseCurrency || "Currency"})`}><input type="number" min="0" className="tj-input" value={balance} onChange={(e) => setBalance(e.target.value)} /></Field></div>
+        <div className="tj-grid2"><Field label="Display Name"><input className="tj-input" value={name} onChange={(e) => setName(e.target.value)} /></Field><Field label="Trading platform"><select className="tj-input" value={platform} onChange={(event) => setPlatform(event.target.value)}><option>Manual</option><option>MetaTrader 4/5</option><option>cTrader</option></select></Field></div><Field label={`Starting Balance (${baseCurrency || "Currency"})`}><input type="number" min="0" className="tj-input" value={balance} onChange={(e) => setBalance(e.target.value)} /></Field>
+        <Field label="Import trade history"><input className="tj-input" type="file" accept=".html,.htm,.csv,.txt,.tsv" onChange={async (event) => { const file = event.target.files?.[0] || null; setImportFile(file); setImportError(""); setImportPreview([]); setImportProgress(0); if (!file) return; const parsed = await parseBrokerFile(file); if (!parsed.trades.length) setImportError("No completed BUY or SELL trades were found in this file."); else setImportPreview(parsed); }} />{importFile && <div className="tj-settings-hint">{importFile.name}{importPreview.trades?.length ? ` · ${importPreview.trades.length} trades ready${importPreview.cashMovements?.length ? ` · ${importPreview.cashMovements.length} cash movement${importPreview.cashMovements.length === 1 ? "" : "s"}` : ""}` : ""}</div>}{importError && <div className="tj-import-error">{importError}</div>}{importPreview.trades?.length > 0 && <button type="button" className="tj-btn-primary tj-btn-small tj-import-button" disabled={importingTrades} onClick={async () => { setImportingTrades(true); setImportProgress(0); const ok = await onImport(importPreview, setImportProgress); if (ok) { setImportFile(null); setImportPreview([]); } setImportingTrades(false); }}>{importingTrades ? <><i className="tj-import-progress" style={{ "--progress": `${importProgress}%` }}>{importProgress}%</i>Importing trades</> : `Import ${importPreview.trades.length} trades now`}</button>}</Field>
         <Field label="Account Base Currency *"><select required className="tj-input" value={baseCurrency} onChange={(event) => setBaseCurrency(event.target.value)}><option value="" disabled>Select a currency</option>{ACCOUNT_CURRENCIES.map((currency) => <option key={currency.code} value={currency.code}>{currency.code} — {currency.label} ({currency.symbol})</option>)}</select></Field>
       </AccountSettingsSection>
       <AccountSettingsSection title="Journal Defaults" icon={<DollarSign size={15}/>} note="Tune how new trades are graded and pre-filled across the journal." status={`B/E ${fmtMoneyShort(Number(beCap) || 0, baseCurrency)} · Fee ${fmtMoneyShort(Number(defaultCommission) || 0, baseCurrency)}`} isOpen={open.defaults} onToggle={() => toggle("defaults")}>
@@ -770,6 +825,11 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, challenge })
         <Field label={`Challenge starting balance (${baseCurrency || "USD"})`}><input className="tj-input" type="number" min="0.01" step="any" placeholder="Enter a starting amount" value={challengeStartingBalance} onChange={event => { setChallengeStartingBalance(event.target.value); if (!(Number(event.target.value) > 0)) setChallengeEnabled(false); }}/></Field>
         <label className="tj-settings-switch-row"><button type="button" role="switch" aria-label="Enable Challenge" aria-checked={challengeEnabled && Number(challengeStartingBalance) > 0} disabled={!(Number(challengeStartingBalance) > 0)} className={`tj-settings-switch ${challengeEnabled && Number(challengeStartingBalance) > 0 ? "tj-settings-switch-on" : ""}`} onClick={() => setChallengeEnabled(value => !value)}><i/></button><span><strong>Enable Challenge</strong><small>Enter a positive balance, then switch on. Leaving the balance blank keeps Challenge off.</small></span></label>
         <ChallengeModeSettings challenge={draftChallenge} enabled={challengeEnabled && Number(challengeStartingBalance) > 0}/>
+      </AccountSettingsSection>
+      <AccountSettingsSection title="Finance" icon={<Landmark size={15}/>} note="Track account cash movement and savings without mixing it into trade statistics." status={financeEnabled ? `${savingsDraft.length} savings account${savingsDraft.length === 1 ? "" : "s"}` : "Off"} isOpen={open.finance} onToggle={() => toggle("finance")}>
+        <label className="tj-settings-switch-row"><button type="button" role="switch" aria-label="Enable Finance" aria-checked={financeEnabled} className={`tj-settings-switch ${financeEnabled ? "tj-settings-switch-on" : ""}`} onClick={() => setFinanceEnabled((enabled) => !enabled)}><i /></button><span><strong>Enable Finance</strong><small>Show Finance for this trading account. Turning it off keeps your settings and history saved.</small></span></label>
+        {financeEnabled && <><div className="tj-finance-settings-list">{savingsDraft.map((saving, index) => <section key={saving.id} className="tj-finance-settings-account"><div className="tj-finance-settings-account-head"><strong>Savings account {index + 1}</strong><ConfirmDeleteButton type="button" className="tj-btn-danger-outline tj-btn-small" onClick={() => setSavingsDraft((items) => items.filter((item) => item.id !== saving.id))}><Trash2 size={13}/> Delete</ConfirmDeleteButton></div><div className="tj-grid2"><Field label="Savings account name"><input className="tj-input" value={saving.name} onChange={(event) => setSavingsDraft((items) => items.map((item) => item.id === saving.id ? {...item, name:event.target.value} : item))}/></Field><Field label={`Savings target (${baseCurrency || "Currency"})`}><input type="number" min="0" className="tj-input" value={saving.target} onChange={(event) => setSavingsDraft((items) => items.map((item) => item.id === saving.id ? {...item, target:event.target.value} : item))}/></Field></div><div className="tj-grid2"><Field label="Profit allocation (%)"><input type="number" min="0" max="100" className="tj-input" value={saving.allocationPct} onChange={(event) => setSavingsDraft((items) => items.map((item) => item.id === saving.id ? {...item, allocationPct:event.target.value} : item))}/></Field><Field label="Transfer interval"><select className="tj-input" value={saving.interval} onChange={(event) => setSavingsDraft((items) => items.map((item) => item.id === saving.id ? {...item, interval:event.target.value} : item))}><option>Manual</option><option>Weekly</option><option>Bi-weekly</option><option>Monthly</option></select></Field></div></section>)}</div>
+        <button type="button" className="tj-btn-outline tj-btn-small" onClick={() => setSavingsDraft((items) => [...items, {id:`draft-${uid()}`,name:"Savings",target:0,allocationPct:0,interval:"Manual"}])}><Plus size={14}/> Add savings account</button></>}
       </AccountSettingsSection>
       <AccountSettingsSection title="Position Size Calculator" icon={<DollarSign size={15}/>} note="Optional risk-based lot sizing for new trades." status={positionSizeEnabled ? "Enabled" : "Off"} isOpen={open.position} onToggle={() => toggle("position")}>
         <label className="tj-settings-switch-row"><button type="button" role="switch" aria-checked={positionSizeEnabled} className={`tj-settings-switch ${positionSizeEnabled ? "tj-settings-switch-on" : ""}`} onClick={() => setPositionSizeEnabled((enabled) => !enabled)}><i /></button><span><strong>Enable Position Size Calculator</strong><small>Show live risk-based lot suggestions in Log Trade.</small></span></label><div className="tj-grid2"><Field label="Default Risk % Per Trade"><input type="number" min="0" step="0.1" className="tj-input" disabled={!positionSizeEnabled} value={defaultRiskPct} onChange={(event) => setDefaultRiskPct(event.target.value)} /></Field><Field label="Default Stop Loss (Pips)"><input type="number" min="0" className="tj-input" disabled={!positionSizeEnabled} value={defaultStopLossPips} placeholder="Optional" onChange={(event) => setDefaultStopLossPips(event.target.value)} /></Field></div>
@@ -909,6 +969,43 @@ function MarkupsPage({ markups, trades, onNew, onEdit, onDelete }) {
     return <Card key={markup.id} className="tj-tlog-card"><div className="tj-tlog-row" onClick={()=>setOpen((state)=>({...state,[markup.id]:!state[markup.id]}))}><div className="tj-tlog-main"><div className="tj-tlog-asset">{markup.instrument||markup.market||"Untitled markup"} <span className="tj-sesspill">{markup.bias||"No bias"}</span> <span className={`tj-markup-status tj-markup-status-${String(markup.status||"Planned").toLowerCase()}`}>{markup.status||"Planned"}</span></div><div className="tj-muted-txt" style={{fontSize: 14}}>{markup.date} · {formatTime(markup.time)} · {markup.market||"No session"} · {linked.length} linked trade{linked.length===1?"":"s"}</div></div><div className={`tj-tlog-pnl ${pnl>=0?"tj-green":"tj-red"}`}>{fmtMoney(pnl)}</div><button className="tj-btn-edit" onClick={(event)=>{event.stopPropagation();onEdit(markup)}}>Edit</button><ConfirmDeleteButton className="tj-icon-btn" title="Delete markup" onClick={(event)=>{event.stopPropagation();onDelete(markup.id)}}><Trash2 size={14}/></ConfirmDeleteButton><ChevronDown size={16} style={{transform:expanded?"rotate(180deg)":"none"}}/></div>{expanded&&<div className="tj-tlog-detail"><div className="tj-tlog-detail-grid"><div><div className="tj-mlabel">STATUS</div><div>{markup.status||"Planned"}</div></div><div><div className="tj-mlabel">LEVELS / ZONES</div><div>{markup.levels||"—"}</div></div><div><div className="tj-mlabel">STRUCTURE</div><div>{markup.structure||"—"}</div></div><div><div className="tj-mlabel">EXPECTATIONS</div><div>{markup.notes||"—"}</div></div></div><div className="tj-section-label">Markup Images</div><div className="tj-markup-images">{slots.map(([slot,label])=>{const images=markup.screenshots?.[slot]||[];return images.length?<div key={slot} className="tj-markup-image-section"><div className="tj-mlabel">{label}</div><div className="tj-tlog-shots">{images.map((src,index)=><ImagePreview key={index} src={src} alt={`${label} chart`}/>)}</div></div>:null;})}</div><div className="tj-section-label">Linked Trades</div>{linked.length?linked.map((trade)=><div key={trade.id} className="tj-rule-row"><span>{trade.date} · {formatTime(trade.time)} · {trade.asset} · {trade.direction} <span className="tj-muted-txt">· {trade.entryType||trade.confluenceSession||"No entry type"}</span></span><span className="tj-linked-trade-metrics"><RatingDisplay value={trade.rating} noRules={!trade.ruleEvaluations?.length&&!trade.rating}/><strong className={trade.pnl>=0?"tj-green":"tj-red"}>{fmtMoney(trade.pnl)}</strong></span></div>):<div className="tj-empty">No trades linked yet.</div>}</div>}</Card>;
   }):<div className="tj-empty-block"><ScanLine size={32}/><div className="tj-empty-title">No premarket markups</div><button className="tj-btn-primary" onClick={onNew}>Create your first markup</button></div>}</div></>;
 }
+function useCloseOnOutside(isOpen, onClose) {
+  const surfaceRef = useRef(null);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const closeWhenOutside = (event) => {
+      if (!surfaceRef.current?.contains(event.target)) onClose();
+    };
+    const closeWithEscape = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", closeWhenOutside, true);
+    document.addEventListener("touchstart", closeWhenOutside, true);
+    document.addEventListener("keydown", closeWithEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeWhenOutside, true);
+      document.removeEventListener("touchstart", closeWhenOutside, true);
+      document.removeEventListener("keydown", closeWithEscape);
+    };
+  }, [isOpen, onClose]);
+
+  return surfaceRef;
+}
+
+function ListPagination({ total, page, showAll, onPageChange, onShowAll, label }) {
+  const pageCount = Math.max(1, Math.ceil(total / 10));
+  const currentPage = Math.min(page, pageCount);
+  const first = total ? showAll ? 1 : (currentPage - 1) * 10 + 1 : 0;
+  const last = showAll ? total : Math.min(currentPage * 10, total);
+  if (total <= 10) return null;
+  return <nav className="tj-list-pagination" aria-label={`${label} pagination`}>
+    <span>{showAll ? `All ${total}` : `${first}–${last} of ${total}`}</span>
+    <button type="button" className="tj-btn-outline tj-btn-small" onClick={() => onShowAll(!showAll)}>{showAll ? "Show 10 per page" : "Show all"}</button>
+    {!showAll && <div className="tj-pagination-arrows"><button type="button" className="tj-icon-btn" aria-label={`Previous ${label} page`} title="Previous page" disabled={currentPage === 1} onClick={() => onPageChange(currentPage - 1)}><ChevronLeft size={16}/></button><span>{currentPage} / {pageCount}</span><button type="button" className="tj-icon-btn" aria-label={`Next ${label} page`} title="Next page" disabled={currentPage === pageCount} onClick={() => onPageChange(currentPage + 1)}><ChevronRight size={16}/></button></div>}
+  </nav>;
+}
+
 function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrade }) {
   const openImage = React.useContext(ImageViewerContext);
   const [instrumentFilter, setInstrumentFilter] = useState("All");
@@ -921,6 +1018,9 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
   const [selectedChart, setSelectedChart] = useState("");
+  const [listPage, setListPage] = useState(1);
+  const [showAll, setShowAll] = useState(false);
+  const toolbarRef = useCloseOnOutside(filtersOpen || sortOpen, () => { setFiltersOpen(false); setSortOpen(false); });
   const slots = [["preM15", "Pre-session M15"], ["preH4", "Pre-session H4"], ["postD1", "Post-session D1"], ["postH4", "Post-session H4"], ["postM15", "Post-session M15"]];
   const preSlots = slots.slice(0, 2);
   const postSlots = slots.slice(2);
@@ -965,6 +1065,10 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
   const worst = linked.length ? Math.min(...linked.map(totalLinkedPnl)) : 0;
   const profitableLinked = allLinkedTrades.filter((trade) => trade.pnl > 0).length;
   const losingLinked = allLinkedTrades.filter((trade) => trade.pnl < 0).length;
+  const markupPageCount = Math.max(1, Math.ceil(shown.length / 10));
+  const activeMarkupPage = Math.min(listPage, markupPageCount);
+  const visibleMarkups = showAll ? shown : shown.slice((activeMarkupPage - 1) * 10, activeMarkupPage * 10);
+  useEffect(() => { setListPage(1); }, [instrumentFilter, monthFilter, weekFilter, statusFilter, resultFilter, sort]);
 
   return <div className="tj-reference-markups">
     <div className="tj-rules-head"><div><div className="tj-bold" style={{ fontSize: 19.44 }}>Markups</div><div className="tj-muted-txt" style={{ fontSize: 14 }}>Prepare context before execution, then attach the final trade to its plan.</div></div><button className="tj-btn-primary" onClick={onNew}><Plus size={15}/> New Markup</button></div>
@@ -974,9 +1078,9 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
       <Card className="tj-markup-overview-card"><div className="tj-stat-label">LINKED P&amp;L</div><strong className={allPnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(allPnl)}</strong><span>Average {linked.length ? fmtMoney(allPnl / linked.length) : fmtMoney(0)} per linked markup</span><div className="tj-markup-bestworst"><div><small>Best linked</small><b className={best >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(best)}</b></div><div><small>Worst linked</small><b className={worst >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(worst)}</b></div></div></Card>
       <Card className="tj-markup-overview-card"><div className="tj-stat-label">CAPTURE COVERAGE</div><strong>{Math.round((planCoverage + preCoverage + postCoverage) / 3)}%</strong><span>How complete the markup journal is across plan, pre-session, and review assets.</span><div className="tj-markup-coverage"><div><small>Plan</small><i><b style={{width: `${planCoverage}%`}}/></i><em>{planCoverage}%</em></div><div><small>Pre</small><i><b style={{width: `${preCoverage}%`}}/></i><em>{preCoverage}%</em></div><div><small>Post</small><i><b style={{width: `${postCoverage}%`}}/></i><em>{postCoverage}%</em></div></div></Card>
     </div>
-    <div className="tj-markup-toolbar">
+    <div className="tj-markup-toolbar" ref={toolbarRef}>
       <div className="tj-markup-toolbar-actions"><button className={`tj-icon-btn tj-markup-toolbar-button ${filtersOpen ? "tj-icon-btn-active" : ""}`} title="Filter markups" onClick={() => { setFiltersOpen((value) => !value); setSortOpen(false); }}><SlidersHorizontal size={16}/></button><button className={`tj-icon-btn tj-markup-toolbar-button ${sortOpen ? "tj-icon-btn-active" : ""}`} title="Sort markups" onClick={() => { setSortOpen((value) => !value); setFiltersOpen(false); }}><ArrowDownUp size={16}/></button></div>
-      <div className="tj-markup-toolbar-status"><span>{shown.length} shown</span><b>All visible</b></div>
+      <div className="tj-markup-toolbar-status"><span>{shown.length} shown</span><b>{showAll ? "All visible" : `Page ${activeMarkupPage} of ${markupPageCount}`}</b></div>
       {filtersOpen && <div className="tj-markup-filter-popover">
         <div className="tj-markup-filter-head"><div><strong>Filter markups</strong><span>Keep the markup board clean while focusing on the exact setup window you want.</span></div><button className="tj-icon-btn" title="Close filters" onClick={() => setFiltersOpen(false)}><X size={14}/></button></div>
         <div className="tj-markup-filter-grid">
@@ -990,7 +1094,7 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
       </div>}
       {sortOpen && <div className="tj-markup-sort-controls"><span>Sort markups by</span><select className="tj-toolbar-dd" value={sort} onChange={(event) => setSort(event.target.value)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="pnl">Linked P&amp;L</option><option value="links">Most linked trades</option></select></div>}
     </div>
-    <div className="tj-tlog-list">{shown.length ? shown.map((markup) => {
+    <div className="tj-tlog-list">{shown.length ? visibleMarkups.map((markup) => {
       const related = linkedTrades(markup), pnl = totalLinkedPnl(markup), expanded = !!open[markup.id];
       const status = effectiveStatus(markup);
       const chartCount = slots.reduce((count, [key]) => count + (markup.screenshots?.[key]?.length || 0), 0);
@@ -1015,6 +1119,7 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
         </div>}
       </Card>;
     }) : <div className="tj-empty-block"><ScanLine size={32} color="var(--tj-muted)"/><div className="tj-empty-title">No markups match these filters</div><button className="tj-btn-primary" onClick={onNew}>Create a markup</button></div>}</div>
+    <ListPagination total={shown.length} page={activeMarkupPage} showAll={showAll} onPageChange={setListPage} onShowAll={(next) => { setShowAll(next); if (!next) setListPage(1); }} label="markups"/>
   </div>;
 }
 
@@ -1216,6 +1321,12 @@ function AddAccountModal({ onClose, onCreate }) {
   const [challengeStartingBalance, setChallengeStartingBalance] = useState("");
   const [name, setName] = useState("");
   const [balance, setBalance] = useState(10000);
+  const [platform, setPlatform] = useState("Manual");
+  const [importFile, setImportFile] = useState(null);
+  const [importPreview, setImportPreview] = useState([]);
+  const [importError, setImportError] = useState("");
+  const [importingTrades, setImportingTrades] = useState(false);
+  const [importProgress, setImportProgress] = useState(0);
   const [baseCurrency, setBaseCurrency] = useState("");
   const [breakevenCap, setBreakevenCap] = useState(0);
   const [defaultCommission, setDefaultCommission] = useState(0);
@@ -1236,10 +1347,11 @@ function AddAccountModal({ onClose, onCreate }) {
   const dailyLimit = accountBase * (Number(dailyLossLimitPct) || 0) / 100;
   const monthlyLimit = accountBase * (Number(monthlyLossLimitPct) || 0) / 100;
   const create = async () => {
-    if (!name.trim() || !baseCurrency || creating) return;
+    if (!name.trim() || !baseCurrency || (platform === "Manual" && !(Number(balance) > 0)) || creating) return;
     setCreating(true);
-    const created = await onCreate({ challengeEnabled: isChallengeEnabled({challengeEnabled, challengeStartingBalance}), challengeStartingBalance: Number(challengeStartingBalance) || 0, id: accountId, name: name.trim(), icon: baseCurrency, profileImage: "", balance: accountBase, breakevenCap: parseFloat(breakevenCap) || 0, ratingStyle: "stars", theme: "dark", defaultCommission: parseFloat(defaultCommission) || 0, monthlyGoalPct: parseFloat(monthlyGoalPct) || 0, yearlyGoalPct: parseFloat(yearlyGoalPct) || 0, dailyLossLimitPct: parseFloat(dailyLossLimitPct) || 0, monthlyLossLimitPct: parseFloat(monthlyLossLimitPct) || 0, positionSizeEnabled, baseCurrency, defaultRiskPct: parseFloat(defaultRiskPct) || 0, defaultStopLossPips: parseFloat(defaultStopLossPips) || 0, trades: [], rules: [], checkins: {} });
-    if (!created) setCreating(false);
+    setImportProgress(0); setImportingTrades(!!importPreview.trades?.length);
+    const created = await onCreate({ challengeEnabled: isChallengeEnabled({challengeEnabled, challengeStartingBalance}), challengeStartingBalance: Number(challengeStartingBalance) || 0, id: accountId, name: name.trim(), icon: baseCurrency, profileImage: "", platform, balance: accountBase, breakevenCap: parseFloat(breakevenCap) || 0, ratingStyle: "stars", theme: "dark", defaultCommission: parseFloat(defaultCommission) || 0, monthlyGoalPct: parseFloat(monthlyGoalPct) || 0, yearlyGoalPct: parseFloat(yearlyGoalPct) || 0, dailyLossLimitPct: parseFloat(dailyLossLimitPct) || 0, monthlyLossLimitPct: parseFloat(monthlyLossLimitPct) || 0, positionSizeEnabled, baseCurrency, defaultRiskPct: parseFloat(defaultRiskPct) || 0, defaultStopLossPips: parseFloat(defaultStopLossPips) || 0, trades: [], rules: [], checkins: {} }, importPreview, setImportProgress);
+    if (!created) { setCreating(false); setImportingTrades(false); }
   };
   return (
     <Modal title="New Account Workspace" onClose={onClose} onConfirm={create} confirmDisabled={!name.trim() || !baseCurrency || creating} className="tj-new-account-modal" wide>
@@ -1247,8 +1359,10 @@ function AddAccountModal({ onClose, onCreate }) {
         <div className="tj-settings-hero-copy"><span>NEW ACCOUNT BLUEPRINT</span><strong>{name.trim() || "Untitled Account"}</strong><p>Set up the account once, then let goals and guardrails carry through the dashboard, analytics, and daily workflow.</p></div>
         <div className="tj-settings-hero-metrics"><div><small>STARTING BALANCE</small><b>{fmtMoneyShort(accountBase, baseCurrency)}</b><span>Funding base</span></div><div className={monthlyGoalPct ? "tj-settings-goal-on" : ""}><small>MONTHLY GOAL</small><b>{monthlyGoalPct ? fmtMoneyShort(monthlyTarget, baseCurrency) : "Optional"}</b><span>{monthlyGoalPct ? `+${Number(monthlyGoalPct).toFixed(2)}% target` : "Set a monthly target"}</span></div><div className={yearlyGoalPct ? "tj-settings-goal-on" : ""}><small>YEARLY GOAL</small><b>{yearlyGoalPct ? fmtMoneyShort(yearlyTarget, baseCurrency) : "Optional"}</b><span>{yearlyGoalPct ? `+${Number(yearlyGoalPct).toFixed(2)}% target` : "Keep the long runway open"}</span></div><div className={dailyLossLimitPct ? "tj-settings-risk-on" : ""}><small>DAILY LOSS</small><b>{dailyLossLimitPct ? fmtMoneyShort(-dailyLimit, baseCurrency) : "Optional"}</b><span>{dailyLossLimitPct ? `${Number(dailyLossLimitPct).toFixed(2)}% cap` : "No daily lock"}</span></div><div className={monthlyLossLimitPct ? "tj-settings-risk-on" : ""}><small>MONTHLY LOSS</small><b>{monthlyLossLimitPct ? fmtMoneyShort(-monthlyLimit, baseCurrency) : "Optional"}</b><span>{monthlyLossLimitPct ? `${Number(monthlyLossLimitPct).toFixed(2)}% cap` : "No monthly lock"}</span></div></div>
       </div>
-      <AccountSettingsSection title="Identity & Account Currency" note="Name the journal, set its starting balance, and choose the currency used across every page." status={baseCurrency || "Currency required"} isOpen={open.identity} onToggle={() => toggle("identity")}>
-        <div className="tj-grid2"><Field label="Display Name"><input className="tj-input" placeholder="e.g. Photon Prop Eval" value={name} onChange={(event) => setName(event.target.value)} /></Field><Field label={`Starting Balance (${baseCurrency || "Currency"})`}><input type="number" min="0" className="tj-input" value={balance} onChange={(event) => setBalance(event.target.value)} /></Field></div>
+      <AccountSettingsSection title="Identity & Account Currency" note="Choose how this account is normally logged. Imports never remove manual trade entry." status={baseCurrency || "Currency required"} isOpen={open.identity} onToggle={() => toggle("identity")}>
+        <div className="tj-grid2"><Field label="Display Name"><input className="tj-input" placeholder="e.g. Photon Prop Eval" value={name} onChange={(event) => setName(event.target.value)} /></Field><Field label="Trading platform"><select className="tj-input" value={platform} onChange={(event) => setPlatform(event.target.value)}><option>Manual</option><option>MetaTrader 4/5</option><option>cTrader</option></select></Field></div>
+        <Field label={`Starting Balance (${baseCurrency || "Currency"}) ${platform === "Manual" ? "*" : "(optional for import accounts)"}`}><input type="number" min="0" className="tj-input" value={balance} onChange={(event) => setBalance(event.target.value)} /></Field>
+        <Field label="Import trade history (optional)"><input className="tj-input" type="file" accept=".html,.htm,.csv,.txt,.tsv" disabled={creating} onChange={async (event) => { const file = event.target.files?.[0] || null; setImportFile(file); setImportPreview([]); setImportError(""); setImportProgress(0); if (!file) return; const parsed = await parseBrokerFile(file); if (!parsed.trades.length) setImportError("No completed BUY or SELL trades were found in this file."); else setImportPreview(parsed); }} />{importFile && <div className="tj-settings-hint">{importFile.name}{importPreview.trades?.length ? ` · ${importPreview.trades.length} trades${importPreview.cashMovements?.length ? ` and ${importPreview.cashMovements.length} cash movement${importPreview.cashMovements.length === 1 ? "" : "s"}` : ""} will import when you create this account` : ""}</div>}{importingTrades && <div className="tj-settings-hint tj-import-live"><i className="tj-import-progress" style={{ "--progress": `${importProgress}%` }}>{importProgress}%</i>Importing {platform} trades…</div>}{importError && <div className="tj-import-error">{importError}</div>}</Field>
         <Field label="Account Base Currency *"><select required className="tj-input" value={baseCurrency} onChange={(event) => setBaseCurrency(event.target.value)}><option value="" disabled>Select a currency</option>{ACCOUNT_CURRENCIES.map((currency) => <option key={currency.code} value={currency.code}>{currency.code} — {currency.label} ({currency.symbol})</option>)}</select></Field>
       </AccountSettingsSection>
       <AccountSettingsSection title="Journal Defaults" note="Tune how new trades are graded and pre-filled across the journal." status={`B/E ${fmtMoneyShort(Number(breakevenCap) || 0, baseCurrency)} · Fee ${fmtMoneyShort(Number(defaultCommission) || 0, baseCurrency)}`} isOpen={open.defaults} onToggle={() => toggle("defaults")}>
@@ -1269,7 +1383,7 @@ function AddAccountModal({ onClose, onCreate }) {
       </AccountSettingsSection>
       <div className="tj-modal-actions">
         <button className="tj-btn-outline" onClick={onClose}>Cancel</button>
-        <button className="tj-btn-primary" disabled={!name.trim() || !baseCurrency || creating} onClick={create}>{creating ? "Creating…" : "Create Account"}</button>
+        <button className="tj-btn-primary" disabled={!name.trim() || !baseCurrency || (platform === "Manual" && !(Number(balance) > 0)) || creating || !!importError} onClick={create}>{creating ? (importingTrades ? <><i className="tj-import-progress" style={{ "--progress": `${importProgress}%` }}>{importProgress}%</i>Importing trades</> : "Creating…") : importPreview.trades?.length ? `Create Account & Import ${importPreview.trades.length} Trades` : "Create Account"}</button>
       </div>
     </Modal>
   );
@@ -1277,7 +1391,7 @@ function AddAccountModal({ onClose, onCreate }) {
 
 /* ============================ DAY TRADES MODAL =========================== */
 
-function DayTradesModal({ date, trades, reviews = [], account, onClose, onEdit, onDelete }) {
+function DayTradesModal({ date, trades, reviews = [], movements = [], account, onClose, onEdit, onDelete, locked = false }) {
   const d = new Date(date + "T00:00:00");
   const dayPnl = trades.reduce((s, t) => s + t.pnl, 0);
   const datedRecords = reviews.map((review) => ({ id: review.id, time: review.time }))
@@ -1286,8 +1400,9 @@ function DayTradesModal({ date, trades, reviews = [], account, onClose, onEdit, 
     <Modal title={d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })} onClose={onClose} className="tj-calendar-day-modal" centered>
       <div className="tj-daymodal-summary">
         <span className={dayPnl >= 0 ? "tj-green" : "tj-red"} style={{ fontWeight: 700, fontSize: 19.44 }}>{fmtMoney(dayPnl)}</span>
-        <span className="tj-muted-txt"> · {trades.length} trade{trades.length !== 1 ? "s" : ""}</span>
+        <span className="tj-muted-txt"> · {trades.length} trade{trades.length !== 1 ? "s" : ""}{movements.length ? ` · ${movements.length} cash movement${movements.length === 1 ? "" : "s"}` : ""}</span>
       </div>
+      {movements.length > 0 && <section className="tj-day-cash-list"><strong>CASH MOVEMENTS</strong>{movements.map((movement) => { const label = movement.type === "deposit" ? "Deposit" : movement.type === "transfer" ? "Transfer to savings" : `Withdrawal from ${movement.source === "savings" ? "savings" : "trading"}`; const tone = movement.type === "deposit" ? "tj-green" : movement.type === "withdrawal" ? "tj-red" : "tj-purple-txt"; return <div key={movement.id} className="tj-day-cash-item"><span>{label}{movement.note ? ` · ${movement.note}` : ""}</span><b className={tone}>{movement.type === "deposit" ? "+" : "-"}{fmtMoney(Math.abs(movement.amount)).replace(/^\+/, "")}</b></div>; })}</section>}
       {datedRecords.length > 0 && <div className="tj-day-record-list">{datedRecords.map((record) => <div className="tj-day-record" key={record.id}><span>{formatTime(record.time)}</span><span>Trade Review</span></div>)}</div>}
       <div className="tj-day-trade-list">
         {trades.map((t) => {
@@ -1308,8 +1423,8 @@ function DayTradesModal({ date, trades, reviews = [], account, onClose, onEdit, 
             <div className="tj-day-trade-footer">
               <div className="tj-day-trade-shots">{(t.screenshots || []).map((src, i) => <ImagePreview key={i} src={src} alt={`Trade Screenshot ${i + 1}`} />)}</div>
               <div className="tj-day-trade-actions">
-                <button type="button" className="tj-icon-btn" title="Edit trade" aria-label="Edit trade" onClick={() => onEdit(t)}><Pencil size={14}/></button>
-                <ConfirmDeleteButton type="button" className="tj-icon-btn tj-day-trade-delete" title="Delete trade" aria-label="Delete trade" onClick={() => onDelete(t.id)}><Trash2 size={14}/></ConfirmDeleteButton>
+                <button type="button" className="tj-icon-btn" disabled={locked} title={locked ? "Trade changes are locked by the account loss limit" : "Edit trade"} aria-label="Edit trade" onClick={() => onEdit(t)}><Pencil size={14}/></button>
+                <ConfirmDeleteButton type="button" className="tj-icon-btn tj-day-trade-delete" disabled={locked} title={locked ? "Trade changes are locked by the account loss limit" : "Delete trade"} aria-label="Delete trade" onClick={() => onDelete(t.id)}><Trash2 size={14}/></ConfirmDeleteButton>
               </div>
             </div>
           </div>;
@@ -1592,6 +1707,7 @@ function ReferenceDashboardPage({ account, stats, monthCursor, setMonthCursor, o
   // Dashboard headline metrics are all-time. The month-specific cards below
   // remain scoped to the selected calendar month.
   const thisYearStats = stats;
+  const liveAccountBalance = financeTotals(account).tradingBalance;
   const bestSession = SESSIONS.map((session) => ({ session, pnl: monthTrades.filter((trade) => normalizeSession(trade.entrySession || trade.session) === session).reduce((sum, trade) => sum + trade.pnl, 0) })).sort((a, b) => b.pnl - a.pnl)[0];
   const hotPair = Object.entries(monthTrades.reduce((all, trade) => ({ ...all, [trade.asset]: (all[trade.asset] || 0) + trade.pnl }), {})).sort((a, b) => b[1] - a[1])[0];
   const lastSixPnl = lastSix.reduce((sum, trade) => sum + trade.pnl, 0);
@@ -1623,7 +1739,7 @@ function ReferenceDashboardPage({ account, stats, monthCursor, setMonthCursor, o
     <AccountGuardrailsPanel account={account} guardrails={guardrails} stats={thisYearStats} periodDate={monthCursor}/>
 
     <div className="tj-reference-kpis">
-      <Card className="tj-reference-kpi tj-kpi-equity"><div className="tj-kpi-top"><div className="tj-stat-label">ALL-TIME NET P&amp;L</div><span>{allTimeReturn >= 0 ? "+" : ""}{allTimeReturn.toFixed(2)}%</span></div><div className={`tj-reference-kpi-value ${thisYearStats.netPnl >= 0 ? "tj-green" : "tj-red"}`}>{fmtMoney(thisYearStats.netPnl)}</div><div className="tj-stat-sub">Starting balance {fmtMoney(account.balance)}</div><div className="tj-kpi-spark"><ResponsiveContainer width="100%" height={26}><AreaChart data={cumulative}><Area type="monotone" dataKey="cumulative" stroke={UI_COLORS.primary} fill="none" strokeWidth={2} dot={false}/></AreaChart></ResponsiveContainer></div><small>Streak {thisYearStats.streak ? `${thisYearStats.streakType === "loss" ? "-" : "+"}${thisYearStats.streak}` : "—"}</small></Card>
+      <Card className="tj-reference-kpi tj-kpi-equity"><div className="tj-kpi-top"><div className="tj-stat-label">ALL-TIME NET P&amp;L</div><span>{allTimeReturn >= 0 ? "+" : ""}{allTimeReturn.toFixed(2)}%</span></div><div className={`tj-reference-kpi-value ${thisYearStats.netPnl >= 0 ? "tj-green" : "tj-red"}`}>{fmtMoney(thisYearStats.netPnl)}</div><div className="tj-stat-sub">Starting balance {fmtMoney(account.balance)}</div><div className="tj-kpi-spark"><ResponsiveContainer width="100%" height={26}><AreaChart data={cumulative}><Area type="monotone" dataKey="cumulative" stroke={UI_COLORS.primary} fill="none" strokeWidth={2} dot={false}/></AreaChart></ResponsiveContainer></div><small>Live balance {fmtMoney(liveAccountBalance)} · Streak {thisYearStats.streak ? `${thisYearStats.streakType === "loss" ? "-" : "+"}${thisYearStats.streak}` : "—"}</small></Card>
       <Card className="tj-reference-kpi tj-kpi-profit"><div className="tj-kpi-top"><div className="tj-stat-label">PROFIT FACTOR</div><span className={thisYearStats.profitFactor >= 1.5 ? "tj-green" : "tj-red"}>{thisYearStats.profitFactor >= 1.5 ? "healthy" : "needs work"}</span></div><div className="tj-reference-kpi-value">{thisYearStats.profitFactor.toFixed(2)}</div><div className="tj-kpi-line"><i style={{width: `${clamp(norm(thisYearStats.profitFactor, 5), 0, 100)}%`}}/></div><div className="tj-stat-sub">Risk-adjusted payoff quality.</div><small>Recovery {thisYearStats.recovery.toFixed(0)}% <em>Core Score {thisYearStats.thunderScore}</em></small></Card>
       <Card className="tj-reference-kpi tj-kpi-days"><div className="tj-kpi-top"><div className="tj-stat-label">DAY WIN %</div></div><div className={`tj-reference-kpi-value ${wrColorClass(thisYearStats.dayWinRate)}`}>{thisYearStats.dayWinRate.toFixed(2)}%</div><div className="tj-day-bar-strip">{dayWinBars.length ? dayWinBars.map((day) => <i key={day.date} className={day.cls === "win" ? "tj-day-bar-win" : day.cls === "loss" ? "tj-day-bar-loss" : "tj-day-bar-be"}/>) : <span>No completed days</span>}</div><div className="tj-stat-sub">{monthStats.dayClasses.length} trading day{monthStats.dayClasses.length === 1 ? "" : "s"} this month</div></Card>
       <Card className="tj-reference-kpi tj-kpi-winrate"><div className="tj-kpi-top"><div className="tj-stat-label">WIN RATE %</div><span>{thisYearStats.total} total</span></div><div className={`tj-reference-kpi-value ${wrColorClass(thisYearStats.winRate)}`}>{thisYearStats.winRate.toFixed(2)}%</div><div className="tj-kpi-split"><i style={{width: `${thisYearStats.winRate}%`}}/><b style={{width: `${100 - thisYearStats.winRate}%`}}/></div><div className="tj-stat-sub"><strong className="tj-green">{thisYearStats.wins} wins</strong><strong className="tj-red">{thisYearStats.losses} losses</strong></div><ChallengeDashboardProgress account={account} challenge={challenge}/></Card>
@@ -1648,7 +1764,157 @@ function ReferenceDashboardPage({ account, stats, monthCursor, setMonthCursor, o
 
 /* ================================ TRADE LOG ============================= */
 
-function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, onNewTrade, onLinkMarkup }) {
+const importNumber = value => Number(String(value ?? "").replace(/[^0-9.-]/g, "")) || 0;
+const importDate = value => { const raw=String(value||"").trim(); if (!raw) return ""; const match=raw.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})|(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/); if(!match)return ""; const [,y,m,d,a,b,c]=match; return y ? `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}` : `${c}-${String(b).padStart(2,"0")}-${String(a).padStart(2,"0")}`; };
+const importTime = value => { const match=String(value||"").match(/(\d{1,2}):(\d{2})/); return match ? `${String(match[1]).padStart(2,"0")}:${match[2]}` : ""; };
+const splitImportLine = (line, delimiter) => { const cells = []; let value = ""; let quoted = false; for (let index = 0; index < line.length; index += 1) { const character = line[index]; if (character === '"') { if (quoted && line[index + 1] === '"') { value += '"'; index += 1; } else quoted = !quoted; } else if (character === delimiter && !quoted) { cells.push(value.trim()); value = ""; } else value += character; } cells.push(value.trim()); return cells; };
+const parseBrokerTrades = (text) => {
+  const lines = String(text || "").split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length < 2) return [];
+  const delimiter = lines[0].includes("\t") ? "\t" : lines[0].includes(";") ? ";" : ",";
+  const rows = lines.map((line) => splitImportLine(line, delimiter));
+  const headerIndex = rows.findIndex((row) => {
+    const labels = row.map((cell) => cell.toLowerCase().replace(/[^a-z0-9]/g, ""));
+    return labels.some((label) => /(symbol|instrument|asset|market)/.test(label)) && labels.some((label) => /(type|side|direction)/.test(label));
+  });
+  if (headerIndex < 0) return [];
+  const rawHeaders = rows.splice(0, headerIndex + 1).at(-1).map((header) => header.toLowerCase().replace(/[^a-z0-9]/g, ""));
+  let timeColumns = 0;
+  const headers = rawHeaders.map((header) => {
+    if (header === "time") { timeColumns += 1; return timeColumns === 1 ? "opentime" : "closetime"; }
+    return header;
+  });
+  const valueAt = (row, ...keys) => { const index = headers.findIndex((header) => keys.some((key) => header === key || header.includes(key))); return index < 0 ? "" : row[index]; };
+  return rows.map((row) => {
+    const side = String(valueAt(row, "type", "side", "tradetype", "direction")).toUpperCase();
+    const entryMarker = String(valueAt(row, "entry", "direction")).trim().toUpperCase();
+    if (!/(BUY|SELL)/.test(side)) return null; // skips broker balance, credit, and fee rows
+    if (["IN", "OPEN"].includes(entryMarker)) return null; // MT5 deal reports list opening and closing legs separately
+    const opened = valueAt(row, "opentime", "opendate", "entrytime", "entrydate", "time");
+    const closed = valueAt(row, "closetime", "closedate", "exittime", "exitdate");
+    const rawCommission = importNumber(valueAt(row, "commission"));
+    const rawSwap = importNumber(valueAt(row, "swap"));
+    // cTrader's closed-position CSV names this column "Net $" (normalised to
+    // "net"), while other brokers tend to use Net P&L/Net profit.
+    const netColumn = valueAt(row, "netprofit", "netpnl", "netpl", "net");
+    const rawProfit = importNumber(netColumn || valueAt(row, "grossprofit", "profit", "pnl", "pl"));
+    const hasNetColumn = String(netColumn).trim() !== "";
+    const pnl = hasNetColumn ? rawProfit : rawProfit + rawCommission + rawSwap;
+    const asset = valueAt(row, "symbol", "instrument", "asset", "market").replace(/\s+/g, "");
+    const direction = side.includes("SELL") ? "SELL" : "BUY";
+    // cTrader's standard CSV has no ticket field. Its symbol, direction,
+    // closing timestamp and net result together identify a closed position well
+    // enough to keep repeated uploads from creating duplicates.
+    const importKey = `ctrader:${asset}:${direction}:${closed || opened}:${pnl}`;
+    return { id: `import-${uid()}`, importKey, date: importDate(opened || closed), time: importTime(opened || closed), closeDate: importDate(closed), closeTime: importTime(closed), asset, direction, grossPnl: hasNetColumn ? pnl + Math.abs(rawCommission) + Math.abs(rawSwap) : rawProfit, commission: Math.abs(rawCommission), swap: Math.abs(rawSwap), pnl, rr: 0, session: "", entrySession: "", rating: 0, types: [], confluence: [], mistakes: [], screenshots: [], context: `Imported cTrader position #${importKey}` };
+  }).filter((trade) => trade?.date && trade.asset && trade.asset.length <= 32 && /[a-z]/i.test(trade.asset));
+};
+
+const normaliseImportHeader = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const importedValue = (headers, row, ...keys) => {
+  const index = headers.findIndex((header) => keys.some((key) => header === key || header.includes(key)));
+  return index < 0 ? "" : row[index] || "";
+};
+const parseMt5PositionRows = (rows) => {
+  const positionHeading = rows.findIndex((row) => row.length && row.every((cell) => /^positions$/i.test(cell)));
+  if (positionHeading < 0) return [];
+  const headerIndex = rows.findIndex((row, index) => index > positionHeading && row.some((cell) => /symbol/i.test(cell)) && row.some((cell) => /^type$/i.test(cell.trim())));
+  if (headerIndex < 0) return [];
+  const headers = rows[headerIndex].map(normaliseImportHeader);
+  const end = rows.findIndex((row, index) => index > headerIndex && row.length && row.every((cell) => /^(orders|deals|summary)$/i.test(cell)));
+  return rows.slice(headerIndex + 1, end < 0 ? undefined : end).map((row) => {
+    const direction = String(importedValue(headers, row, "type")).toUpperCase();
+    const ticket = String(importedValue(headers, row, "position")).trim();
+    const asset = importedValue(headers, row, "symbol").replace(/\s+/g, "");
+    const opened = importedValue(headers, row, "opentime", "time");
+    const timeIndexes = headers.map((header, index) => header === "time" ? index : -1).filter((index) => index >= 0);
+    const closed = timeIndexes[1] === undefined ? "" : row[timeIndexes[1]] || "";
+    const rawCommission = importNumber(importedValue(headers, row, "commission"));
+    const rawSwap = importNumber(importedValue(headers, row, "swap"));
+    const grossPnl = importNumber(importedValue(headers, row, "profit"));
+    const commission = Math.abs(rawCommission);
+    const swap = Math.abs(rawSwap);
+    // A journal trade's date/time are the opening timestamp. Keeping the close
+    // timestamp separate is required for positions that span midnight.
+    return /^(BUY|SELL)$/.test(direction) && ticket && asset && importDate(opened || closed) ? {
+      id: `import-${uid()}`, importKey: `mt5-position:${ticket}`, date: importDate(opened || closed), time: importTime(opened || closed), closeDate: importDate(closed), closeTime: importTime(closed), asset, direction, grossPnl, commission, swap, pnl: grossPnl + rawCommission + rawSwap, rr: 0, session: "", entrySession: "", rating: 0, types: [], confluence: [], mistakes: [], screenshots: [], context: `Imported MetaTrader position #${ticket}`
+    } : null;
+  }).filter(Boolean);
+};
+const parseMt5CashMovements = (rows) => {
+  const dealsHeading = rows.findIndex((row) => row.length && row.every((cell) => /^deals$/i.test(cell)));
+  if (dealsHeading < 0) return [];
+  const headerIndex = rows.findIndex((row, index) => index > dealsHeading && row.some((cell) => /^time$/i.test(cell.trim())) && row.some((cell) => /^balance$/i.test(cell.trim())));
+  if (headerIndex < 0) return [];
+  const headers = rows[headerIndex].map(normaliseImportHeader);
+  return rows.slice(headerIndex + 1).map((row) => {
+    const type = String(importedValue(headers, row, "type")).toLowerCase();
+    if (!/^(balance|credit)$/.test(type)) return null;
+    const signedAmount = importNumber(importedValue(headers, row, "profit"));
+    const date = importDate(importedValue(headers, row, "time"));
+    if (!date || !signedAmount) return null;
+    const note = importedValue(headers, row, "comment") || "Imported MetaTrader cash movement";
+    return { type: signedAmount > 0 ? "deposit" : "withdrawal", amount: Math.abs(signedAmount), date, note: signedAmount > 0 ? `${importedAccountBaseNote} ${note}` : note, source: "trading" };
+  }).filter(Boolean);
+};
+const parseCTraderHtmlReport = (rows) => {
+  // cTrader's statement has a closed-position History table and a separate
+  // Transactions table. Unlike MT5, the History rows already provide Net USD.
+  const historyHeader = rows.findIndex((row) => {
+    const labels = row.map(normaliseImportHeader);
+    return labels.includes("symbol") && labels.includes("openingdirection") && labels.some((label) => label === "netusd" || label === "net");
+  });
+  const trades = historyHeader < 0 ? [] : parseBrokerTrades(rows.slice(historyHeader).map((row) => row.join("\t")).join("\n"));
+  const transactionHeader = rows.findIndex((row) => {
+    const labels = row.map(normaliseImportHeader);
+    return labels.includes("type") && labels.some((label) => label.startsWith("amount")) && labels.some((label) => label.startsWith("time"));
+  });
+  if (transactionHeader < 0) return { trades, cashMovements: [] };
+  const headers = rows[transactionHeader].map(normaliseImportHeader);
+  const cashMovements = rows.slice(transactionHeader + 1).map((row) => {
+    const kind = String(importedValue(headers, row, "type")).toLowerCase();
+    if (!/^(deposit|withdrawal)$/.test(kind)) return null;
+    const amount = importNumber(importedValue(headers, row, "amount"));
+    const date = importDate(importedValue(headers, row, "time"));
+    if (!amount || !date) return null;
+    const note = importedValue(headers, row, "note") || "Imported cTrader cash movement";
+    return { type: kind === "deposit" ? "deposit" : "withdrawal", amount: Math.abs(amount), date, note: kind === "deposit" ? `${importedAccountBaseNote} ${note}` : note, source: "trading" };
+  }).filter(Boolean);
+  return { trades, cashMovements };
+};
+const parseBrokerFile = async (file) => {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const isUtf16 = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[1] === 0 && bytes[3] === 0);
+  const text = new TextDecoder(isUtf16 ? "utf-16le" : "utf-8").decode(bytes);
+  const isHtml = /\.html?$/i.test(file.name) || /^\s*<!doctype html|^\s*<html/i.test(text);
+  if (!isHtml) return { trades: parseBrokerTrades(text), cashMovements: [] };
+  const document = new DOMParser().parseFromString(text, "text/html");
+  // MT5 writes responsive spacer cells (`class="hidden"`) into position rows.
+  // They do not represent report columns, so retaining them shifts profit into the
+  // wrong column and creates incorrect P&L.
+  const directCells = (row) => [...row.children].filter((cell) => /^(TD|TH)$/.test(cell.tagName) && !cell.classList.contains("hidden")).flatMap((cell) => Array.from({ length: cell.colSpan || 1 }, () => cell.textContent.replace(/\s+/g, " ").trim()));
+  const allRows = [...document.querySelectorAll("tr")].map(directCells).filter((row) => row.length);
+  const cTraderReport = parseCTraderHtmlReport(allRows);
+  if (cTraderReport.trades.length) return cTraderReport;
+  const table = [...document.querySelectorAll("table")].find((candidate) => [...candidate.querySelectorAll("tr")].some((row) => {
+    const labels = directCells(row).map((cell) => cell.toLowerCase());
+    return labels.some((label) => /(symbol|instrument)/.test(label)) && labels.some((label) => /(type|side|direction)/.test(label));
+  }));
+  if (!table) return { trades: [], cashMovements: [] };
+  const rows = [...table.querySelectorAll("tr")].map(directCells).filter((row) => row.length);
+  const mt5Trades = parseMt5PositionRows(rows);
+  if (mt5Trades.length) return { trades: mt5Trades, cashMovements: parseMt5CashMovements(rows) };
+  const tsv = rows.map((row) => row.join("\t")).join("\n");
+  return { trades: parseBrokerTrades(tsv), cashMovements: [] };
+};
+function ImportTradesModal({ account, onClose, onImport }) {
+  const [platform, setPlatform] = useState(account.platform || "Manual"); const [trades, setTrades] = useState([]); const [busy, setBusy] = useState(false); const [fileError, setFileError] = useState("");
+  const load = async (file) => { if (!file) return; const imported = await parseBrokerFile(file); setTrades(imported.trades); setFileError(imported.trades.length ? "" : "No closed BUY or SELL trades were found. Export the account history as HTML, CSV, or a tab-separated file."); };
+  const submit = async () => { if (!trades.length || busy) return; setBusy(true); const ok = await onImport(trades); if (!ok) setBusy(false); };
+  return <Modal title="Import trades" onClose={onClose} className="tj-import-modal" centered><p className="tj-muted-txt">Import a MetaTrader or cTrader HTML, CSV, or tab-separated history. Every imported trade uses the same journal record as a manual trade.</p><div className="tj-grid2"><Field label="Source platform"><select className="tj-input" value={platform} onChange={event => setPlatform(event.target.value)}><option>MetaTrader 4/5</option><option>cTrader</option><option>Manual</option></select></Field><Field label="Trade history file"><input className="tj-input" type="file" accept=".html,.htm,.csv,.txt,.tsv" onChange={event => load(event.target.files?.[0])}/></Field></div>{fileError && <div className="tj-import-error">{fileError}</div>}{trades.length > 0 ? <div className="tj-import-preview"><strong>{trades.length} trades ready to import</strong>{trades.slice(0, 5).map(trade => <div key={trade.id}><span>{trade.date} · {trade.asset} · {trade.direction}</span><b className={trade.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(trade.pnl)}</b></div>)}{trades.length > 5 && <small>Plus {trades.length - 5} more trades.</small>}</div> : !fileError && <div className="tj-finance-empty">Choose an exported history file to preview its trades.</div>}<div className="tj-modal-actions"><button className="tj-btn-outline" onClick={onClose}>Cancel</button><button className="tj-btn-primary" disabled={!trades.length || busy} onClick={submit}>{busy ? "Importing…" : `Import ${trades.length || ""} trades`}</button></div></Modal>;
+}
+
+function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, onNewTrade, onLinkMarkup, locked = false }) {
   const [search, setSearch] = useState("");
   const [assetFilter, setAssetFilter] = useState("All");
   const [sessionFilter, setSessionFilter] = useState("All");
@@ -1660,19 +1926,9 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
   const [sortOpen, setSortOpen] = useState(false);
   const [linkDrafts, setLinkDrafts] = useState({});
   const [selectedImage, setSelectedImage] = useState("");
-  const toolbarRef = useRef(null);
-
-  useEffect(() => {
-    if (!filtersOpen && !sortOpen) return undefined;
-    const closeOnOutsidePress = (event) => {
-      if (!toolbarRef.current?.contains(event.target)) {
-        setFiltersOpen(false);
-        setSortOpen(false);
-      }
-    };
-    document.addEventListener("pointerdown", closeOnOutsidePress, true);
-    return () => document.removeEventListener("pointerdown", closeOnOutsidePress, true);
-  }, [filtersOpen, sortOpen]);
+  const [listPage, setListPage] = useState(1);
+  const [showAll, setShowAll] = useState(false);
+  const toolbarRef = useCloseOnOutside(filtersOpen || sortOpen, () => { setFiltersOpen(false); setSortOpen(false); });
 
   const cap = account.breakevenCap;
   const reviewedTradeIds = useMemo(() => new Set(reviews.map((review) => review.tradeId || review.trade_id).filter(Boolean)), [reviews]);
@@ -1694,6 +1950,11 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
     else if (sortKey === "asset") cmp = a.asset.localeCompare(b.asset);
     return sortDir === "asc" ? cmp : -cmp;
   });
+  const tradePageCount = Math.max(1, Math.ceil(filtered.length / 10));
+  const activeTradePage = Math.min(listPage, tradePageCount);
+  const visibleTrades = showAll ? filtered : filtered.slice((activeTradePage - 1) * 10, activeTradePage * 10);
+
+  useEffect(() => { setListPage(1); }, [search, assetFilter, sessionFilter, resultFilter, sortKey, sortDir]);
 
   const stats = computeStats(account.trades, cap);
   const netReturn = account.balance ? (stats.netPnl / account.balance) * 100 : 0;
@@ -1717,7 +1978,7 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
 
       <div className="tj-tradelog-compact-toolbar" ref={toolbarRef}>
         <div className="tj-markup-toolbar-actions"><button className={`tj-icon-btn tj-markup-toolbar-button ${filtersOpen ? "tj-icon-btn-active" : ""}`} title="Filter trade log" onClick={() => { setFiltersOpen((value) => !value); setSortOpen(false); }}><SlidersHorizontal size={16}/></button><button className={`tj-icon-btn tj-markup-toolbar-button ${sortOpen ? "tj-icon-btn-active" : ""}`} title="Sort trade log" onClick={() => { setSortOpen((value) => !value); setFiltersOpen(false); }}><ArrowDownUp size={16}/></button></div>
-        <div className="tj-markup-toolbar-status"><span>{filtered.length} shown</span><b>All visible</b></div>
+        <div className="tj-markup-toolbar-status"><span>{filtered.length} shown</span><b>{showAll ? "All visible" : `Page ${activeTradePage} of ${tradePageCount}`}</b></div>
         {filtersOpen && <div className="tj-markup-filter-popover tj-tradelog-filter-popover">
           <div className="tj-markup-filter-head"><div><strong>Filter trades</strong><span>Focus the trade log on the exact instrument, session, or result you want to review.</span></div><button className="tj-icon-btn" title="Close filters" onClick={() => setFiltersOpen(false)}><X size={14}/></button></div>
           <div className="tj-markup-filter-grid tj-tradelog-filter-grid">
@@ -1735,7 +1996,7 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
         <Card className="tj-panel"><div className="tj-empty">No trades match these filters.</div></Card>
       ) : (
         <div className="tj-tlog-list">
-          {filtered.map((t) => {
+          {visibleTrades.map((t) => {
             const cls = classify(t.pnl, cap);
             const isOpen = !!expanded[t.id];
             const isReviewed = reviewedTradeIds.has(t.id);
@@ -1763,8 +2024,8 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
                       <div className={cls === "be" ? "tj-blue tj-tlog-pnl" : (t.pnl >= 0 ? "tj-green tj-tlog-pnl" : "tj-red tj-tlog-pnl")}>{cls === "be" ? "B/E" : fmtMoney(t.pnl)}</div>
                       <div className="tj-reference-trade-return">{tradeReturn >= 0 ? "+" : ""}{tradeReturn.toFixed(2)}% {t.rr ? `· ${t.rr.toFixed(2)}R` : ""}</div>
                     </div>
-                    <button className="tj-markup-round-button" title="Edit trade" onClick={() => onEdit(t)}><Pencil size={15}/></button>
-                    <ConfirmDeleteButton className="tj-markup-round-button tj-markup-delete-button" title="Delete trade" onClick={() => onDelete(t.id)}><Trash2 size={14}/></ConfirmDeleteButton>
+                    <button className="tj-markup-round-button" disabled={locked} title={locked ? "Trade changes are locked by the account loss limit" : "Edit trade"} onClick={() => onEdit(t)}><Pencil size={15}/></button>
+                    <ConfirmDeleteButton className="tj-markup-round-button tj-markup-delete-button" disabled={locked} title={locked ? "Trade changes are locked by the account loss limit" : "Delete trade"} onClick={() => onDelete(t.id)}><Trash2 size={14}/></ConfirmDeleteButton>
                     <button className="tj-markup-round-button" title={isOpen ? "Collapse trade" : "Expand trade"} onClick={() => setExpanded((e) => ({ ...e, [t.id]: !e[t.id] }))}>{isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</button>
                   </div>
                 </div>
@@ -1783,7 +2044,8 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
           })}
         </div>
       )}
-      <button className="tj-fab" onClick={onNewTrade}><Plus size={16} /> New Trade</button>
+      <ListPagination total={filtered.length} page={activeTradePage} showAll={showAll} onPageChange={setListPage} onShowAll={(next) => { setShowAll(next); if (!next) setListPage(1); }} label="trade logs"/>
+      <button className="tj-fab" disabled={locked} title={locked ? "Trade entry is paused by the account loss limit" : "New trade"} onClick={onNewTrade}><Plus size={16} /> {locked ? "Trade Locked" : "New Trade"}</button>
     </>
   );
 }
@@ -2002,6 +2264,53 @@ function RiskManagementInsightsView({ account, trades, stats }) {
   </div>;
 }
 
+const FINANCE_QUOTES = [
+  "Capital protected today is opportunity preserved tomorrow.",
+  "Give every dollar a job before you ask it to grow.",
+  "A clean ledger makes disciplined trading easier to repeat.",
+  "Savings is profit with a purpose, not capital that disappeared.",
+  "Move money deliberately; let your journal show the full picture.",
+];
+
+function FinancePage({ account, onRecord, onDelete }) {
+  const [type, setType] = useState("deposit");
+  const [source, setSource] = useState("trading");
+  const [savingsAccountId, setSavingsAccountId] = useState(account.savingsAccounts?.[0]?.id || "");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayISO());
+  const [note, setNote] = useState("");
+  const quote = useState(() => FINANCE_QUOTES[Math.floor(Math.random() * FINANCE_QUOTES.length)])[0];
+  const totals = financeTotals(account);
+  const profitCycle = financeProfitCycle(account);
+  const savingsAccounts = account.savingsAccounts || [];
+  const cashMovements = [...(account.financeMovements || [])].sort((a,b) => String(b.date).localeCompare(String(a.date)));
+  const requiresSavings = type === "transfer" || (type === "withdrawal" && source === "savings");
+  const record = async () => {
+    if (!(Number(amount) > 0) || (requiresSavings && !savingsAccountId)) return;
+    const ok = await onRecord({type, source:type === "deposit" ? "trading" : source, savingsAccountId:requiresSavings ? savingsAccountId : null, amount:Number(amount), date, note});
+    if (ok) { setAmount(""); setNote(""); }
+  };
+  const recordPlannedTransfer = async (saving) => {
+    const profitSinceCashMovement = Math.max(0, financeProfitCycle(account).profit);
+    const amountToTransfer = profitSinceCashMovement * (Number(saving.allocationPct) || 0) / 100;
+    if (!(amountToTransfer > 0)) return;
+    await onRecord({type:"transfer", source:"trading", savingsAccountId:saving.id, amount:Number(amountToTransfer.toFixed(2)), date:todayISO(), note:`${Number(saving.allocationPct) || 0}% of profit since last cash movement`});
+  };
+  const movementLabel = (movement) => movement.type === "deposit" ? "Funds added" : movement.type === "transfer" ? `Transfer to ${savingsAccounts.find((item) => item.id === movement.savingsAccountId)?.name || "savings"}` : `Funds withdrawn from ${movement.source === "savings" ? (savingsAccounts.find((item) => item.id === movement.savingsAccountId)?.name || "savings") : "trading"}`;
+  return <div className="tj-finance-page">
+    <section className="tj-finance-hero"><div><span>CAPITAL OVERVIEW</span><h1>Finance</h1><p>Track cash movements and savings without mixing them into your trading statistics.</p><small>Profit since last cash movement: <b>{fmtMoney(profitCycle.profit)}</b> · baseline {fmtMoney(profitCycle.baseline)}</small></div><aside><Lightbulb size={18}/><strong>Trading quote</strong><em>“{quote}”</em></aside></section>
+    <div className="tj-finance-layout"><Card className="tj-finance-ledger"><div className="tj-finance-card-title"><div><small>CAPITAL LEDGER</small><strong>Cash movements</strong></div><span>ACCOUNT ONLY</span></div><div className="tj-finance-form"><Field label="Movement"><select className="tj-input" value={type} onChange={(event) => { setType(event.target.value); if (event.target.value === "deposit") setSource("trading"); }}><option value="deposit">Add funds</option><option value="withdrawal">Withdraw funds</option><option value="transfer">Transfer to savings</option></select></Field>{type === "withdrawal" && <Field label="Withdraw from"><select className="tj-input" value={source} onChange={(event) => setSource(event.target.value)}><option value="trading">Trading account</option><option value="savings">Savings account</option></select></Field>}{requiresSavings && <Field label={type === "transfer" ? "Transfer target" : "Withdrawal account"}><select className="tj-input" value={savingsAccountId} onChange={(event) => setSavingsAccountId(event.target.value)}><option value="" disabled>Select savings account</option>{savingsAccounts.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field>}<Field label={`Amount (${account.baseCurrency})`}><input className="tj-input" type="number" min="0.01" step="0.01" placeholder="0.00" value={amount} onChange={(event) => setAmount(event.target.value)}/></Field><Field label="Date"><input className="tj-input" type="date" value={date} onChange={(event) => setDate(event.target.value)}/></Field><Field label="Note"><input className="tj-input" value={note} placeholder="Optional reference" onChange={(event) => setNote(event.target.value)}/></Field></div><button type="button" className="tj-btn-primary tj-finance-record" onClick={record} disabled={!(Number(amount) > 0) || (requiresSavings && !savingsAccountId)}><ArrowDownToLine size={15}/> Record movement</button><div className="tj-finance-movement-list">{cashMovements.length ? cashMovements.map((movement) => <div key={movement.id} className="tj-finance-movement"><i className={movement.type === "deposit" ? "tj-finance-movement-in" : "tj-finance-movement-out"}>{movement.type === "deposit" ? <ArrowDownToLine size={15}/> : movement.type === "transfer" ? <Repeat2 size={15}/> : <ArrowUpFromLine size={15}/>}</i><div><strong>{movementLabel(movement)}</strong><span>{movement.date}{movement.note ? ` · ${movement.note}` : ""}</span></div><b className={movement.type === "deposit" ? "tj-green" : "tj-red"}>{movement.type === "deposit" ? "+" : "-"}{fmtMoney(Math.abs(movement.amount)).replace(/^\+/, "")}</b><ConfirmDeleteButton type="button" className="tj-finance-delete" title="Delete movement" onClick={() => onDelete(movement.id)}><Trash2 size={14}/></ConfirmDeleteButton></div>) : <div className="tj-finance-empty">No cash movements yet. Add a deposit, withdrawal, or transfer when it happens.</div>}</div></Card>
+      <aside className="tj-finance-summary"><Card className="tj-finance-card-capital"><small>AVAILABLE CAPITAL</small><strong>{fmtMoney(totals.tradingBalance)}</strong><span>Trading account balance</span></Card><Card className="tj-finance-card-savings"><small>TOTAL SAVINGS</small><strong>{fmtMoney(totals.savings)}</strong><span>{savingsAccounts.length} savings account{savingsAccounts.length === 1 ? "" : "s"} · {fmtMoney(totals.totalCapital)} combined</span></Card><Card className="tj-finance-card-deposit"><small>DEPOSITS</small><strong>{fmtMoney(totals.deposits)}</strong><span>Funds added to trading</span></Card><Card className="tj-finance-card-withdrawal"><small>WITHDRAWALS</small><strong>{fmtMoney(-totals.withdrawals)}</strong><span>Funds removed from accounts</span></Card></aside>
+    </div>
+    <section className="tj-finance-savings"><div className="tj-finance-card-title"><div><small>SAVINGS ACCOUNTS</small><strong>Targets and balances</strong></div><WalletCards size={18}/></div>{savingsAccounts.length ? savingsAccounts.map((saving) => { const saved = financeSavingsBalance(account, saving.id); const pct = saving.target ? clamp(saved / saving.target * 100, 0, 100) : 0; const ready = Math.max(0, profitCycle.profit * (Number(saving.allocationPct) || 0) / 100); return <div className="tj-finance-saving" key={saving.id}><div><small>SAVINGS PLAN</small><strong>{saving.name}</strong><span>{saving.interval} · {saving.allocationPct || 0}% allocation</span></div><div><small>SAVED</small><strong>{fmtMoney(saved)}</strong><span>of {fmtMoney(saving.target)} target</span></div><div className="tj-finance-saving-progress"><small>{pct.toFixed(0)}% GOAL PROGRESS</small><i><b style={{width:`${pct}%`}} /></i><span>{fmtMoney(Math.max(0, saving.target - saved))} remaining</span></div><div className="tj-finance-saving-transfer"><strong>{saving.allocationPct || 0}% <small>OF PROFIT</small></strong><span>{profitCycle.profit > 0 ? `${fmtMoney(ready)} from ${fmtMoney(profitCycle.profit)} profit` : "No profit since the last cash movement"}</span><button type="button" className="tj-btn-outline tj-btn-small" disabled={!(ready > 0)} onClick={() => recordPlannedTransfer(saving)}><Repeat2 size={14}/> Record transfer</button></div></div>; }) : <div className="tj-finance-empty">Add a savings account in Account Settings to use transfers.</div>}</section>
+  </div>;
+}
+
+function FinanceReminderModal({ account, savingsPlans, onClose, onOpenFinance }) {
+  const cycle = financeProfitCycle(account);
+  return <Modal title="Savings transfer reminder" onClose={onClose} centered className="tj-finance-reminder"><div className="tj-finance-reminder-copy"><Landmark size={22}/><strong>Your profit target has been reached.</strong><p>Profit since the last cash movement is <b>{fmtMoney(cycle.profit)}</b> on a {fmtMoney(cycle.baseline)} baseline.</p></div><div className="tj-finance-reminder-list">{savingsPlans.map((saving) => { const amount = Math.max(0, cycle.profit * (Number(saving.allocationPct) || 0) / 100); return <div key={saving.id}><span>{saving.name}</span><strong>{saving.allocationPct}% = {fmtMoney(amount)}</strong></div>; })}</div><div className="tj-modal-actions"><button className="tj-btn-outline" onClick={onClose}>Later</button><button className="tj-btn-primary" onClick={() => { onOpenFinance(); onClose(); }}>Open Finance</button></div></Modal>;
+}
+
 function AnalyticsPage({ account }) {
   const allTrades = account.trades;
   const analyticsYear = allTrades.length
@@ -2148,17 +2457,18 @@ function AnalyticsPage({ account }) {
   const maxAbsLast6 = Math.max(1, ...last6.map((d) => Math.abs(d.pnl)));
 
   const equityData = useMemo(() => {
-    let running = account.balance;
-    const arr = [{ label: "Start", equity: running }];
-    stats.sorted.forEach((t, i) => { running += t.pnl; arr.push({ label: `T${i + 1}`, equity: +running.toFixed(2) }); });
+    let running = Number(account.balance) || 0;
+    const events = [...stats.sorted.map((trade) => ({ date:trade.date, kind:"trade", value:Number(trade.pnl || 0), label:trade.asset || "Trade" })), ...(account.financeMovements || []).map((movement) => ({ date:movement.date, kind:"cash", value:financeTradingImpact(movement), label:movement.type === "deposit" ? "Deposit" : movement.type === "transfer" ? "Transfer to savings" : "Withdrawal" }))].sort((a,b) => String(a.date).localeCompare(String(b.date)) || (a.kind === "cash" ? -1 : 1));
+    const arr = [{ label: "Start", equity: running, event:"Starting balance" }];
+    events.forEach((event, i) => { running += event.value; arr.push({ label:event.date || `Event ${i + 1}`, equity:+running.toFixed(2), event:`${event.label} ${event.value >= 0 ? "+" : ""}${fmtMoney(event.value)}` }); });
     return arr;
-  }, [stats.sorted, account.balance]);
-  const equityChangePct = account.balance ? (stats.netPnl / account.balance) * 100 : 0;
-  const currentEquity = account.balance + stats.netPnl;
+  }, [stats.sorted, account.balance, account.financeMovements]);
+  const currentEquity = equityData[equityData.length - 1]?.equity ?? Number(account.balance || 0);
+  const equityChangePct = account.balance ? ((currentEquity - account.balance) / account.balance) * 100 : 0;
   const highestEquity = equityData.reduce((best, point) => Math.max(best, point.equity), account.balance);
   const lowestEquity = equityData.reduce((lowest, point) => Math.min(lowest, point.equity), account.balance);
   const currentMonthKey = todayISO().slice(0, 7);
-  const currentMonthPnl = trades.filter((trade) => trade.date?.slice(0, 7) === currentMonthKey).reduce((sum, trade) => sum + trade.pnl, 0);
+  const currentMonthPnl = trades.filter((trade) => trade.date?.slice(0, 7) === currentMonthKey).reduce((sum, trade) => sum + trade.pnl, 0) + (account.financeMovements || []).filter((movement) => movement.date?.slice(0, 7) === currentMonthKey).reduce((sum, movement) => sum + financeTradingImpact(movement), 0);
   const monthBase = currentEquity - currentMonthPnl;
   const currentMonthPct = monthBase ? currentMonthPnl / monthBase * 100 : 0;
   const maxDrawdown = equityData.reduce((state, point) => {
@@ -2253,7 +2563,7 @@ function AnalyticsPage({ account }) {
       {analyticsTab === "performance" ? <PerformanceMetricsView account={account} trades={trades} cap={cap} stats={stats} tagStats={tagStats} confluenceStats={confluenceStats} pairingStats={pairingStats} instrumentStats={instrumentStats}/> : analyticsTab === "rhythm" ? <ExecutionRhythmView account={account} trades={trades} cap={cap} stats={stats}/> : analyticsTab === "guardrails" ? <RiskGuardrailsView account={account} trades={trades} cap={cap} stats={stats} confluenceStats={confluenceStats} instrumentStats={instrumentStats}/> : analyticsTab === "insights" ? <RiskManagementInsightsView account={account} trades={trades} stats={stats}/> : <>
 
       <Card className="tj-analytics-equity-hero">
-        <div className="tj-analytics-equity-head"><div><div className="tj-section-label">ALL-TIME EQUITY</div><h2>{fmtMoney(currentEquity)} live balance</h2><p>Compounded from {fmtMoney(account.balance)} across {stats.total} trades tracked, so every daily result rolls forward into the next live baseline automatically.</p></div><div className="tj-analytics-hero-return"><strong className={equityChangePct >= 0 ? "tj-green" : "tj-red"}>{equityChangePct >= 0 ? "+" : ""}{equityChangePct.toFixed(2)}%</strong><span>{stats.total} trades tracked</span><small>{fmtMoney(currentMonthPnl)} this month · {currentMonthPct >= 0 ? "+" : ""}{currentMonthPct.toFixed(2)}%</small></div></div>
+        <div className="tj-analytics-equity-head"><div><div className="tj-section-label">ALL-TIME EQUITY</div><h2>{fmtMoney(currentEquity)} live balance</h2><p>Starts at {fmtMoney(account.balance)}. Trade results and dated account cash movements roll into this balance line; trade metrics below remain trade-only.</p></div><div className="tj-analytics-hero-return"><strong className={equityChangePct >= 0 ? "tj-green" : "tj-red"}>{equityChangePct >= 0 ? "+" : ""}{equityChangePct.toFixed(2)}%</strong><span>{stats.total} trades tracked</span><small>{fmtMoney(currentMonthPnl)} this month · {currentMonthPct >= 0 ? "+" : ""}{currentMonthPct.toFixed(2)}%</small></div></div>
         <div className="tj-analytics-equity-chart"><ResponsiveContainer width="100%" height={180}><AreaChart data={equityData}><defs><linearGradient id="analyticsEquity" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={UI_COLORS.purple} stopOpacity={.32}/><stop offset="100%" stopColor={UI_COLORS.purple} stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="var(--tj-chart-grid)" strokeDasharray="3 3" vertical={false}/><XAxis dataKey="label" hide/><YAxis hide domain={["dataMin - 100", "dataMax + 100"]}/><Tooltip itemStyle={{color:"var(--tj-text)"}} labelStyle={{color:"var(--tj-text)"}} contentStyle={CHART_TOOLTIP_STYLE} formatter={(value) => [fmtMoney(value), "Equity"]}/><Area type="monotone" dataKey="equity" stroke={UI_COLORS.purple} fill="url(#analyticsEquity)" strokeWidth={2.5} dot={false}/></AreaChart></ResponsiveContainer><div className="tj-analytics-equity-milestones"><div><small>BASE</small><strong>{fmtMoney(account.balance)}</strong><span>Original starting balance</span></div><div><small>LOW PRINT</small><strong>{fmtMoney(lowestEquity)}</strong><span>Lowest balance print so far</span></div><div><small>MONTH BASE</small><strong>{fmtMoney(monthBase)}</strong><span>Current compounding reset point</span></div><div><small>HIGH-WATER</small><strong>{fmtMoney(highestEquity)}</strong><span>Best balance print so far</span></div><div><small>PEAK TO LOW</small><strong className="tj-red">-{maxDrawdown.pct.toFixed(2)}%</strong><span>{fmtMoney(-maxDrawdown.amount)} drawdown</span></div><div><small>NOW</small><strong>{fmtMoney(currentEquity)}</strong><span>Live balance right now</span></div></div></div>
       </Card>
 
@@ -2938,7 +3248,10 @@ function TradingJournalApp({ user, onLogout }) {
   const [profileTheme, setProfileTheme] = useSiteTheme(user.user_metadata?.theme);
   const [accounts, setAccounts] = useState(null);
   const [activeId, setActiveId] = useState(() => readActiveAccount(user.id));
-  const [page, setPage] = useState("dashboard");
+  const [page, setPage] = useState(() => {
+    const savedPage = readActivePage(user.id);
+    return NAV.some((item) => item.id === savedPage) ? savedPage : "dashboard";
+  });
   const [showAccountMenu, setShowAccountMenu] = useState(false);
   const accountMenuRef = useRef(null);
   const sessionTimeoutValue = Number(user.user_metadata?.session_timeout_minutes);
@@ -2981,6 +3294,7 @@ function TradingJournalApp({ user, onLogout }) {
   }, []);
   useEffect(() => () => window.clearTimeout(modalCloseTimer.current), []);
   const [dayModalDate, setDayModalDate] = useState(null);
+  const [financeReminder, setFinanceReminder] = useState([]);
   const [editingTrade, setEditingTrade] = useState(null);
   const [newTradeDraft, setNewTradeDraft] = useState(null);
   const [editingMarkup, setEditingMarkup] = useState(null);
@@ -3013,7 +3327,7 @@ function TradingJournalApp({ user, onLogout }) {
     setLoaded(false);
     // Existing accounts should render immediately. Demo setup is only needed once
     // and used to block Safari behind several extra network requests on every load.
-    if (user.user_metadata?.demo_2025_version !== 2) {
+    if (user.user_metadata?.demo_history_version !== 3) {
       try { await ensureDemoAccount(user); }
       catch (error) { setLoadError(error.message || "Journal setup could not finish. Please retry."); setLoaded(true); return false; }
     }
@@ -3096,6 +3410,35 @@ function TradingJournalApp({ user, onLogout }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Imported MT5/cTrader accounts may already contain deposits saved by an
+  // earlier import. Treat their sum as the journal base automatically, rather
+  // than making the trader enter the same funding amount again by hand.
+  useEffect(() => {
+    if (!loaded || !accounts?.length) return;
+    const importedAccounts = accounts.filter((item) => item.platform !== "Manual" && !(Number(item.balance) > 0) && (item.financeMovements || []).some((movement) => movement.type === "deposit"));
+    if (!importedAccounts.length) return;
+    (async () => {
+      const updates = [];
+      for (const item of importedAccounts) {
+        const deposits = (item.financeMovements || []).filter((movement) => movement.type === "deposit");
+        const base = deposits.reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
+        if (!(base > 0)) continue;
+        const relabelled = [];
+        for (const movement of deposits) {
+          if (movement.note?.startsWith(importedAccountBaseNote)) { relabelled.push(movement); continue; }
+          const result = await updateFinanceMovement(movement.id, { note: `${importedAccountBaseNote} ${movement.note || "Imported broker deposit"}` });
+          if (result.error) { showError(result.error); continue; }
+          relabelled.push(result.data);
+        }
+        const next = { ...item, balance: base, financeMovements: [...relabelled, ...(item.financeMovements || []).filter((movement) => movement.type !== "deposit")] };
+        const saved = await updateAccount(item.id, next);
+        if (saved.error) { showError(saved.error); continue; }
+        updates.push(next);
+      }
+      if (updates.length) setAccounts((current) => current.map((item) => updates.find((update) => update.id === item.id) || item));
+    })();
+  }, [loaded, accounts, showError]);
+
   // If a signed-up user genuinely has zero accounts (new user, and nothing
   // to migrate), give them one empty starter account instead of a dead end.
   useEffect(() => {
@@ -3141,13 +3484,24 @@ function TradingJournalApp({ user, onLogout }) {
   useEffect(() => {
     if (account && account.id === activeId) rememberActiveAccount(user.id, account.id);
   }, [user.id, account?.id, activeId]);
+  useEffect(() => { rememberActivePage(user.id, page); }, [user.id, page]);
   useEffect(() => {
     if (account?.trades.some(t => t.context?.startsWith("Synthetic demo trade."))) setMonthCursor(new Date(2025, 11, 1));
   }, [account?.id]);
   useEffect(() => { if (page === 'challenge' && !isChallengeEnabled(account)) setPage('dashboard'); }, [page, account]);
+  useEffect(() => { if (page === 'finance' && !account?.finance?.enabled) setPage('dashboard'); }, [page, account]);
   const stats = useMemo(() => (account ? computeStats(account.trades, account.breakevenCap) : null), [account]);
   const challenge = useChallenge(account, user.id);
   const guardrails = useMemo(() => (account ? accountGuardrails(account, account.trades) : null), [account]);
+  useEffect(() => {
+    if (!account?.finance?.enabled) { setFinanceReminder([]); return; }
+    const cycle = financeProfitCycle(account);
+    const ready = (account.savingsAccounts || []).filter((saving) => {
+      const percentage = Number(saving.allocationPct) || 0;
+      return percentage > 0 && cycle.baseline > 0 && cycle.profit >= cycle.baseline * percentage / 100 && reminderScheduleDue(saving, account.financeMovements);
+    });
+    setFinanceReminder(ready);
+  }, [account, page]);
 
   if (loaded && loadError) {
     return (
@@ -3188,8 +3542,8 @@ function TradingJournalApp({ user, onLogout }) {
 
   const saveTrade = async (trade) => {
     const exists = account.trades.some((t) => t.id === trade.id);
-    if (!exists && guardrails.tradeEntryLocked) {
-      showInfo("Trade entry is paused by your account loss cap. Markups remain available.");
+    if (guardrails.tradeEntryLocked) {
+      showInfo("This account is locked by its loss limit. Trade changes resume after the applicable reset period.");
       return;
     }
     if (exists) {
@@ -3206,8 +3560,71 @@ function TradingJournalApp({ user, onLogout }) {
     setModal(null); setEditingTrade(null); setNewTradeDraft(null);
   };
 
+  const importTradesToAccount = async (targetAccount, plan, onProgress) => {
+    const trades = Array.isArray(plan) ? plan : plan?.trades || [];
+    const cashMovements = Array.isArray(plan) ? [] : plan?.cashMovements || [];
+    const tradeKey = (trade) => {
+      if (trade.importKey) return trade.importKey;
+      const ticket = trade.context?.match(/Imported MetaTrader position #(\S+)/)?.[1];
+      if (ticket) return `mt5-position:${ticket}`;
+      const cTraderKey = trade.context?.match(/Imported cTrader position #(ctrader:\S+)/)?.[1];
+      return cTraderKey || [trade.date, trade.time || "", trade.closeDate || "", trade.closeTime || "", trade.asset, trade.direction, Number(trade.pnl || 0).toFixed(2)].join("|");
+    };
+    const seen = new Set((targetAccount.trades || []).map(tradeKey));
+    const unique = trades.filter((trade) => {
+      const key = tradeKey(trade);
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+    if (!unique.length && !cashMovements.length) { showInfo("Those trades are already in this account."); return false; }
+    const imported = [];
+    const total = unique.length + cashMovements.length;
+    let completed = 0;
+    for (const trade of unique) {
+      const result = await createTrade(user.id, targetAccount.id, trade);
+      if (result.error) { showError(result.error); return false; }
+      imported.push(result.data);
+      completed += 1; onProgress?.(Math.round(completed / total * 100));
+    }
+    const existingCash = targetAccount.financeMovements || [];
+    const movementKey = (movement) => [movement.type, Number(movement.amount).toFixed(2), movement.date, movement.source || "trading"].join("|");
+    const knownCash = new Map(existingCash.map((movement) => [movementKey(movement), movement]));
+    const importedCash = [];
+    const relabelledCash = [];
+    let importedDepositBase = 0;
+    for (const movement of cashMovements) {
+      const key = movementKey(movement);
+      const existing = knownCash.get(key);
+      if (existing) {
+        // Upgrade deposits made by the earlier importer so they become account base
+        // rather than being counted a second time as a new cash event.
+        const originalNote = movement.note?.replace(importedAccountBaseNote, "").trim();
+        if (movement.type === "deposit" && !existing.note?.startsWith(importedAccountBaseNote) && existing.note === originalNote) {
+          const result = await updateFinanceMovement(existing.id, { note: movement.note });
+          if (result.error) { showError(result.error); return false; }
+          relabelledCash.push(result.data); importedDepositBase += movement.amount;
+        }
+        completed += 1; onProgress?.(Math.round(completed / total * 100)); continue;
+      }
+      const result = await createFinanceMovement(user.id, targetAccount.id, movement);
+      if (result.error) { showError(`${result.error} Apply supabase/finance_migration.sql if this is a new database.`); return false; }
+      knownCash.set(key, result.data); importedCash.push(result.data);
+      if (movement.type === "deposit") importedDepositBase += movement.amount;
+      completed += 1; onProgress?.(Math.round(completed / total * 100));
+    }
+    const nextAccount = { ...targetAccount, balance: Number(targetAccount.balance || 0) + importedDepositBase };
+    if (importedDepositBase > 0) {
+      const result = await updateAccount(targetAccount.id, nextAccount);
+      if (result.error) { showError(result.error); return false; }
+    }
+    setAccounts((items) => items.map((item) => item.id === targetAccount.id ? { ...nextAccount, trades: [...(item.trades || []), ...imported], financeMovements: [...importedCash, ...relabelledCash, ...(item.financeMovements || []).filter((movement) => !relabelledCash.some((updated) => updated.id === movement.id))] } : item));
+    for (const instrument of [...new Set(imported.map((trade) => trade.asset))]) await persistCustomInstrument(instrument);
+    showInfo(`${imported.length} trade${imported.length === 1 ? "" : "s"}${importedCash.length ? ` and ${importedCash.length} cash movement${importedCash.length === 1 ? "" : "s"}` : ""}${importedDepositBase ? `; ${fmtMoney(importedDepositBase)} added to the account base` : ""}${unique.length !== trades.length ? `; ${trades.length - unique.length} duplicate${trades.length - unique.length === 1 ? " was" : "s were"} skipped` : ""}.`);
+    return true;
+  };
+
   const handleDeleteTrade = async (id) => {
-    
+    if (guardrails.tradeEntryLocked) { showInfo("This account is locked by its loss limit. Trade changes resume after the applicable reset period."); return; }
     const res = await deleteTrade(id);
     if (res.error) { showError(res.error); return; }
     setAccounts((accs) => accs.map((a) => (a.id !== account.id ? a : { ...a, trades: a.trades.filter((t) => t.id !== id) })));
@@ -3245,16 +3662,18 @@ function TradingJournalApp({ user, onLogout }) {
   const handleDeleteMarkup = async (id) => {  const res=await deleteMarkup(id); if(res.error)return showError(res.error); setMarkups(x=>x.filter(m=>m.id!==id)); };
   const handleSaveReview = async (r) => { const res=await saveTradeReview(user.id,account.id,r); if(res.error){showError(res.error);return false;}setReviews(x=>{const i=x.findIndex(v=>v.id===res.data.id);return i<0?[res.data,...x]:x.map(v=>v.id===res.data.id?res.data:v);}); return true; };
   const handleSavePeriodReview = async (review) => { const res = await savePeriodReview(user.id, account.id, review); if (res.error) { showError(res.error); return false; } setPeriodReviews((items) => { const index = items.findIndex((item) => item.id === res.data.id || (item.accountId === account.id && item.type === res.data.type && item.key === res.data.key)); return index < 0 ? [res.data, ...items] : items.map((item, itemIndex) => itemIndex === index ? res.data : item); }); return true; };
+  const handleRecordFinanceMovement = async (movement) => { if (guardrails.tradeEntryLocked) return showInfo("This account is locked by its loss limit. Cash movements resume after the applicable reset period."); const result = await createFinanceMovement(user.id, account.id, movement); if (result.error) { showError(`${result.error} Apply supabase/finance_migration.sql if this is a new database.`); return false; } setAccounts((items) => items.map((item) => item.id === account.id ? {...item, financeMovements:[result.data, ...(item.financeMovements || [])]} : item)); return true; };
+  const handleDeleteFinanceMovement = async (id) => { if (guardrails.tradeEntryLocked) return showInfo("This account is locked by its loss limit. Cash movements resume after the applicable reset period."); const result = await deleteFinanceMovement(id); if (result.error) return showError(result.error); setAccounts((items) => items.map((item) => item.id === account.id ? {...item, financeMovements:(item.financeMovements || []).filter((movement) => movement.id !== id)} : item)); };
 
   const handleResetData = async () => {
-    
+    if (guardrails.tradeEntryLocked) { showInfo("Reset Data is locked while this account is paused by its loss limit."); return; }
     const res = await resetAccountData(account.id);
     if (res.error) { showError(res.error); return; }
     setAccounts((accs) => accs.map((a) => (a.id === account.id ? { ...a, trades: [], checkins: {} } : a)));
   };
 
   const handleDeleteAccount = async (a) => {
-    
+    if (a.id === account.id && guardrails.tradeEntryLocked) { showInfo("Account settings are locked while this account is paused by its loss limit."); return false; }
     const res = await deleteAccount(a.id);
     if (res.error) { showError(res.error); return false; }
     setAccounts((accs) => {
@@ -3266,16 +3685,18 @@ function TradingJournalApp({ user, onLogout }) {
     return true;
   };
 
-  const handleCreateAccount = async (fields) => {
+  const handleCreateAccount = async (fields, importedPlan = { trades: [], cashMovements: [] }, onProgress) => {
     const res = await createAccount(user.id, fields);
     if (res.error) { showError(res.error); return false; }
     setAccounts((accs) => accs.some((item) => item.id === res.data.id) ? accs.map((item) => item.id === res.data.id ? res.data : item) : [...accs, res.data]);
     setActiveId(res.data.id);
+    if ((importedPlan.trades || importedPlan).length || importedPlan.cashMovements?.length) await importTradesToAccount(res.data, importedPlan, onProgress);
     setModal(null);
     return true;
   };
 
-  const handleSaveAccountSettings = async (updated, draft) => {
+  const handleSaveAccountSettings = async (updated, draft, financeDraft, importedTrades = []) => {
+    if (guardrails.tradeEntryLocked) { showInfo("Account settings are locked while this account is paused by its loss limit."); return false; }
     const enabled = isChallengeEnabled(updated);
     const nextMode = enabled ? (draft ? draft.mode : challenge.state.automation?.mode ?? null) : null;
     const nextLevel = draft?.level ?? challenge.state.activeLevel;
@@ -3286,8 +3707,18 @@ function TradingJournalApp({ user, onLogout }) {
     }
     const res = await updateAccount(updated.id, updated);
     if (res.error) { showError(res.error); return false; }
-    setAccounts((accs) => accs.map((a) => (a.id === updated.id ? updated : a)));
+    const financeResult = await saveFinanceSettings(user.id, updated.id, financeDraft || updated.finance || { enabled:false, tradingTarget:0 });
+    if (financeResult.error) { showError(`${financeResult.error} Apply supabase/finance_migration.sql, then try again.`); return false; }
+    const existingSavings = account.savingsAccounts || [];
+    const desiredSavings = financeDraft?.savingsAccounts || existingSavings;
+    const desiredIds = new Set(desiredSavings.filter((item) => !String(item.id).startsWith("draft-")).map((item) => item.id));
+    for (const item of existingSavings.filter((item) => !desiredIds.has(item.id))) { const result = await deleteSavingsAccount(item.id); if (result.error) { showError(result.error); return false; } }
+    const savedSavings = [];
+    for (const item of desiredSavings) { const result = String(item.id).startsWith("draft-") ? await createSavingsAccount(user.id, updated.id, item) : await updateSavingsAccount(item.id, item); if (result.error) { showError(result.error); return false; } savedSavings.push(result.data); }
+    const nextAccount = { ...updated, finance:{enabled:!!financeDraft?.enabled}, savingsAccounts:savedSavings, financeMovements:account.financeMovements || [] };
+    setAccounts((accs) => accs.map((a) => (a.id === updated.id ? nextAccount : a)));
     if (changed && !(await challenge.configure(nextMode, nextLevel))) return false;
+    if (importedTrades.length && !(await importTradesToAccount(nextAccount, importedTrades))) return false;
     setModal(null);
     return true;
   };
@@ -3335,7 +3766,7 @@ function TradingJournalApp({ user, onLogout }) {
     setAccounts((accs) => accs.map((a) => (a.id !== account.id ? a : { ...a, rules: a.rules.map((rule) => rule.id === id ? res.data : rule) })));
   };
 
-  const netTotal = account.balance + stats.netPnl;
+  const netTotal = financeTotals(account).tradingBalance;
   const netPct = account.balance ? (stats.netPnl / account.balance) * 100 : 0;
   const accountCenterSummary = (candidate) => {
     const accountTrades = candidate.trades || [];
@@ -3350,7 +3781,6 @@ function TradingJournalApp({ user, onLogout }) {
     setEditingTrade(null); setNewTradeDraft(draft); setModal("newtrade");
   };
   const openDayDetails = (date) => {
-    if (guardrails.tradeEntryLocked) return showInfo("Calendar trade details are paused while the loss cap is active. Premarket markups remain available.");
     setDayModalDate(date);
   };
 
@@ -3366,12 +3796,12 @@ function TradingJournalApp({ user, onLogout }) {
             <span className="tj-sidebar-profile-avatar">{personalProfileImage ? <img src={personalProfileImage} alt={`${displayName} profile`} /> : personalInitials}</span>
           </button>
           <div className="tj-nav-label">NAVIGATION</div>
-          <div className="tj-nav">{NAV.filter(n => n.id !== 'challenge' || isChallengeEnabled(account)).map((n) => <button key={n.id} className={`tj-nav-item ${page === n.id ? "tj-nav-active" : ""}`} onClick={() => { setPage(n.id); setShowAccountMenu(false); if (window.innerWidth <= 900) setSidebarOpen(false); }}>{n.symbol ? <NavSymbol src={n.symbol} /> : <n.icon size={16} />} <span>{n.label}</span></button>)}</div>
+          <div className="tj-nav">{NAV.filter(n => (n.id !== 'challenge' || isChallengeEnabled(account)) && (n.id !== 'finance' || account.finance?.enabled)).map((n) => <button key={n.id} className={`tj-nav-item ${page === n.id ? "tj-nav-active" : ""}`} onClick={() => { setPage(n.id); setShowAccountMenu(false); if (window.innerWidth <= 900) setSidebarOpen(false); }}>{n.symbol ? <NavSymbol src={n.symbol} /> : <n.icon size={16} />} <span>{n.label}</span></button>)}</div>
           <div className="tj-nav-label">SETTINGS</div>
           <div className="tj-nav">
-            <button className="tj-nav-item" onClick={() => setModal("account")}><NavSymbol src={accountSettingsSymbol} /> <span>Account</span></button>
+            <button className="tj-nav-item" disabled={guardrails.tradeEntryLocked} title={guardrails.tradeEntryLocked ? "Account settings are locked by the account loss limit" : "Account settings"} onClick={() => setModal("account")}><NavSymbol src={accountSettingsSymbol} /> <span>{guardrails.tradeEntryLocked ? "Account Locked" : "Account"}</span></button>
             <button className="tj-nav-item" onClick={() => setModal("profile")}><NavSymbol src={profileSettingsSymbol} /> <span>Profile</span></button>
-            <ConfirmDeleteButton className="tj-nav-item" onClick={handleResetData}><Trash2 size={16} /> <span>Reset Data</span></ConfirmDeleteButton>
+            <ConfirmDeleteButton className="tj-nav-item" disabled={guardrails.tradeEntryLocked} title={guardrails.tradeEntryLocked ? "Reset Data is locked by the account loss limit" : "Reset Data"} onClick={handleResetData}><Trash2 size={16} /> <span>Reset Data</span></ConfirmDeleteButton>
             <button className="tj-nav-item tj-nav-danger" onClick={onLogout}><LogOut size={16} /> <span>Log Out</span></button>
             <button className="tj-nav-item tj-theme-nav" onClick={handleQuickThemeToggle} aria-label={profileTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"} title={profileTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>{profileTheme === "dark" ? <Sun size={17}/> : <Moon size={17}/>}</button>
           </div>
@@ -3388,7 +3818,7 @@ function TradingJournalApp({ user, onLogout }) {
                 <div className="tj-account-center-metrics"><div><small>STARTED</small><strong>{fmtMoneyShort(account.balance, account.baseCurrency)}</strong></div><div><small>BALANCE</small><strong>{fmtMoneyShort(netTotal, account.baseCurrency)}</strong></div><div><small>NET P&amp;L</small><strong className={stats.netPnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoneyShort(stats.netPnl, account.baseCurrency)}</strong></div><div><small>TRADES</small><strong>{stats.total}</strong></div></div>
                 <div className="tj-account-center-result"><strong className={netPct >= 0 ? "tj-green" : "tj-red"}>{netPct >= 0 ? "+" : ""}{netPct.toFixed(2)}%</strong><span>{activeAccountSummary.wins}W · {activeAccountSummary.losses}L · {activeAccountSummary.breakeven} B/E</span></div>
               </div>
-              <div className="tj-account-center-section-head"><div><span>ACCOUNTS</span><small>{accounts.length} journal{accounts.length === 1 ? "" : "s"} available</small></div><button type="button" className="tj-btn-outline tj-btn-small" onClick={() => { setModal("account"); setShowAccountMenu(false); }}><Settings size={13} /> Manage</button></div>
+              <div className="tj-account-center-section-head"><div><span>ACCOUNTS</span><small>{accounts.length} journal{accounts.length === 1 ? "" : "s"} available</small></div><button type="button" className="tj-btn-outline tj-btn-small" disabled={guardrails.tradeEntryLocked} title={guardrails.tradeEntryLocked ? "Account settings are locked by the account loss limit" : "Manage account"} onClick={() => { setModal("account"); setShowAccountMenu(false); }}><Settings size={13} /> Manage</button></div>
               <div className="tj-account-center-list">{accounts.map((a) => (
                 <div key={a.id} className={`tj-account-row-wrap ${a.id === activeId ? "tj-account-row-active" : ""}`}>
                   <button className="tj-account-row" aria-current={a.id === activeId ? "true" : undefined} onClick={() => { setActiveId(a.id); setShowAccountMenu(false); }}>
@@ -3421,8 +3851,9 @@ function TradingJournalApp({ user, onLogout }) {
           <div className="tj-page-transition" key={`${page}-${account.id}`}>
           {["dashboard", "tradelog", "markups", "reviews", "calendar"].includes(page) && <JournalSignalHeader page={page} trades={account.trades} markups={markups.filter(m=>m.accountId===account.id)} reviews={reviews.filter(r=>r.accountId===account.id)} guardrails={guardrails} monthCursor={monthCursor} loginQuote={loginQuote}/>}
           {page === "dashboard" && <ReferenceDashboardPage account={account} stats={stats} monthCursor={monthCursor} setMonthCursor={setMonthCursor} onDayClick={openDayDetails} guardrails={guardrails} displayName={displayName} loginQuote={loginQuote} challenge={challenge} />}
-          {page === "tradelog" && <TradeLogPage account={account} reviews={reviews.filter((review) => review.accountId === account.id)} markups={markups.filter((markup) => markup.accountId === account.id)} onNewTrade={() => openNewTrade()} onEdit={(t) => { setNewTradeDraft(null); setEditingTrade(t); setModal("newtrade"); }} onDelete={handleDeleteTrade} onLinkMarkup={(trade, markupId) => saveTrade({ ...trade, premarketMarkupId: markupId })} />}
+          {page === "tradelog" && <TradeLogPage account={account} reviews={reviews.filter((review) => review.accountId === account.id)} markups={markups.filter((markup) => markup.accountId === account.id)} onNewTrade={() => openNewTrade()} onEdit={(t) => { if (guardrails.tradeEntryLocked) return showInfo("This account is locked by its loss limit. Trade changes resume after the applicable reset period."); setNewTradeDraft(null); setEditingTrade(t); setModal("newtrade"); }} onDelete={handleDeleteTrade} onLinkMarkup={(trade, markupId) => saveTrade({ ...trade, premarketMarkupId: markupId })} locked={guardrails.tradeEntryLocked} />}
           {page === "analytics" && <AnalyticsPage account={account} />}
+          {page === "finance" && account.finance?.enabled && <FinancePage account={account} onRecord={handleRecordFinanceMovement} onDelete={handleDeleteFinanceMovement} />}
           {page === "challenge" && isChallengeEnabled(account) && <ChallengePage key={account.id} account={account} challenge={challenge} loginQuote={loginQuote}/>}
           {page === "calendar" && <CalendarPage account={account} markups={markups.filter((markup)=>markup.accountId===account.id)} reviews={reviews.filter((review)=>review.accountId===account.id)} monthCursor={monthCursor} setMonthCursor={setMonthCursor} onDayClick={openDayDetails} />}
           {page === "psychology" && <PsychologyPage account={account} />}
@@ -3436,7 +3867,7 @@ function TradingJournalApp({ user, onLogout }) {
         </div>
       </div>
       {modal === "newtrade" && <NewTradeModal editing={editingTrade} draft={newTradeDraft} typeTags={typeTags} mistakeTags={mistakeTags} confluenceSessions={confluenceSessions} instruments={knownInstruments} markups={markups.filter((markup)=>markup.accountId===account.id)} rules={account.rules} defaultCommission={account.defaultCommission} account={account} onClose={() => { setModal(null); setEditingTrade(null); setNewTradeDraft(null); }} onSave={saveTrade} />}
-      {modal === "account" && <AccountSettingsModal key={account.id} account={account} challenge={challenge} onClose={() => setModal(null)} onSave={handleSaveAccountSettings} onDelete={handleDeleteAccount} />}
+      {modal === "account" && !guardrails.tradeEntryLocked && <AccountSettingsModal key={account.id} account={account} challenge={challenge} onClose={() => setModal(null)} onSave={handleSaveAccountSettings} onImport={(trades, onProgress) => importTradesToAccount(account, trades, onProgress)} onDelete={handleDeleteAccount} />}
       {modal === "profile" && <ProfileSettingsModal user={user} account={account} themeValue={profileTheme} onClose={() => setModal(null)} onSave={handleSaveProfileSettings} />}
       {modal === "markup" && <MarkupModal editing={editingMarkup} instruments={knownInstruments} onClose={()=>{setModal(null);setEditingMarkup(null);}} onSave={handleSaveMarkup} />}
       {modal === "addaccount" && <AddAccountModal onClose={() => setModal(null)} onCreate={handleCreateAccount} />}
@@ -3446,12 +3877,15 @@ function TradingJournalApp({ user, onLogout }) {
           trades={account.trades.filter((t) => t.date === dayModalDate)}
           markups={markups.filter((markup) => markup.accountId === account.id && markup.date === dayModalDate)}
           reviews={reviews.filter((review) => review.accountId === account.id && review.date === dayModalDate)}
+          movements={(account.financeMovements || []).filter((movement) => movement.date === dayModalDate)}
           account={account}
           onClose={() => setDayModalDate(null)}
-          onEdit={(t) => { setDayModalDate(null); setNewTradeDraft(null); setEditingTrade(t); setModal("newtrade"); }}
+          onEdit={(t) => { if (guardrails.tradeEntryLocked) return showInfo("This account is locked by its loss limit. Trade changes resume after the applicable reset period."); setDayModalDate(null); setNewTradeDraft(null); setEditingTrade(t); setModal("newtrade"); }}
           onDelete={(id) => handleDeleteTrade(id)}
+          locked={guardrails.tradeEntryLocked}
         />
       )}
+      {financeReminder.length > 0 && <FinanceReminderModal account={account} savingsPlans={financeReminder} onClose={() => setFinanceReminder([])} onOpenFinance={() => setPage("finance")} />}
       {migration.pending && (
         <MigrationPromptModal count={migration.pending.length} busy={migration.busy} onImport={runMigration} onSkip={skipMigration} />
       )}
@@ -4903,6 +5337,19 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 /* Calendar details are intentionally a compact, centered dialogue—not a drawer. */
 .tj-modal-overlay.tj-modal-overlay-centered { align-items: center; justify-content: center; padding: 20px; }
 .tj-modal-overlay.tj-modal-overlay-centered .tj-calendar-day-modal { width: min(560px, calc(100vw - 40px)); height: auto; max-height: calc(100dvh - 40px); border-radius: 14px; animation: none; }
+.tj-modal-overlay.tj-modal-overlay-centered .tj-finance-reminder { width: min(430px, calc(100vw - 40px)); height: auto; max-height: calc(100dvh - 40px); border-radius: 14px; animation: none; }.tj-finance-reminder .tj-modal-head { padding: 13px 15px; }.tj-finance-reminder .tj-modal-body { padding: 15px; }
+.tj-attached-day-finance { border-color: var(--tj-purple); }.tj-attached-day-cash-deposit { color: var(--tj-green) !important; background: color-mix(in srgb, var(--tj-green) 15%, var(--tj-panel-alt)) !important; border-color: color-mix(in srgb, var(--tj-green) 60%, var(--tj-border)) !important; }.tj-attached-day-cash-withdrawal { color: var(--tj-red) !important; background: color-mix(in srgb, var(--tj-red) 15%, var(--tj-panel-alt)) !important; border-color: color-mix(in srgb, var(--tj-red) 60%, var(--tj-border)) !important; }.tj-attached-day-cash-transfer { color: var(--tj-purple) !important; background: color-mix(in srgb, var(--tj-purple) 15%, var(--tj-panel-alt)) !important; border-color: color-mix(in srgb, var(--tj-purple) 60%, var(--tj-border)) !important; }.tj-finance-hero > div > small { color: var(--tj-muted); font-size: .76rem; }.tj-finance-hero > div > small b { color: var(--tj-green); }.tj-day-cash-list { display: grid; gap: 6px; margin: 12px 0; padding: 11px; border: 1px solid color-mix(in srgb, var(--tj-purple) 36%, var(--tj-border)); border-radius: 11px; background: color-mix(in srgb, var(--tj-purple) 5%, var(--tj-panel)); }.tj-day-cash-list > strong { color: var(--tj-muted); font-size: .68rem; letter-spacing: .8px; }.tj-day-cash-item { display: flex; justify-content: space-between; gap: 10px; font-size: .78rem; }.tj-day-cash-item span { color: var(--tj-muted); }.tj-finance-reminder-copy { display: grid; justify-items: center; gap: 8px; text-align: center; }.tj-finance-reminder-copy svg { color: var(--tj-purple); }.tj-finance-reminder-copy p { margin: 0; color: var(--tj-muted); font-size: .83rem; }.tj-finance-reminder-list { display: grid; gap: 7px; margin-top: 14px; }.tj-finance-reminder-list > div { display:flex; justify-content:space-between; gap:10px; padding:9px; border:1px solid var(--tj-border); border-radius:9px; font-size:.8rem; }.tj-finance-reminder-list strong { color:var(--tj-purple); }
+
+/* Finance — account-scoped cash ledger and savings plans. */
+.tj-attached-day-finance { border-color: color-mix(in srgb, var(--tj-purple) 50%, var(--tj-border)); background: color-mix(in srgb, var(--tj-purple) 9%, var(--tj-panel)); }.tj-attached-day-cash b { color: var(--tj-purple); }
+.tj-finance-page { display: grid; gap: 14px; }.tj-finance-hero { display: flex; align-items: stretch; justify-content: space-between; gap: 18px; padding: 19px 20px; border: 1px solid color-mix(in srgb, var(--tj-green) 32%, var(--tj-border)); border-radius: 16px; background: linear-gradient(120deg, color-mix(in srgb, var(--tj-green) 10%, var(--tj-panel)), var(--tj-panel) 60%); }.tj-finance-hero > div { display: grid; gap: 5px; }.tj-finance-hero span, .tj-finance-card-title small, .tj-finance-summary small, .tj-finance-saving small { color: var(--tj-muted); font-size: .69rem; font-weight: 800; letter-spacing: 1px; }.tj-finance-hero h1 { margin: 0; font-size: clamp(26px, 3vw, 38px); letter-spacing: -.9px; }.tj-finance-hero p { margin: 0; color: var(--tj-muted); font-size: .83rem; }.tj-finance-hero aside { width: min(360px, 36%); padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--tj-green) 35%, var(--tj-border)); border-radius: 12px; background: color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel)); display: grid; grid-template-columns: auto 1fr; align-content: center; gap: 4px 9px; }.tj-finance-hero aside svg { grid-row: span 2; color: var(--tj-green); }.tj-finance-hero aside strong { color: var(--tj-green); font-size: .75rem; }.tj-finance-hero aside em { font-size: .78rem; line-height: 1.45; }.tj-finance-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, 28%); align-items: start; gap: 14px; }.tj-finance-ledger { padding: 14px; }.tj-finance-card-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 13px; }.tj-finance-card-title > div { display: grid; gap: 3px; }.tj-finance-card-title strong { font-size: .95rem; }.tj-finance-card-title > span { padding: 4px 7px; border: 1px solid var(--tj-border); font-size: .63rem; letter-spacing: .7px; color: var(--tj-muted); }.tj-finance-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }.tj-finance-form .tj-field { min-width: 0; }.tj-finance-record { margin-top: 10px; }.tj-finance-movement-list { max-height: 390px; overflow: auto; margin-top: 14px; border-top: 1px solid var(--tj-border); }.tj-finance-movement { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--tj-border); }.tj-finance-movement > i { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; font-style: normal; }.tj-finance-movement-in { color: var(--tj-green); background: color-mix(in srgb, var(--tj-green) 13%, transparent); }.tj-finance-movement-out { color: var(--tj-red); background: color-mix(in srgb, var(--tj-red) 12%, transparent); }.tj-finance-movement > div { min-width: 0; display: grid; gap: 2px; }.tj-finance-movement strong { font-size: .8rem; }.tj-finance-movement span { overflow: hidden; color: var(--tj-muted); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }.tj-finance-movement > b { font-size: .85rem; font-variant-numeric: tabular-nums; white-space: nowrap; }.tj-finance-delete { width: 29px; height: 29px; padding: 0; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--tj-red) 50%, var(--tj-border)); border-radius: 50%; color: var(--tj-red); background: transparent; }.tj-finance-summary { display: grid; gap: 10px; }.tj-finance-summary .tj-card { min-height: 93px; padding: 14px; display: grid; align-content: center; gap: 5px; }.tj-finance-summary strong { overflow: hidden; font-size: clamp(1.05rem, 2vw, 1.4rem); font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }.tj-finance-summary span, .tj-finance-saving span { color: var(--tj-muted); font-size: .72rem; }.tj-finance-total-card { border-color: color-mix(in srgb, var(--tj-green) 42%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel)); }.tj-finance-savings { padding: 14px; border: 1px solid var(--tj-border); border-radius: 15px; background: var(--tj-panel); }.tj-finance-saving { display: grid; grid-template-columns: minmax(150px, .9fr) minmax(140px, .7fr) minmax(230px, 1.3fr); align-items: center; gap: 18px; padding: 13px 0; border-top: 1px solid var(--tj-border); }.tj-finance-saving > div { display: grid; gap: 3px; min-width: 0; }.tj-finance-saving strong { font-size: .92rem; }.tj-finance-saving-progress > i { display: block; height: 7px; overflow: hidden; border-radius: 99px; background: var(--tj-panel-alt); }.tj-finance-saving-progress > i b { display: block; height: 100%; border-radius: inherit; background: var(--tj-green); }.tj-finance-empty { padding: 22px 8px; color: var(--tj-muted); font-size: .82rem; text-align: center; }.tj-finance-settings-list { display: grid; gap: 10px; margin: 12px 0; }.tj-finance-settings-account { padding: 12px; border: 1px solid var(--tj-border); border-radius: 12px; background: var(--tj-panel-alt); }.tj-finance-settings-account-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; }.tj-finance-settings-account-head strong { font-size: .82rem; }
+.tj-finance-card-capital { border-color: color-mix(in srgb, var(--tj-green) 42%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel)); }.tj-finance-card-capital strong { color: var(--tj-green); }.tj-finance-card-savings { border-color: color-mix(in srgb, var(--tj-purple) 45%, var(--tj-border)); background: color-mix(in srgb, var(--tj-purple) 7%, var(--tj-panel)); }.tj-finance-card-savings strong { color: var(--tj-purple); }.tj-finance-card-deposit { border-color: color-mix(in srgb, var(--tj-green) 32%, var(--tj-border)); }.tj-finance-card-deposit strong { color: var(--tj-green); }.tj-finance-card-withdrawal { border-color: color-mix(in srgb, var(--tj-red) 45%, var(--tj-border)); background: color-mix(in srgb, var(--tj-red) 5%, var(--tj-panel)); }.tj-finance-card-withdrawal strong { color: var(--tj-red); }.tj-finance-movement:has(.tj-finance-movement-out) > b { color: var(--tj-red); }.tj-finance-movement:has(.tj-finance-movement-in) > b { color: var(--tj-green); }.tj-finance-movement:has(.tj-finance-movement-out) > i { color: var(--tj-red); }.tj-finance-movement-list { max-height: 365px; }.tj-finance-saving { grid-template-columns: minmax(145px, .8fr) minmax(140px, .65fr) minmax(190px, 1.1fr) minmax(155px, .75fr); }.tj-finance-saving-transfer { justify-self: end; text-align: right; }.tj-finance-saving-transfer strong { font-size: 1rem; }.tj-finance-saving-transfer strong small { font-size: .58rem; }.tj-finance-saving-transfer span { font-size: .67rem; }.tj-finance-saving-transfer button { margin-top: 4px; white-space: nowrap; }
+.tj-finance-form { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.tj-tradelog-actions { position: fixed; right: 22px; bottom: 22px; z-index: 8; display: flex; align-items: center; gap: 8px; }.tj-tradelog-actions .tj-fab { position: static; }.tj-import-modal { width: min(620px, calc(100vw - 40px)); height: auto; max-height: calc(100dvh - 40px); border-radius: 14px; }.tj-import-preview { display: grid; gap: 7px; max-height: 245px; overflow: auto; margin-top: 14px; padding: 12px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel-alt); font-size: .8rem; }.tj-import-preview > div { display: flex; justify-content: space-between; gap: 12px; padding-top: 7px; border-top: 1px solid var(--tj-border); }.tj-import-preview span { overflow: hidden; color: var(--tj-muted); text-overflow: ellipsis; white-space: nowrap; }.tj-import-preview small { color: var(--tj-muted); }.tj-import-error { margin-top: 12px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--tj-red) 55%, var(--tj-border)); border-radius: 9px; color: var(--tj-red); background: color-mix(in srgb, var(--tj-red) 8%, var(--tj-panel)); font-size: .8rem; line-height: 1.4; }
+.tj-import-button { display: inline-flex; align-items: center; gap: 7px; margin-top: 9px; }.tj-import-progress { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--tj-panel) var(--progress), color-mix(in srgb, var(--tj-panel) 34%, transparent) 0); color: var(--tj-panel); font-size: .52rem; font-style: normal; font-weight: 900; line-height: 1; }
+.tj-list-pagination { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 9px; padding-top: 4px; color: var(--tj-muted); font-size: .8125rem; }.tj-list-pagination > span, .tj-pagination-arrows > span { font-variant-numeric: tabular-nums; }.tj-pagination-arrows { display: inline-flex; align-items: center; gap: 7px; }.tj-pagination-arrows > span { min-width: 42px; text-align: center; }
+@media (max-width: 900px) { .tj-finance-layout { grid-template-columns: 1fr; }.tj-finance-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tj-finance-hero aside { width: 43%; }.tj-finance-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tj-finance-saving { grid-template-columns: 1fr 1fr; }.tj-finance-saving-transfer { justify-self: start; text-align: left; } }
+@media (max-width: 580px) { .tj-finance-hero { display: grid; padding: 15px; }.tj-finance-hero aside { width: auto; }.tj-finance-summary { grid-template-columns: 1fr; }.tj-finance-form { grid-template-columns: 1fr; }.tj-finance-saving { grid-template-columns: 1fr; gap: 10px; }.tj-finance-movement { grid-template-columns: auto minmax(0, 1fr) auto; }.tj-finance-delete { grid-column: 3; }.tj-finance-movement > b { grid-column: 2; }.tj-finance-movement > div { grid-column: 2; }.tj-finance-movement > i { grid-row: span 2; }.tj-tradelog-actions { right: 14px; bottom: 14px; }.tj-import-modal { width: min(100%, calc(100vw - 24px)); }.tj-import-preview > div { font-size: .74rem; } }
 `;
 
 /* =============================== AUTH ROOT =============================== */
