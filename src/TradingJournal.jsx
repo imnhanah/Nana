@@ -10,7 +10,7 @@ import {
   ChevronLeft, ChevronRight, Trash2, Pencil, PanelLeftClose, PanelLeftOpen, Search, ChevronDown,
   ChevronUp, Trophy, Key, DollarSign, ShieldCheck, Satellite, Snowflake,
   ImagePlus, ClipboardCheck, ScanLine, CheckCircle2, SlidersHorizontal, ArrowDownUp,
-  AlertTriangle, Sun, Moon, Landmark, ArrowDownToLine, ArrowUpFromLine, Repeat2, WalletCards,
+  AlertTriangle, Sun, Moon, Landmark, ArrowDownToLine, ArrowUpFromLine, Repeat2, RefreshCw, WalletCards,
 } from "lucide-react";
 import PublicSite from "./PublicSite";
 import { useSiteTheme } from './siteTheme';
@@ -32,10 +32,11 @@ import { supabase } from "./supabaseClient";
 import { onAuthStateChange, getSession, signOut, updatePassword, updateProfile } from "./auth";
 import { getCalendarWeek } from "./forexFactory";
 import { ensureDemoAccount } from "./demoAccount";
+import { readJournalCache, writeJournalCache } from "./journalCache";
 import {
   fetchAllUserData, createAccount, updateAccount, deleteAccount, resetAccountData,
   createTrade, updateTrade, deleteTrade, createRule, updateRule, deleteRule, setCheckin,
-  saveManagedLists, createMarkup, updateMarkup, deleteMarkup, saveTradeReview, savePeriodReview, hasMigratedLocalData, markLocalDataMigrated, importLegacyAccount, saveFinanceSettings, createSavingsAccount, updateSavingsAccount, deleteSavingsAccount, createFinanceMovement, updateFinanceMovement, deleteFinanceMovement,
+  saveManagedLists, createMarkup, updateMarkup, deleteMarkup, saveTradeReview, savePeriodReview, hasMigratedLocalData, markLocalDataMigrated, importLegacyAccount, saveFinanceSettings, createSavingsAccount, updateSavingsAccount, deleteSavingsAccount, createFinanceMovement, updateFinanceMovement, deleteFinanceMovement, fetchJournalSyncSignature,
 } from "./db";
 
 /* ----------------------------- constants ----------------------------- */
@@ -3443,6 +3444,9 @@ function TradingJournalApp({ user, onLogout }) {
   const [periodReviews, setPeriodReviews] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [lastSyncedAt, setLastSyncedAt] = useState("");
+  const [syncSignature, setSyncSignature] = useState("");
+  const [syncing, setSyncing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === "undefined" ? true : window.innerWidth > 900));
   const [toast, setToast] = useState(null); // { type: 'error'|'info', text }
   const [migration, setMigration] = useState({ checked: false, pending: null, busy: false });
@@ -3455,6 +3459,19 @@ function TradingJournalApp({ user, onLogout }) {
     setToast({ type: "info", text });
     setTimeout(() => setToast((t) => (t && t.text === text ? null : t)), 4500);
   }, []);
+
+  const applyJournalData = useCallback((data) => {
+    setAccounts(data.accounts);
+    setTypeTags(data.typeTags || []);
+    setMistakeTags(data.mistakeTags || []);
+    setConfluenceSessions(data.confluenceSessions || []);
+    setCustomInstruments(data.customInstruments || []);
+    setMarkups(data.markups || []);
+    setReviews(data.reviews || []);
+    setPeriodReviews(data.periodReviews || []);
+    const savedAccountId = readActiveAccount(user.id);
+    setActiveId(currentId => resolveActiveAccount(data.accounts, currentId, savedAccountId));
+  }, [user.id]);
 
   const loadFromServer = useCallback(async () => {
     setLoadError("");
@@ -3509,24 +3526,29 @@ function TradingJournalApp({ user, onLogout }) {
       setLoaded(true);
       return false;
     }
-    setAccounts(result.data.accounts);
-    setTypeTags([]);
-    setMistakeTags([]);
-    setConfluenceSessions([]);
-    setCustomInstruments(result.data.customInstruments || []);
-    setMarkups(result.data.markups || []);
-    setReviews(result.data.reviews || []);
-    setPeriodReviews(result.data.periodReviews || []);
-    const savedAccountId = readActiveAccount(user.id);
-    setActiveId(currentId => resolveActiveAccount(result.data.accounts, currentId, savedAccountId));
+    applyJournalData(result.data);
+    const signatureResult = await fetchJournalSyncSignature(user.id);
+    const signature = signatureResult.data || "";
+    writeJournalCache(user.id, result.data, signature);
+    setSyncSignature(signature);
+    setLastSyncedAt(new Date().toISOString());
     setLoaded(true);
     return true;
-  }, [user.id, showError]);
+  }, [user, applyJournalData]);
 
   // Initial load: fetch cloud data, and separately check for pre-Supabase
   // local data worth offering to migrate (requirement: migration strategy).
   useEffect(() => {
     (async () => {
+      const cached = readJournalCache(user.id);
+      if (cached?.data) {
+        applyJournalData(cached.data);
+        setLastSyncedAt(cached.cachedAt || "");
+        setSyncSignature(cached.syncSignature || "");
+        setLoaded(true);
+        setMigration({ checked: true, pending: null, busy: false });
+        return;
+      }
       await loadFromServer();
       try {
         const already = await hasMigratedLocalData(user.id);
@@ -3543,6 +3565,26 @@ function TradingJournalApp({ user, onLogout }) {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!loaded || !accounts) return;
+    writeJournalCache(user.id, { accounts, typeTags, mistakeTags, confluenceSessions, customInstruments, markups, reviews, periodReviews }, syncSignature);
+  }, [user.id, loaded, accounts, typeTags, mistakeTags, confluenceSessions, customInstruments, markups, reviews, periodReviews, syncSignature]);
+
+  const syncJournal = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    const signatureResult = await fetchJournalSyncSignature(user.id);
+    if (signatureResult.data && syncSignature && signatureResult.data === syncSignature) {
+      setLastSyncedAt(new Date().toISOString());
+      setSyncing(false);
+      showInfo("Already up to date. No journal records were downloaded.");
+      return;
+    }
+    const success = await loadFromServer();
+    setSyncing(false);
+    if (success) showInfo("Journal synced and local cache updated.");
+  };
 
   // Imported MT5/cTrader accounts may already contain deposits saved by an
   // earlier import. Treat their sum as the journal base automatically, rather
@@ -3964,6 +4006,7 @@ function TradingJournalApp({ user, onLogout }) {
             <ConfirmDeleteButton className="tj-nav-item" disabled={guardrails.tradeEntryLocked} title={guardrails.tradeEntryLocked ? "Reset Data is locked by the account loss limit" : "Reset Data"} onClick={handleResetData}><Trash2 size={16} /> <span>Reset Data</span></ConfirmDeleteButton>
             <button className="tj-nav-item tj-nav-danger" onClick={onLogout}><LogOut size={16} /> <span>Log Out</span></button>
             <button className="tj-nav-item tj-theme-nav" onClick={handleQuickThemeToggle} aria-label={profileTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"} title={profileTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>{profileTheme === "dark" ? <Sun size={17}/> : <Moon size={17}/>}</button>
+            <button className="tj-nav-item tj-sync-nav" disabled={syncing} onClick={syncJournal} title={lastSyncedAt ? `Sync journal · last synced ${new Date(lastSyncedAt).toLocaleString()}` : "Sync journal"}><RefreshCw className={syncing ? "tj-syncing-icon" : ""} size={16}/><span>{syncing ? "Syncing…" : "Sync"}</span></button>
           </div>
         </div>
         <div className="tj-sidebar-footer" ref={accountMenuRef}>
@@ -4839,6 +4882,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-stats-grid > *, .tj-tradelog-stats > *, .tj-markup-overview-grid > *, .tj-review-month-grid > *, .tj-review-quarter-grid > *, .tj-period-metric-grid > *, .tj-period-meter-grid > *, .tj-performance-stat-grid > *, .tj-live-analytics-grid > *, .tj-management-grid > * { min-width: 0; align-self: stretch; }
 .tj-settings-hero-metrics > div, .tj-markup-overview-grid > *, .tj-review-library-card, .tj-performance-stat-card { height: 100%; }
 .tj-theme-nav { width: 38px; min-height: 38px; justify-content: center; margin: 7px 0 0 4px; padding: 0; border: none; border-radius: 10px; background: transparent; box-shadow: none; }.tj-theme-nav svg { flex: 0 0 auto; color: var(--tj-green); }.tj-theme-nav:hover { background: transparent; color: var(--tj-green); box-shadow: none; }.tj-theme-nav:hover svg { filter: brightness(1.15); }
+.tj-sync-nav { margin-top: 3px; color: var(--tj-green); }.tj-sync-nav svg { color: var(--tj-green); }.tj-sync-nav:disabled { opacity: .62; cursor: wait; }.tj-syncing-icon { animation: tj-sync-spin .8s linear infinite; }@keyframes tj-sync-spin { to { transform: rotate(360deg); } }
 .tj-profile-row { display: flex; align-items: center; gap: 12px; padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--tj-border); }.tj-profile-preview { width: 58px; height: 58px; padding: 0; flex: 0 0 58px; overflow: hidden; border: 1px solid var(--tj-border); border-radius: 50%; background: var(--tj-panel); color: var(--tj-text); font-size: 1.5525rem; cursor: pointer; }.tj-profile-preview img { width: 100%; height: 100%; display: block; object-fit: cover; }.tj-profile-actions { display: grid; gap: 8px; }.tj-btn-small { font-size: 0.8125rem; min-height: 28px; padding: 5px 9px; }
 .tj-theme-choice { min-height: 62px; display: grid; align-content: center; gap: 3px; text-align: left; }.tj-theme-choice span { font-size: 0.9375rem; }.tj-theme-choice small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 500; }.tj-theme-choice.tj-chip-active small { color: color-mix(in srgb, var(--tj-green) 76%, var(--tj-muted)); }
 .tj-personal-profile-card, .tj-personal-appearance-card { overflow: hidden; margin-bottom: 12px; padding: 16px; border: 1px solid var(--tj-border); border-radius: 14px; background: linear-gradient(145deg, color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel-alt)), var(--tj-panel-alt) 72%); }
