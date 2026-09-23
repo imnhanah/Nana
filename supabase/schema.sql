@@ -297,6 +297,8 @@ alter table public.trades add column if not exists rule_evaluations jsonb not nu
 alter table public.trades add column if not exists trade_time time;
 alter table public.trades add column if not exists entry_type text;
 alter table public.trades add column if not exists entry_session text;
+alter table public.trades add column if not exists entry_price numeric;
+alter table public.trades add column if not exists exit_price numeric;
 update public.trades set gross_pnl = pnl where gross_pnl is null;
 update public.trades set net_pnl = gross_pnl - commission - swap where net_pnl is null;
 update public.trades set entry_type = confluence_session where entry_type is null and confluence_session is not null;

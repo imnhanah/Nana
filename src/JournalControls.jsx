@@ -72,6 +72,12 @@ export function ThemeInstrument({value, onChange, options}) {
   const matches = options.filter(item => compact(item).includes(compact(query)));
   return <Popup label="Instrument" text={value || 'Select an instrument…'}>{close => <><strong>Instrument</strong><input autoFocus className="tj-input tj-picker-search" aria-label="Search instruments" placeholder="Search instruments" value={query} onChange={event=>setQuery(event.target.value)}/><ChoiceList label="Instruments" options={matches.map(item=>({value:item,label:item}))} value={value} onSelect={next=>{onChange(next);setQuery('');close();}}/>{!matches.length && <p>No matching instruments.</p>}</>}</Popup>;
 }
+export function ThemeRiskReward({value, onChange, disabled = false, customValues = []}) {
+  const values=[...new Set([2,2.5,3,3.5,4,5,...customValues.map(Number).filter(item=>Number.isFinite(item)&&item>0)])].sort((a,b)=>a-b);
+  const options=values.map(item=>({value:String(item),label:String(item)}));
+  const text=value === '' || value == null ? 'Select or enter' : String(value);
+  return <Popup label="Risk:Reward (R)" disabled={disabled} text={text}>{close => <><strong>Risk:Reward (R)</strong><input autoFocus type="number" min="0" step="0.1" className="tj-input tj-picker-search" aria-label="Custom risk reward" placeholder="Enter custom value" value={value ?? ''} onChange={event=>onChange(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();close();}}}/><ChoiceList label="Risk reward presets" options={options} value={value} onSelect={next=>{onChange(next);close();}}/></>}</Popup>;
+}
 export function ThemeTime({ value = '', onChange, label = 'Time' }) {
   const {hour, minute, period} = timeParts(value);
   const choose = (h, m, p) => onChange({target:{value:storedTime(h, m, p)}});

@@ -138,17 +138,31 @@ export async function updatePassword(newPassword) {
   }
 }
 
-export async function updateProfile({ displayName, avatarUrl, sessionTimeoutMinutes, theme }) {
-  const cleanName = (displayName || "").trim();
+// The destructive work happens in a protected Edge Function. This browser
+// call only carries the current user's JWT and never exposes a service key.
+export async function deleteProfilePermanently() {
+  try {
+    const { data, error } = await supabase.functions.invoke("delete-profile", { body: { confirmation: "DELETE" } });
+    if (error) return { error: friendlyAuthError(error) };
+    if (data?.error) return { error: data.error };
+    return { deleted: true };
+  } catch (e) {
+    return { error: friendlyAuthError(e) };
+  }
+}
+
+export async function updateProfile({ fullName, displayName, avatarUrl, sessionTimeoutMinutes, theme, themePreference, accentColor, timezone, dateFormat, timeFormat }) {
+  const cleanName = (fullName || displayName || "").trim();
+  const cleanDisplayName = (displayName || cleanName).trim();
   if (!cleanName) return { error: "Please enter your full name." };
   try {
     const { data, error } = await supabase.auth.updateUser({
-      data: { display_name: cleanName, avatar_url: avatarUrl || null, session_timeout_minutes: Number(sessionTimeoutMinutes) || 0, theme: theme === "light" ? "light" : "dark" },
+      data: { display_name: cleanDisplayName, full_name: cleanName, avatar_url: avatarUrl || null, session_timeout_minutes: Number(sessionTimeoutMinutes) || 0, theme: theme === "light" ? "light" : "dark", theme_preference: ["light", "dark", "system"].includes(themePreference) ? themePreference : (theme === "light" ? "light" : "dark"), accent_color: accentColor || "mint", timezone: timezone || "Africa/Accra", date_format: dateFormat || "DD/MM/YYYY", time_format: timeFormat === "24" ? "24" : "12" },
     });
     if (error) return { error: friendlyAuthError(error) };
     const { error: profileError } = await supabase
       .from("profiles")
-      .update({ display_name: cleanName })
+      .update({ display_name: cleanDisplayName })
       .eq("id", data.user.id);
     if (profileError) return { error: friendlyAuthError(profileError) };
     return { user: data.user };

@@ -81,3 +81,10 @@ test('reset excludes all existing trades, including those without close timing',
 test('entry dates in the past do not exclude newly logged trades',()=>{
   assert.equal(replay(start('risk'),[row(1,6,{date:'2020-01-01',time:'00:00',closeDate:''})]).activeLevel,2);
 });
+test('a trade imported after automation starts is explicitly included in challenge replay',()=>{
+  const imported=row(99,-1,{id:'imported',createdAt:new Date(2026,8,14,9,0).toISOString()});
+  const base={...start('streak',2),automation:{...start('streak',2).automation,includedIds:['imported']}};
+  const state=replay(base,[imported]);
+  assert.equal(state.counted,1);
+  assert.equal(state.lossStreak,1);
+});

@@ -5,18 +5,18 @@ import {
   PolarAngleAxis, Radar,
 } from "recharts";
 import {
-  LayoutGrid, FileText, BarChart2, Calendar as CalendarIcon, Brain,
+  LayoutGrid, FileText, BarChart2, Calendar as CalendarIcon, Brain, Minus,
   Lightbulb, Newspaper, Settings, LogOut, Plus, X, Star,
   ChevronLeft, ChevronRight, Trash2, Pencil, PanelLeftClose, PanelLeftOpen, Search, ChevronDown,
   ChevronUp, Trophy, Key, DollarSign, ShieldCheck, Satellite, Snowflake,
-  ImagePlus, ClipboardCheck, ScanLine, CheckCircle2, SlidersHorizontal, ArrowDownUp,
-  AlertTriangle, Sun, Moon, Landmark, ArrowDownToLine, ArrowUpFromLine, Repeat2, RefreshCw, WalletCards,
+  ImagePlus, ClipboardCheck, ScanLine, CheckCircle2, SlidersHorizontal, ArrowDownUp, FileUp,
+  AlertTriangle, Sun, Moon, Landmark, ArrowDownToLine, ArrowUpFromLine, Repeat2, RefreshCw, WalletCards, UserRound,
 } from "lucide-react";
 import PublicSite from "./PublicSite";
-import { useSiteTheme } from './siteTheme';
+import { ACCENT_OPTIONS, useProfileAccent, useSiteTheme } from './siteTheme';
 import { readActiveAccount, rememberActiveAccount, readActivePage, rememberActivePage, resolveActiveAccount } from './activeAccount';
 import JournalPreloader from './JournalPreloader';
-import { ThemedFields, ThemeSelect, ThemeTime, ThemeDate, ConfirmDeleteButton, ThemeInstrument } from './JournalControls';
+import { ThemedFields, ThemeSelect, ThemeTime, ThemeDate, ConfirmDeleteButton, ThemeInstrument, ThemeRiskReward } from './JournalControls';
 import JournalSignalHeader from './JournalSignalHeader';
 import { tradeTimingError } from './tradeTiming';
 import { getLoginQuote } from "./loginQuote";
@@ -25,14 +25,12 @@ import useChallenge from './useChallenge';
 import ChallengeModeSettings from './ChallengeModeSettings';
 import { isChallengeEnabled } from "./challengeModel";
 import ResetPasswordForm from "./ResetPasswordForm";
-import accountSettingsSymbol from "./assets/account-settings-symbol.png";
-import profileSettingsSymbol from "./assets/profile-settings-symbol.png";
-import managementSettingsSymbol from "./assets/management-settings-symbol.png";
 import { supabase } from "./supabaseClient";
-import { onAuthStateChange, getSession, signOut, updatePassword, updateProfile } from "./auth";
+import { onAuthStateChange, getSession, signOut, updatePassword, updateProfile, deleteProfilePermanently } from "./auth";
 import { getCalendarWeek } from "./forexFactory";
 import { ensureDemoAccount } from "./demoAccount";
 import { readJournalCache, writeJournalCache } from "./journalCache";
+import { hydrateJournalImages, writeJournalImageCache } from "./journalImageCache";
 import {
   fetchAllUserData, createAccount, updateAccount, deleteAccount, resetAccountData,
   createTrade, updateTrade, deleteTrade, createRule, updateRule, deleteRule, setCheckin,
@@ -42,6 +40,15 @@ import {
 /* ----------------------------- constants ----------------------------- */
 
 const SESSIONS = ["Asia", "London", "NYC AM", "NYC PM"];
+const entrySessionFromOpenTime = (value) => {
+  const match = String(value || "").match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return "";
+  const minutes = Number(match[1]) * 60 + Number(match[2]);
+  if (minutes < 12 * 60) return "London";
+  if (minutes < 16 * 60 + 30) return "NYC AM";
+  if (minutes <= 22 * 60) return "NYC PM";
+  return "Asia";
+};
 const normalizeSession = (value) => ({ "NY AM": "NYC AM", "NY PM": "NYC PM" }[value] || value);
 const MOODS = ["Confident", "Neutral", "Fear", "FOMO", "Revenge", "Disciplined", "Anxious", "Excited"];
 const DEFAULT_MISTAKE_TAGS = [
@@ -76,7 +83,7 @@ const NAV = [
   { id: "psychology", label: "Psychology", icon: Brain },
   { id: "insights", label: "Insights & AI Coach", icon: Lightbulb },
   { id: "news", label: "News", icon: Newspaper },
-  { id: "management", label: "Management", symbol: managementSettingsSymbol },
+  { id: "management", label: "Management", icon: SlidersHorizontal },
 ];
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
   "August", "September", "October", "November", "December"];
@@ -91,12 +98,43 @@ const uuid = () => globalThis.crypto?.randomUUID?.() || "xxxxxxxx-xxxx-4xxx-yxxx
   const value = Math.random() * 16 | 0;
   return (character === "x" ? value : (value & 0x3) | 0x8).toString(16);
 });
-const todayISO = () => new Date().toISOString().slice(0, 10);
-const nowTime = () => new Date().toTimeString().slice(0, 5);
+let activeRegionalPreferences = { timezone: "Africa/Accra", dateFormat: "DD/MM/YYYY", timeFormat: "12" };
+const setActiveRegionalPreferences = (preferences = {}) => {
+  activeRegionalPreferences = {
+    timezone: preferences.timezone || "Africa/Accra",
+    dateFormat: ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"].includes(preferences.dateFormat) ? preferences.dateFormat : "DD/MM/YYYY",
+    timeFormat: preferences.timeFormat === "24" ? "24" : "12",
+  };
+};
+const formatDate = (value) => {
+  if (!value) return "Date not set";
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  let year, month, day;
+  if (match) [, year, month, day] = match;
+  else {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "Date not set";
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone: activeRegionalPreferences.timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
+    const part = (type) => parts.find((item) => item.type === type)?.value;
+    year = part("year"); month = part("month"); day = part("day");
+  }
+  if (activeRegionalPreferences.dateFormat === "MM/DD/YYYY") return `${month}/${day}/${year}`;
+  if (activeRegionalPreferences.dateFormat === "YYYY-MM-DD") return `${year}-${month}-${day}`;
+  return `${day}/${month}/${year}`;
+};
+const regionalNowParts = (date = new Date()) => {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: activeRegionalPreferences.timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(date);
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  return { year: part("year"), month: part("month"), day: part("day"), hour: part("hour"), minute: part("minute") };
+};
+const todayISO = () => { const { year, month, day } = regionalNowParts(); return `${year}-${month}-${day}`; };
+const localDateISO = (date = new Date()) => { const { year, month, day } = regionalNowParts(date); return `${year}-${month}-${day}`; };
+const nowTime = () => { const { hour, minute } = regionalNowParts(); return `${hour}:${minute}`; };
 const formatTime = (time) => {
   if (!time) return "Time not set";
   const [hours, minutes] = String(time).slice(0, 5).split(":").map(Number);
   if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return "Time not set";
+  if (activeRegionalPreferences.timeFormat === "24") return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
   const suffix = hours >= 12 ? "PM" : "AM";
   return `${((hours + 11) % 12) + 1}:${String(minutes).padStart(2, "0")} ${suffix}`;
 };
@@ -155,6 +193,7 @@ const reminderScheduleDue = (saving, movements, now = new Date()) => {
 };
 const norm = (v, max) => clamp((v / max) * 100, 0, 100);
 const classify = (pnl, cap) => (Math.abs(pnl) <= cap ? "be" : pnl > 0 ? "win" : "loss");
+const tradeRiskReward = (trade) => Number(trade?.pnl) < 0 ? -1 : Math.max(0, Number(trade?.rr) || 0);
 const clsColor = (cls) => (cls === "win" ? "tj-green" : cls === "loss" ? "tj-red" : "tj-blue");
 // Win-rate percentage system: >50% green, 30-50% muted theme amber, <30% red.
 // Bars retain their existing colors so the percentage is the only changing part.
@@ -514,16 +553,31 @@ function getGrade(winRate, pnl, count) {
 const ImageViewerContext = React.createContext(() => {});
 
 function ImageViewer({ src, alt = "Full-size image", onClose }) {
+  const [zoom, setZoom] = useState(1);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
   useEffect(() => {
     if (!src) return undefined;
-    const onKeyDown = (event) => { if (event.key === "Escape") onClose(); };
+    setZoom(1);
+    const onKeyDown = (event) => { if (event.key === "Escape") closeRef.current(); };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [src, onClose]);
+  }, [src]);
+
+  const changeZoom = (amount) => setZoom((current) => Math.min(4, Math.max(0.5, Math.round((current + amount) * 100) / 100)));
+
   if (!src) return null;
   return <div className="tj-image-viewer" role="dialog" aria-modal="true" aria-label={alt} onMouseDown={onClose}>
     <button className="tj-image-viewer-close" aria-label="Close image viewer" onClick={onClose}><X size={20}/></button>
-    <img src={src} alt={alt} onMouseDown={(event) => event.stopPropagation()} />
+    <div className="tj-image-viewer-controls" onMouseDown={(event) => event.stopPropagation()}>
+      <button type="button" onClick={() => changeZoom(-0.25)} disabled={zoom <= 0.5} aria-label="Zoom out"><Minus size={17}/></button>
+      <button type="button" className="tj-image-viewer-zoom-level" onClick={() => setZoom(1)} aria-label="Reset zoom">{Math.round(zoom * 100)}%</button>
+      <button type="button" onClick={() => changeZoom(0.25)} disabled={zoom >= 4} aria-label="Zoom in"><Plus size={17}/></button>
+    </div>
+    <div className="tj-image-viewer-stage" onMouseDown={(event) => event.stopPropagation()}>
+      <img src={src} alt={alt} style={{ transform: `scale(${zoom})` }} />
+    </div>
   </div>;
 }
 
@@ -537,7 +591,7 @@ const screenshotCaption = (screenshot) => typeof screenshot === "object" && scre
 
 /* ============================ SCREENSHOT UPLOADER ======================= */
 
-function downscaleImage(file) {
+function readImageData(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
@@ -573,39 +627,50 @@ function resizeProfileImage(file) {
 function ScreenshotUploader({ screenshots, onChange, max = 2, captions = false }) {
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef(null);
+  const pasteTargetRef = useRef(null);
 
   const addFiles = useCallback(async (files) => {
     const room = max - screenshots.length;
     const list = Array.from(files).slice(0, Math.max(0, room)).filter((f) => f.type.startsWith("image/"));
     for (const f of list) {
       try {
-        const dataUrl = await downscaleImage(f);
+        const dataUrl = await readImageData(f);
         onChange((prev) => (prev.length >= max ? prev : [...prev, captions ? { src: dataUrl, caption: "" } : dataUrl]));
       } catch (e) { /* ignore unreadable file */ }
     }
   }, [screenshots.length, onChange, max]);
 
-  useEffect(() => {
-    const handler = (e) => {
-      if (!e.clipboardData) return;
-      const items = Array.from(e.clipboardData.items).filter((it) => it.type.startsWith("image/"));
-      if (items.length) { addFiles(items.map((it) => it.getAsFile())); e.preventDefault(); }
-    };
-    window.addEventListener("paste", handler);
-    return () => window.removeEventListener("paste", handler);
-  }, [addFiles]);
+  const pasteImage = (event) => {
+    if (event.target.closest?.("input, textarea")) return;
+    const items = Array.from(event.clipboardData?.items || []).filter((item) => item.type.startsWith("image/"));
+    if (!items.length) return;
+    event.preventDefault();
+    addFiles(items.map((item) => item.getAsFile()));
+  };
+
+  const chooseFile = (event) => {
+    event.stopPropagation();
+    fileRef.current?.click();
+  };
 
   return (
     <div className="tj-field">
       <div
+        ref={pasteTargetRef}
+        tabIndex={0}
+        role="group"
+        aria-label="Image session. Click to select for image paste; double-click to choose a file."
         className={`tj-dropzone ${dragOver ? "tj-dropzone-active" : ""}`}
-        onClick={() => screenshots.length < max && fileRef.current?.click()}
+        onClick={(event) => { if (event.target === event.currentTarget || event.target.closest(".tj-shot-grid") === null) pasteTargetRef.current?.focus(); }}
+        onDoubleClick={chooseFile}
+        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); pasteTargetRef.current?.focus(); } }}
+        onPaste={pasteImage}
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={(e) => { e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); }}
       >
         {screenshots.length === 0 ? (
-          <ImagePlus size={20} color="var(--tj-muted)" aria-label="Add screenshots" />
+          <ImagePlus size={20} color="var(--tj-muted)" aria-label="Add screenshot" />
         ) : (
           <div className="tj-shot-grid">
             {screenshots.map((screenshot, i) => (
@@ -619,7 +684,7 @@ function ScreenshotUploader({ screenshots, onChange, max = 2, captions = false }
               </div>
             ))}
             {screenshots.length < max && (
-              <div className="tj-shot-add"><Plus size={16} color="var(--tj-muted)" /></div>
+              <button type="button" className="tj-shot-add" onClick={chooseFile} aria-label="Choose an image file"><Plus size={16} color="var(--tj-muted)" /></button>
             )}
           </div>
         )}
@@ -631,18 +696,30 @@ function ScreenshotUploader({ screenshots, onChange, max = 2, captions = false }
 }
 
 const tradeImageSessions = (screenshots) => {
+  if (screenshots && !Array.isArray(screenshots) && typeof screenshots === "object") {
+    return { entry: Array.isArray(screenshots.entry) ? screenshots.entry : [], exit: Array.isArray(screenshots.exit) ? screenshots.exit : [] };
+  }
   const images = Array.isArray(screenshots) ? screenshots : [];
   return { entry: images.slice(0, 2), exit: images.slice(2, 4) };
+};
+const tradeScreenshotItems = (screenshots) => {
+  const sessions = tradeImageSessions(screenshots);
+  return [
+    ...sessions.entry.map((screenshot, index) => ({ screenshot, label: "Entry", key: `entry-${index}` })),
+    ...sessions.exit.map((screenshot, index) => ({ screenshot, label: "Exit", key: `exit-${index}` })),
+  ];
 };
 
 /* ============================== NEW TRADE MODAL ========================= */
 
 function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags, confluenceSessions, markups, rules, instruments = [], defaultCommission, account }) {
   const [form, setForm] = useState(() => {
-    const base = { id: uid(), date: todayISO(), time: nowTime(), closeDate: todayISO(), closeTime: nowTime(), asset: "", direction: "BUY", riskPct: account?.defaultRiskPct || 1, stopLossPips: account?.defaultStopLossPips || "", entryPrice: "", stopLossPrice: "", grossPnl: "", commission: defaultCommission || 0, swap: 0, pnl: "", rr: "", entryType: "", entrySession: SESSIONS[2], session: SESSIONS[2], confluence: [], types: [], mistakes: [], moodBefore: "Neutral", moodAfter: "Neutral", context: "", screenshots: [], premarketMarkupId: null, ruleEvaluations: [] };
+    const currentTime = nowTime();
+    const base = { id: uid(), date: todayISO(), time: currentTime, closeDate: todayISO(), closeTime: currentTime, asset: "", direction: "BUY", riskPct: account?.defaultRiskPct || 1, stopLossPips: account?.defaultStopLossPips || "", entryPrice: "", exitPrice: "", stopLossPrice: "", grossPnl: "", commission: defaultCommission || 0, swap: 0, pnl: "", rr: "", entryType: "", entrySession: entrySessionFromOpenTime(currentTime), session: entrySessionFromOpenTime(currentTime), confluence: [], types: [], mistakes: [], moodBefore: "Neutral", moodAfter: "Neutral", context: "", screenshots: { entry: [], exit: [] }, premarketMarkupId: null, ruleEvaluations: [] };
     if (!editing && !draft) return base;
     const source = editing || draft;
-    return { ...base, ...source, time: editing ? (source.time || "") : (source.time || nowTime()), entryType: source.entryType || source.confluenceSession || "", entrySession: normalizeSession(source.entrySession || source.session || SESSIONS[2]), confluence: source.confluence || source.types || [], ruleEvaluations: source.ruleEvaluations || [] };
+    const openTime = editing ? (source.time || "") : (source.time || currentTime);
+    return { ...base, ...source, time: openTime, entryType: source.entryType || source.confluenceSession || "", entrySession: entrySessionFromOpenTime(openTime) || normalizeSession(source.entrySession || source.session || SESSIONS[2]), confluence: source.confluence || source.types || [], ruleEvaluations: source.ruleEvaluations || [] };
   });
   const activeRules = rules.filter((rule) => rule.active);
   const recentMarkups = useMemo(() => [...markups].sort((a, b) => `${b.date || ""} ${b.time || ""}`.localeCompare(`${a.date || ""} ${a.time || ""}`)).slice(0, 3), [markups]);
@@ -673,18 +750,23 @@ function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags,
   const completedRules = activeRules.filter((rule) => form.ruleEvaluations.some((entry) => entry.ruleId === rule.id && entry.checked)).length;
   const ruleRating = activeRules.length ? (completedRules / activeRules.length) * 2 : 0;
   const liveNetPnl = (Number(form.grossPnl) || 0) - (Number(form.commission) || 0) - (Number(form.swap) || 0);
+  const isLossResult = liveNetPnl < 0;
   const resultRating = liveNetPnl > 0 ? 1 : liveNetPnl < 0 ? -1 : 0;
   const markupRating = form.premarketMarkupId ? 2 : 0;
   const mistakePenalty = form.mistakes.length;
   const calculatedRating = clamp(ruleRating + resultRating + markupRating - mistakePenalty, 0, 5);
   const set = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  useEffect(() => {
+    if (isLossResult && String(form.rr) !== "-1") setForm((current) => ({ ...current, rr: -1 }));
+  }, [isLossResult, form.rr]);
+  const setOpenTime = (value) => setForm((current) => ({ ...current, time: value, entrySession: entrySessionFromOpenTime(value) || current.entrySession }));
   const toggleArr = (key, value) => setForm((current) => ({
     ...current, [key]: current[key].includes(value) ? current[key].filter((item) => item !== value) : [...current[key], value],
   }));
   const setScreenshots = (session) => (updater) => setForm((current) => {
     const sessions = tradeImageSessions(current.screenshots);
     sessions[session] = updater(sessions[session]);
-    return { ...current, screenshots: [...sessions.entry, ...sessions.exit] };
+    return { ...current, screenshots: sessions };
   });
   const toggleRule = (rule, checked) => setForm((current) => ({
     ...current,
@@ -696,7 +778,8 @@ function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags,
     if (!Number.isFinite(grossPnl)) return;
     const manualCTraderOpening = /Imported cTrader position #.*\[close-only\]/i.test(form.context || "") && !cTraderOpeningWasEnteredManually(form) && form.date && form.time;
     const context = manualCTraderOpening ? `${form.context} [opening-time:manual]` : form.context;
-    onSave({ ...form, context, session: form.entrySession, types: form.confluence, confluenceSession: form.entryType, grossPnl, commission, swap, pnl: grossPnl - commission - swap, rr: parseFloat(form.rr) || 0, rating: calculatedRating });
+    const entrySession = entrySessionFromOpenTime(form.time) || form.entrySession;
+    onSave({ ...form, entrySession, context, session: entrySession, types: form.confluence, confluenceSession: form.entryType, grossPnl, commission, swap, pnl: grossPnl - commission - swap, rr: isLossResult ? -1 : Math.max(0, parseFloat(form.rr) || 0), rating: calculatedRating });
   };
   const timingError = tradeTimingError(form);
   return <Modal title={editing ? "Edit Trade" : "Log Trade"} onClose={onClose} onConfirm={save} confirmDisabled={!form.asset.trim() || form.grossPnl === "" || !form.time || !!timingError} wide>
@@ -715,13 +798,17 @@ function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags,
     </div>
     {account?.positionSizeEnabled && <>
       <div className="tj-grid2"><Field label="Risk %"><input type="number" min="0" step="0.1" className="tj-input" value={form.riskPct} onChange={(event) => set("riskPct", event.target.value)} /></Field><Field label="Stop Loss (Pips)"><input type="number" min="0" step="0.1" className="tj-input" placeholder="e.g. 12" value={form.stopLossPips} onChange={(event) => set("stopLossPips", event.target.value)} /></Field></div>
-      <div className="tj-grid2"><Field label="Entry Price (optional)"><input type="number" min="0" step="any" className="tj-input" placeholder="For price conversion" value={form.entryPrice} onChange={(event) => set("entryPrice", event.target.value)} /></Field><Field label="Stop Loss Price (optional)"><input type="number" min="0" step="any" className="tj-input" placeholder="Derives pips if needed" value={form.stopLossPrice} onChange={(event) => set("stopLossPrice", event.target.value)} /></Field></div>
+      <Field label="Stop Loss Price (optional)"><input type="number" min="0" step="any" className="tj-input" placeholder="Derives pips if needed" value={form.stopLossPrice} onChange={(event) => set("stopLossPrice", event.target.value)} /></Field>
     </>}
     <div className="tj-trade-timing-row">
       <Field label="Open date *"><input type="date" value={form.date} onChange={event=>set('date',event.target.value)}/></Field>
-      <Field label="Open time *"><input type="time" value={form.time} onChange={event=>set('time',event.target.value)}/></Field>
+      <Field label="Open time *"><input type="time" value={form.time} onChange={event=>setOpenTime(event.target.value)}/></Field>
       <Field label="Close date *"><input type="date" required value={form.closeDate || ''} onChange={event=>set('closeDate',event.target.value)}/></Field>
       <Field label="Close time *"><input type="time" required value={form.closeTime || ''} onChange={event=>set('closeTime',event.target.value)}/></Field>
+    </div>
+    <div className="tj-grid2">
+      <Field label="Entry Price"><input type="number" min="0" step="any" className="tj-input" value={form.entryPrice} onChange={(event) => set("entryPrice", event.target.value)} /></Field>
+      <Field label="Exit Price"><input type="number" min="0" step="any" className="tj-input" value={form.exitPrice} onChange={(event) => set("exitPrice", event.target.value)} /></Field>
     </div>
     {timingError && <p role="alert" className="tj-trade-timing-error">{timingError}</p>}
     <div className="tj-grid2">
@@ -730,11 +817,11 @@ function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags,
     </div>
     <div className="tj-grid2">
       <Field label={`Swap (${activeMoneyCurrency})`}><input type="number" className="tj-input" value={form.swap} onChange={(event) => set("swap", event.target.value)} /></Field>
-      <Field label="Entry Session"><select className="tj-input" value={form.entrySession} onChange={(event) => set("entrySession", event.target.value)}>{SESSIONS.map((session) => <option key={session} value={session}>{session}</option>)}</select></Field>
+      <Field label="Entry Session (from open time)"><input className="tj-input" readOnly value={form.entrySession || "Set an open time"} /></Field>
     </div>
     <div className="tj-grid2">
       <Field label={`Net P&L (${activeMoneyCurrency})`}><input className="tj-input" readOnly value={fmtMoney((Number(form.grossPnl) || 0) - (Number(form.commission) || 0) - (Number(form.swap) || 0))} /></Field>
-      <Field label="RR"><input type="number" step="0.1" className="tj-input" placeholder="2.5" value={form.rr} onChange={(event) => set("rr", event.target.value)} /></Field>
+      <Field label="Risk:Reward (R)"><ThemeRiskReward value={isLossResult ? -1 : form.rr} onChange={(value) => set("rr", value)} disabled={isLossResult} customValues={account?.rewardPresets || []} />{isLossResult && <div className="tj-muted-txt tj-settings-hint">Losses are recorded as −1R automatically.</div>}</Field>
     </div>
     <div className="tj-section-label">Entry Type &amp; Markup</div>
     <div className="tj-grid2">
@@ -786,7 +873,7 @@ function AccountSettingsSection({ title, children, note, status, icon, danger = 
   </section>;
 }
 
-function AccountSettingsModal({ account, onClose, onSave, onDelete, onImport, challenge }) {
+function AccountSettingsModal({ account, onClose, onSave, onDelete, onReset, onImport, challenge }) {
   const [name, setName] = useState(account.name);
   const [challengeDraft, setChallengeDraft] = useState(null);
   const [savingSettings, setSavingSettings] = useState(false);
@@ -853,7 +940,7 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, onImport, ch
     } finally { setSavingSettings(false); }
   };
   return (
-    <Modal title={<span className="tj-symbol-title"><NavSymbol src={accountSettingsSymbol} />Account Settings</span>} onClose={() => { if (!savingSettings) onClose(); }} onConfirm={saveSettings} confirmDisabled={!name.trim() || !baseCurrency || savingSettings || (challengeEnabled && challenge.loading && !challenge.error)} wide>
+    <Modal title={<span className="tj-symbol-title"><WalletCards size={18} />Account Settings</span>} onClose={() => { if (!savingSettings) onClose(); }} onConfirm={saveSettings} confirmDisabled={!name.trim() || !baseCurrency || savingSettings || (challengeEnabled && challenge.loading && !challenge.error)} wide>
       <div className="tj-settings-account-hero tj-settings-account-hero-no-avatar">
         <div className="tj-settings-hero-copy"><span>ACCOUNT CONTROL CENTER</span><strong>{name.trim() || "Main Account"}</strong><p>Build the account once, then let goals and guardrails carry through the dashboard, analytics, and daily workflow.</p></div>
         <div className="tj-settings-hero-metrics"><div className="tj-settings-balance-tile"><small>STARTING BALANCE</small><b>{fmtMoneyShort(accountBase, baseCurrency)}</b><span>Account base</span></div><div className={`tj-settings-month-goal ${goalsEnabled ? "tj-settings-goal-on" : ""}`}><small>MONTHLY GOAL</small><b>{monthlyGoalPct ? fmtMoneyShort(monthlyTarget, baseCurrency) : "Optional"}</b><span>{monthlyGoalPct ? `+${Number(monthlyGoalPct).toFixed(2)}% target` : "Not set"}</span></div><div className={`tj-settings-year-goal ${goalsEnabled ? "tj-settings-goal-on" : ""}`}><small>YEARLY GOAL</small><b>{yearlyGoalPct ? fmtMoneyShort(yearlyTarget, baseCurrency) : "Optional"}</b><span>{yearlyGoalPct ? `+${Number(yearlyGoalPct).toFixed(2)}% target` : "Not set"}</span></div><div className={`tj-settings-daily-loss ${guardrailsEnabled ? "tj-settings-risk-on" : ""}`}><small>DAILY LOSS</small><b>{dailyLossLimitPct ? fmtMoneyShort(-dailyLimit, baseCurrency) : "Optional"}</b><span>{dailyLossLimitPct ? `${Number(dailyLossLimitPct).toFixed(2)}% cap` : "Not set"}</span></div><div className={`tj-settings-month-loss ${guardrailsEnabled ? "tj-settings-risk-on" : ""}`}><small>MONTHLY LOSS</small><b>{monthlyLossLimitPct ? fmtMoneyShort(-monthlyLimit, baseCurrency) : "Optional"}</b><span>{monthlyLossLimitPct ? `${Number(monthlyLossLimitPct).toFixed(2)}% cap` : "Not set"}</span></div></div>
@@ -886,7 +973,7 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, onImport, ch
         <label className="tj-settings-switch-row"><button type="button" role="switch" aria-checked={positionSizeEnabled} className={`tj-settings-switch ${positionSizeEnabled ? "tj-settings-switch-on" : ""}`} onClick={() => setPositionSizeEnabled((enabled) => !enabled)}><i /></button><span><strong>Enable Position Size Calculator</strong><small>Show live risk-based lot suggestions in Log Trade.</small></span></label><div className="tj-grid2"><Field label="Default Risk % Per Trade"><input type="number" min="0" step="0.1" className="tj-input" disabled={!positionSizeEnabled} value={defaultRiskPct} onChange={(event) => setDefaultRiskPct(event.target.value)} /></Field><Field label="Default Stop Loss (Pips)"><input type="number" min="0" className="tj-input" disabled={!positionSizeEnabled} value={defaultStopLossPips} placeholder="Optional" onChange={(event) => setDefaultStopLossPips(event.target.value)} /></Field></div>
       </AccountSettingsSection>
       <AccountSettingsSection title="Danger Zone" icon={<Trash2 size={15}/>} danger isOpen={open.danger} onToggle={() => toggle("danger")}>
-        <div className="tj-settings-danger-action"><span><strong>Delete Account</strong><small>This permanently deletes this account and all of its trades, markups, reviews, and history.</small></span><ConfirmDeleteButton type="button" className="tj-btn-danger-outline" onClick={() => onDelete(account)}><Trash2 size={14}/> Delete Account</ConfirmDeleteButton></div>
+        <div className="tj-settings-danger-grid"><div className="tj-settings-danger-action"><span><strong>Reset Account Data</strong><small>Erases this account’s trade history and check-ins, but keeps the account settings.</small></span><ConfirmDeleteButton type="button" className="tj-btn-danger-outline" onClick={onReset}><RefreshCw size={14}/> Reset Data</ConfirmDeleteButton></div><div className="tj-settings-danger-action"><span><strong>Delete Account</strong><small>Permanently deletes this account and all of its trades, markups, reviews, and history.</small></span><ConfirmDeleteButton type="button" className="tj-btn-danger-outline" onClick={() => onDelete(account)}><Trash2 size={14}/> Delete Account</ConfirmDeleteButton></div></div>
       </AccountSettingsSection>
       <div className="tj-modal-actions">
         <button className="tj-btn-outline" onClick={onClose}>Cancel</button>
@@ -896,12 +983,18 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, onImport, ch
   );
 }
 
-function ProfileSettingsModal({ user, account, themeValue, onClose, onSave }) {
-  const fallbackName = user.user_metadata?.display_name || user.user_metadata?.full_name || (user.email ? user.email.split("@")[0] : "Trader");
+function ProfileSettingsModal({ user, account, themeValue, themePreference, accentValue, onClose, onSave, onPreviewAppearance, onDeleteProfile }) {
+  const fallbackName = user.user_metadata?.full_name || user.user_metadata?.display_name || (user.email ? user.email.split("@")[0] : "Trader");
+  const fallbackDisplayName = user.user_metadata?.display_name || fallbackName;
   const existingPhoto = user.user_metadata?.avatar_url || user.user_metadata?.picture || "";
   const [fullName, setFullName] = useState(fallbackName);
+  const [displayName, setDisplayName] = useState(fallbackDisplayName);
   const [profileImage, setProfileImage] = useState(existingPhoto);
-  const [theme, setTheme] = useState(themeValue || user.user_metadata?.theme || account.theme || "dark");
+  const [theme, setTheme] = useState(themePreference || user.user_metadata?.theme_preference || themeValue || account.theme || "dark");
+  const [accent, setAccent] = useState(accentValue || user.user_metadata?.accent_color || "mint");
+  const [timezone, setTimezone] = useState(user.user_metadata?.timezone || "Africa/Accra");
+  const [dateFormat, setDateFormat] = useState(user.user_metadata?.date_format || "DD/MM/YYYY");
+  const [timeFormat, setTimeFormat] = useState(user.user_metadata?.time_format || "12");
   const savedTimeout = Number(user.user_metadata?.session_timeout_minutes);
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(Number.isFinite(savedTimeout) ? savedTimeout : 90);
   const [saving, setSaving] = useState(false);
@@ -910,8 +1003,18 @@ function ProfileSettingsModal({ user, account, themeValue, onClose, onSave }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordStatus, setPasswordStatus] = useState(null);
   const [changingPassword, setChangingPassword] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const photoRef = useRef(null);
-  const initials = fullName.trim().split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "T";
+  // Preview updates the parent appearance state. Preserve the initial saved
+  // values separately so that previewing never makes the Save button think
+  // there are no pending profile changes.
+  const original = useRef({ fullName: fallbackName, displayName: fallbackDisplayName, profileImage: existingPhoto, theme: themePreference || user.user_metadata?.theme_preference || themeValue || account.theme || "dark", accent: accentValue || user.user_metadata?.accent_color || "mint", timezone: user.user_metadata?.timezone || "Africa/Accra", dateFormat: user.user_metadata?.date_format || "DD/MM/YYYY", timeFormat: user.user_metadata?.time_format || "12", timeout: Number.isFinite(savedTimeout) ? savedTimeout : 90 }).current;
+  const unchanged = fullName.trim() === original.fullName && displayName.trim() === original.displayName && profileImage === original.profileImage && theme === original.theme && accent === original.accent && timezone === original.timezone && dateFormat === original.dateFormat && timeFormat === original.timeFormat && sessionTimeoutMinutes === original.timeout;
+  const initials = (displayName || fullName).trim().split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "T";
+  const preview = (nextTheme = theme, nextAccent = accent) => onPreviewAppearance?.(nextTheme, nextAccent);
   const uploadProfile = async (files) => {
     const file = files?.[0];
     if (!file || !file.type.startsWith("image/")) return;
@@ -920,7 +1023,7 @@ function ProfileSettingsModal({ user, account, themeValue, onClose, onSave }) {
   const save = async () => {
     if (!fullName.trim() || saving) return;
     setSaving(true);
-    const saved = await onSave({ displayName: fullName.trim(), avatarUrl: profileImage, theme, sessionTimeoutMinutes });
+    const saved = await onSave({ fullName: fullName.trim(), displayName: displayName.trim() || fullName.trim(), avatarUrl: profileImage, themePreference: theme, accentColor: accent, timezone, dateFormat, timeFormat, sessionTimeoutMinutes });
     if (!saved) setSaving(false);
   };
   const changePassword = async () => {
@@ -935,29 +1038,43 @@ function ProfileSettingsModal({ user, account, themeValue, onClose, onSave }) {
     setConfirmPassword("");
     setPasswordStatus({ type: "success", text: "Password changed successfully." });
   };
+  const close = () => { onPreviewAppearance?.(original.theme, original.accent); onClose(); };
+  const deleteProfile = async () => {
+    if (deleteConfirmation !== "DELETE" || deleting) return;
+    setDeleting(true); setDeleteError("");
+    const result = await onDeleteProfile();
+    if (result?.error) { setDeleteError(result.error); setDeleting(false); }
+  };
   return (
-    <Modal title={<span className="tj-symbol-title"><NavSymbol src={profileSettingsSymbol} />Profile</span>} onClose={onClose} onConfirm={save} confirmDisabled={saving || !fullName.trim()} wide>
+    <Modal title={<span className="tj-symbol-title"><UserRound size={18} />Profile</span>} onClose={close} onConfirm={save} confirmDisabled={saving || !fullName.trim()} wide>
       <div className="tj-personal-profile-card">
-        <div className="tj-personal-profile-heading"><div><span>PERSONAL INFORMATION</span><strong>Profile settings</strong><p>Your name, photo, and display preference follow your signed-in profile.</p></div></div>
+        <div className="tj-personal-profile-heading"><div><span>PERSONAL INFORMATION</span><strong>Profile settings</strong></div></div>
         <div className="tj-personal-profile-photo-row">
           <button type="button" className="tj-personal-profile-avatar" onClick={() => photoRef.current?.click()} aria-label="Change profile photo">{profileImage ? <img src={profileImage} alt="Profile" /> : <span>{initials}</span>}<i><ImagePlus size={14} /></i></button>
-          <div><strong>{fullName.trim() || "Your name"}</strong><div className="tj-chip-row"><button type="button" className="tj-btn-outline tj-btn-small" onClick={() => photoRef.current?.click()}>Change photo</button>{profileImage && <ConfirmDeleteButton type="button" className="tj-btn-outline tj-btn-small" onClick={async () => { setProfileImage(""); }}>Remove photo</ConfirmDeleteButton>}</div></div>
+          <div><strong>{displayName.trim() || fullName.trim() || "Your name"}</strong><div className="tj-chip-row"><button type="button" className="tj-btn-outline tj-btn-small" onClick={() => photoRef.current?.click()}>Change photo</button>{profileImage && <ConfirmDeleteButton type="button" className="tj-btn-outline tj-btn-small" onClick={async () => { setProfileImage(""); }}>Remove photo</ConfirmDeleteButton>}</div></div>
           <input ref={photoRef} type="file" accept="image/*" style={{ display: "none" }} onChange={(event) => { uploadProfile(event.target.files); event.target.value = ""; }} />
         </div>
         <div className="tj-personal-profile-fields">
           <Field label="Full Name"><input className="tj-input" value={fullName} onChange={(event) => setFullName(event.target.value)} placeholder="Enter your full name" /></Field>
+          <Field label="Display Name"><input className="tj-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Name shown around the journal" /></Field>
           <Field label="Email Address"><input className="tj-input" value={user.email || ""} readOnly /><button type="button" className="tj-password-link" aria-expanded={passwordOpen} onClick={() => { setPasswordOpen((open) => !open); setPasswordStatus(null); }}>Change password</button>{passwordOpen && <div className="tj-password-editor"><input type="password" className="tj-input" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="New password" autoComplete="new-password" /><input type="password" className="tj-input" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Confirm password" autoComplete="new-password" onKeyDown={(event) => event.key === "Enter" && changePassword()} /><button type="button" className="tj-btn-primary tj-btn-small" disabled={changingPassword} onClick={changePassword}>{changingPassword ? "Changing…" : "Update password"}</button>{passwordStatus && <span className={passwordStatus.type === "error" ? "tj-red" : "tj-green"}>{passwordStatus.text}</span>}</div>}</Field>
+          <div className="tj-profile-danger"><strong>Danger Zone</strong>{!deleteOpen ? <button type="button" className="tj-danger-button" onClick={() => setDeleteOpen(true)}>Delete profile</button> : <div className="tj-profile-danger-confirm"><span>Type <b>DELETE</b> to permanently erase this profile and all journal data.</span><input className="tj-input" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="DELETE" autoComplete="off" /><div><button type="button" className="tj-btn-outline tj-btn-small" disabled={deleting} onClick={() => { setDeleteOpen(false); setDeleteConfirmation(""); setDeleteError(""); }}>Cancel</button><button type="button" className="tj-danger-button" disabled={deleteConfirmation !== "DELETE" || deleting} onClick={deleteProfile}>{deleting ? "Deleting…" : "Delete forever"}</button></div>{deleteError && <small className="tj-red">{deleteError}</small>}</div>}</div>
         </div>
       </div>
       <section className="tj-personal-appearance-card">
-        <div className="tj-personal-section-title"><div><strong>Appearance</strong><span>Choose the surface that is most comfortable for you.</span></div><em>{theme === "light" ? "Light" : "Dark"}</em></div>
-        <div className="tj-theme-choice-row"><button type="button" aria-pressed={theme === "dark"} className={`tj-theme-choice ${theme === "dark" ? "tj-chip-active" : ""}`} onClick={() => setTheme("dark")}><span>Dark</span><small>Low-light focus</small></button><button type="button" aria-pressed={theme === "light"} className={`tj-theme-choice ${theme === "light" ? "tj-chip-active" : ""}`} onClick={() => setTheme("light")}><span>Light</span><small>Bright daytime workspace</small></button></div>
+        <div className="tj-personal-section-title"><div><strong>Appearance</strong></div><em>{theme === "system" ? "System" : theme === "light" ? "Light" : "Dark"}</em></div>
+        <div className="tj-theme-choice-row tj-theme-choice-three">{[["dark","Dark"],["light","Light"],["system","System"]].map(([value,label]) => <button key={value} type="button" aria-pressed={theme === value} className={`tj-theme-choice ${theme === value ? "tj-chip-active" : ""}`} onClick={() => { setTheme(value); preview(value); }}><span>{label}</span></button>)}</div>
+        <div className="tj-accent-head"><strong>Accent color</strong></div><div className="tj-accent-row">{ACCENT_OPTIONS.map((option) => <button key={option.id} type="button" className={`tj-accent-option ${accent === option.id ? "tj-accent-selected" : ""}`} aria-pressed={accent === option.id} title={accent === option.id ? "Click again to restore the default color" : `Use ${option.label}`} onClick={() => { const next = accent === option.id ? "default" : option.id; setAccent(next); preview(theme, next); }}><i style={{ background: themeValue === "light" ? option.light : option.dark }} /><span>{option.label}</span></button>)}</div>
+      </section>
+      <section className="tj-personal-appearance-card">
+        <div className="tj-personal-section-title"><div><strong>Regional Preferences</strong></div></div>
+        <div className="tj-personal-profile-fields tj-regional-fields"><Field label="Timezone"><select className="tj-input" value={timezone} onChange={(event) => setTimezone(event.target.value)}><option value="Africa/Accra">Africa/Accra (UTC+0)</option><option value="Europe/London">Europe/London</option><option value="America/New_York">America/New_York</option><option value="America/Chicago">America/Chicago</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="Asia/Dubai">Asia/Dubai</option></select></Field><Field label="Date Format"><select className="tj-input" value={dateFormat} onChange={(event) => setDateFormat(event.target.value)}><option value="DD/MM/YYYY">DD/MM/YYYY</option><option value="MM/DD/YYYY">MM/DD/YYYY</option><option value="YYYY-MM-DD">YYYY-MM-DD</option></select></Field><Field label="Time Format"><select className="tj-input" value={timeFormat} onChange={(event) => setTimeFormat(event.target.value)}><option value="12">12-hour (AM/PM)</option><option value="24">24-hour</option></select></Field></div>
       </section>
       <section className="tj-personal-appearance-card tj-personal-security-card">
         <div className="tj-personal-section-title"><div><strong>Session &amp; Security</strong></div><em>{sessionTimeoutMinutes === 90 ? "1h 30m" : "No timeout"}</em></div>
-        <div className="tj-theme-choice-row"><button type="button" aria-pressed={sessionTimeoutMinutes === 90} className={`tj-theme-choice ${sessionTimeoutMinutes === 90 ? "tj-chip-active" : ""}`} onClick={() => setSessionTimeoutMinutes(90)}><span>1h 30m</span><small>Automatic sign-out</small></button><button type="button" aria-pressed={sessionTimeoutMinutes === 0} className={`tj-theme-choice ${sessionTimeoutMinutes === 0 ? "tj-chip-active" : ""}`} onClick={() => setSessionTimeoutMinutes(0)}><span>Stay signed in</span><small>No inactivity timeout</small></button></div>
+        <div className="tj-theme-choice-row"><button type="button" aria-pressed={sessionTimeoutMinutes === 90} className={`tj-theme-choice ${sessionTimeoutMinutes === 90 ? "tj-chip-active" : ""}`} onClick={() => setSessionTimeoutMinutes(90)}><span>1h 30m</span></button><button type="button" aria-pressed={sessionTimeoutMinutes === 0} className={`tj-theme-choice ${sessionTimeoutMinutes === 0 ? "tj-chip-active" : ""}`} onClick={() => setSessionTimeoutMinutes(0)}><span>Stay signed in</span></button></div>
       </section>
-      <div className="tj-modal-actions"><button className="tj-btn-outline" onClick={onClose}>Cancel</button><button className="tj-btn-primary" disabled={saving || !fullName.trim()} onClick={save}>{saving ? "Saving…" : "Save Profile"}</button></div>
+      <div className="tj-modal-actions"><button className="tj-btn-outline" onClick={close}>Cancel</button><button className="tj-btn-primary" disabled={saving || !fullName.trim() || unchanged} onClick={save}>{saving ? "Saving…" : "Save Profile"}</button></div>
     </Modal>
   );
 }
@@ -1003,7 +1120,7 @@ function MistakeManager({ mistakes, onSave }) {
 }
 
 function ManagementPage({ account, typeTags, mistakeTags, confluenceSessions, instruments, onTypeTags, onMistakes, onConfluence, onInstruments, onAddRule, onUpdateRule, onRemoveRule }) {
-  return <div className="tj-management-workspace"><div className="tj-page-intro"><div><div className="tj-bold tj-management-title" style={{fontSize: 19.44}}><NavSymbol src={managementSettingsSymbol} />Management</div><div className="tj-muted-txt" style={{fontSize: 14}}>Manage the options available on future trades and markups. Historical records remain unchanged.</div></div></div><div className="tj-management-grid">
+  return <div className="tj-management-workspace"><div className="tj-page-intro"><div><div className="tj-bold tj-management-title" style={{fontSize: 19.44}}><SlidersHorizontal size={18} />Management</div><div className="tj-muted-txt" style={{fontSize: 14}}>Manage the options available on future trades and markups. Historical records remain unchanged.</div></div></div><div className="tj-management-grid">
     <RulesPage account={account} onAddRule={onAddRule} onUpdateRule={onUpdateRule} onRemoveRule={onRemoveRule} />
     <InstrumentManager instruments={instruments} onSave={onInstruments} />
     <ListManager title="Confluence" items={typeTags} onSave={onTypeTags} note="Former tag records. Select one or more confluences while logging a trade." />
@@ -1038,7 +1155,7 @@ function MarkupsPage({ markups, trades, onNew, onEdit, onDelete }) {
   const slots = [["preHTF", "HTF"], ["preH4", "MTF"], ["preM15", "LTF"], ["postH4", "Post Market MTF"], ["postM15", "Post Market LTF"]];
   return <><div className="tj-rules-head"><div><div className="tj-bold" style={{fontSize: 17.28}}>Premarket Markups</div><div className="tj-muted-txt" style={{fontSize: 14}}>Prepare context before execution, then attach the resulting trades.</div></div><button className="tj-btn-primary" onClick={onNew}><Plus size={15}/> New Markup</button></div><div className="tj-tlog-list">{markups.length ? markups.map((markup) => {
     const linked=trades.filter((trade)=>trade.premarketMarkupId===markup.id), pnl=linked.reduce((sum,trade)=>sum+trade.pnl,0), expanded=!!open[markup.id];
-    return <Card key={markup.id} className="tj-tlog-card"><div className="tj-tlog-row" onClick={()=>setOpen((state)=>({...state,[markup.id]:!state[markup.id]}))}><div className="tj-tlog-main"><div className="tj-tlog-asset">{markup.instrument||markup.market||"Untitled markup"} <span className="tj-sesspill">{markup.bias||"No bias"}</span> <span className={`tj-markup-status tj-markup-status-${String(markup.status||"Planned").toLowerCase()}`}>{markup.status||"Planned"}</span></div><div className="tj-muted-txt" style={{fontSize: 14}}>{markup.date} · {formatTime(markup.time)} · {markup.market||"No session"} · {linked.length} linked trade{linked.length===1?"":"s"}</div></div><div className={`tj-tlog-pnl ${pnl>=0?"tj-green":"tj-red"}`}>{fmtMoney(pnl)}</div><button className="tj-btn-edit" onClick={(event)=>{event.stopPropagation();onEdit(markup)}}>Edit</button><ConfirmDeleteButton className="tj-icon-btn" title="Delete markup" onClick={(event)=>{event.stopPropagation();onDelete(markup.id)}}><Trash2 size={14}/></ConfirmDeleteButton><ChevronDown size={16} style={{transform:expanded?"rotate(180deg)":"none"}}/></div>{expanded&&<div className="tj-tlog-detail"><div className="tj-tlog-detail-grid"><div><div className="tj-mlabel">STATUS</div><div>{markup.status||"Planned"}</div></div><div><div className="tj-mlabel">LEVELS / ZONES</div><div>{markup.levels||"—"}</div></div><div><div className="tj-mlabel">STRUCTURE</div><div>{markup.structure||"—"}</div></div><div><div className="tj-mlabel">EXPECTATIONS</div><div>{markup.notes||"—"}</div></div></div><div className="tj-section-label">Markup Images</div><div className="tj-markup-images">{slots.map(([slot,label])=>{const images=markup.screenshots?.[slot]||[];return images.length?<div key={slot} className="tj-markup-image-section"><div className="tj-mlabel">{label}</div><div className="tj-tlog-shots">{images.map((src,index)=><ImagePreview key={index} src={src} alt={`${label} chart`}/>)}</div></div>:null;})}</div><div className="tj-section-label">Linked Trades</div>{linked.length?linked.map((trade)=><div key={trade.id} className="tj-rule-row"><span>{trade.date} · {formatTime(trade.time)} · {trade.asset} · {trade.direction} <span className="tj-muted-txt">· {trade.entryType||trade.confluenceSession||"No entry type"}</span></span><span className="tj-linked-trade-metrics"><RatingDisplay value={trade.rating} noRules={!trade.ruleEvaluations?.length&&!trade.rating}/><strong className={trade.pnl>=0?"tj-green":"tj-red"}>{fmtMoney(trade.pnl)}</strong></span></div>):<div className="tj-empty">No trades linked yet.</div>}</div>}</Card>;
+    return <Card key={markup.id} className="tj-tlog-card"><div className="tj-tlog-row" onClick={()=>setOpen((state)=>({...state,[markup.id]:!state[markup.id]}))}><div className="tj-tlog-main"><div className="tj-tlog-asset">{markup.instrument||markup.market||"Untitled markup"} <span className="tj-sesspill">{markup.bias||"No bias"}</span> <span className={`tj-markup-status tj-markup-status-${String(markup.status||"Planned").toLowerCase()}`}>{markup.status||"Planned"}</span></div><div className="tj-muted-txt" style={{fontSize: 14}}>{formatDate(markup.date)} · {formatTime(markup.time)} · {markup.market||"No session"} · {linked.length} linked trade{linked.length===1?"":"s"}</div></div><div className={`tj-tlog-pnl ${pnl>=0?"tj-green":"tj-red"}`}>{fmtMoney(pnl)}</div><button className="tj-btn-edit" onClick={(event)=>{event.stopPropagation();onEdit(markup)}}>Edit</button><ConfirmDeleteButton className="tj-icon-btn" title="Delete markup" onClick={(event)=>{event.stopPropagation();onDelete(markup.id)}}><Trash2 size={14}/></ConfirmDeleteButton><ChevronDown size={16} style={{transform:expanded?"rotate(180deg)":"none"}}/></div>{expanded&&<div className="tj-tlog-detail"><div className="tj-tlog-detail-grid"><div><div className="tj-mlabel">STATUS</div><div>{markup.status||"Planned"}</div></div><div><div className="tj-mlabel">LEVELS / ZONES</div><div>{markup.levels||"—"}</div></div><div><div className="tj-mlabel">STRUCTURE</div><div>{markup.structure||"—"}</div></div><div><div className="tj-mlabel">EXPECTATIONS</div><div>{markup.notes||"—"}</div></div></div><div className="tj-section-label">Markup Images</div><div className="tj-markup-images">{slots.map(([slot,label])=>{const images=markup.screenshots?.[slot]||[];return images.length?<div key={slot} className="tj-markup-image-section"><div className="tj-mlabel">{label}</div><div className="tj-tlog-shots">{images.map((src,index)=><ImagePreview key={index} src={src} alt={`${label} chart`}/>)}</div></div>:null;})}</div><div className="tj-section-label">Linked Trades</div>{linked.length?linked.map((trade)=><div key={trade.id} className="tj-rule-row"><span>{formatDate(trade.date)} · {formatTime(trade.time)} · {trade.asset} · {trade.direction} <span className="tj-muted-txt">· {trade.entryType||trade.confluenceSession||"No entry type"}</span></span><span className="tj-linked-trade-metrics"><RatingDisplay value={trade.rating} noRules={!trade.ruleEvaluations?.length&&!trade.rating}/><strong className={trade.pnl>=0?"tj-green":"tj-red"}>{fmtMoney(trade.pnl)}</strong></span></div>):<div className="tj-empty">No trades linked yet.</div>}</div>}</Card>;
   }):<div className="tj-empty-block"><ScanLine size={32}/><div className="tj-empty-title">No premarket markups</div><button className="tj-btn-primary" onClick={onNew}>Create your first markup</button></div>}</div></>;
 }
 function useCloseOnOutside(isOpen, onClose) {
@@ -1283,10 +1400,10 @@ function TradeReviewEditorModal({ trade, trades = [], existing, reviews = [], ma
     <div className="tj-review-editor-intro"><span>Keep it light: capture the lesson, save it, move on.</span><b className={`tj-pill ${resultClass === "win" ? "tj-pill-green" : resultClass === "loss" ? "tj-pill-red" : "tj-pill-blue"}`}>{resultLabel}</b></div>
     <div className="tj-review-trade-banner"><div><strong>{activeTrade.asset || "Trade"}</strong><span><b className={activeTrade.direction === "BUY" ? "tj-green" : "tj-red"}>{activeTrade.direction}</b><em>{activeTrade.entrySession || activeTrade.session || "—"}</em><em>{compactDate}</em><em>{Number(activeTrade.rr || 0).toFixed(2)}R</em></span></div><strong className={activeTrade.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(activeTrade.pnl)}</strong></div>
     <div className="tj-review-reference-stack">
-      <section className="tj-review-reference-card"><header><span>Trade Brief</span><div><em className={activeTrade.direction === "BUY" ? "tj-green" : "tj-red"}>{activeTrade.direction}</em><em>{activeTrade.entrySession || activeTrade.session || "—"}</em><em>{activeTrade.entryType || activeTrade.confluenceSession || "No model"}</em><em className={netReturn >= 0 ? "tj-green" : "tj-red"}>{pct(netReturn)}</em></div></header><div className="tj-review-brief-rows"><div><span>RESULT</span><strong>{resultLabel} · {fmtMoney(activeTrade.pnl)} · {Number(activeTrade.rr || 0).toFixed(2)}R</strong></div><div><span>ENTRY MODEL</span><strong>{activeTrade.entryType || activeTrade.confluenceSession || "Not logged"}</strong></div><div><span>MOOD SHIFT</span><strong>{activeTrade.moodBefore || "Not logged"} → {activeTrade.moodAfter || "Not logged"}</strong></div><div><span>RATING</span><RatingDisplay value={activeTrade.rating || 0} /></div></div><p>{activeTrade.context || "No trade note added."}</p></section>
+      <section className="tj-review-reference-card"><header><span>Trade Brief</span><div><em className={activeTrade.direction === "BUY" ? "tj-green" : "tj-red"}>{activeTrade.direction}</em><em>{activeTrade.entrySession || activeTrade.session || "—"}</em><em>{activeTrade.entryType || activeTrade.confluenceSession || "No model"}</em><em className={netReturn >= 0 ? "tj-green" : "tj-red"}>{pct(netReturn)}</em></div></header><div className="tj-review-brief-rows"><div><span>RESULT</span><strong>{resultLabel} · {fmtMoney(activeTrade.pnl)} · {Number(activeTrade.rr || 0).toFixed(2)}R</strong></div><div><span>ENTRY MODEL</span><strong>{activeTrade.entryType || activeTrade.confluenceSession || "Not logged"}</strong></div><div><span>ENTRY PRICE</span><strong>{activeTrade.entryPrice === "" || activeTrade.entryPrice == null ? "—" : Number(activeTrade.entryPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</strong></div><div><span>EXIT PRICE</span><strong>{activeTrade.exitPrice === "" || activeTrade.exitPrice == null ? "—" : Number(activeTrade.exitPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</strong></div><div><span>MOOD SHIFT</span><strong>{activeTrade.moodBefore || "Not logged"} → {activeTrade.moodAfter || "Not logged"}</strong></div><div><span>RATING</span><RatingDisplay value={activeTrade.rating || 0} /></div></div><p>{activeTrade.context || "No trade note added."}</p></section>
       <section className="tj-review-reference-card"><header><span>Linked Markup</span><small>{linkedMarkup?.status || (linkedMarkup ? "Planned" : "Not linked")}</small></header>{linkedMarkup ? <><strong className="tj-review-markup-title">{linkedMarkup.date} · {linkedMarkup.instrument || linkedMarkup.market || "Untitled"}</strong><div className="tj-review-markup-meta"><span>{linkedMarkup.market || "—"}</span><span>{linkedMarkup.bias || "—"}</span><span>{linkedMarkup.status || "Planned"}</span></div><div className="tj-review-markup-shots-head"><span>MARKUP SCREENSHOTS</span><small>{markupScreenshots.length} shot{markupScreenshots.length === 1 ? "" : "s"}</small></div>{markupScreenshots.length ? <div className="tj-review-markup-shots">{markupScreenshots.map((shot) => <div key={shot.key}><ImagePreview src={shot.src} alt={`${shot.label} markup screenshot`} /><strong>{shot.label}</strong><small>{shot.label.startsWith("Pre") ? "Pre-session Charts" : "Post-session Charts"}</small></div>)}</div> : <p>No markup screenshots added.</p>}</> : <p>No markup was linked to this trade.</p>}</section>
       <section className="tj-review-reference-card"><header><span>Execution Snapshot</span><small>{checkedRules}/{totalRules} rules checked</small></header><div className="tj-review-execution-grid"><div><span>NET RETURN</span><strong className={netReturn >= 0 ? "tj-green" : "tj-red"}>{pct(netReturn)}</strong><small>{fmtMoney(activeTrade.pnl)}</small></div><div><span>GROSS RETURN</span><strong className={grossReturn >= 0 ? "tj-green" : "tj-red"}>{pct(grossReturn)}</strong><small>{fmtMoney(grossPnl)}</small></div><div><span>COSTS</span><strong className="tj-red">{pct(costReturn)}</strong><small>{fmtMoney(-costs)}</small></div><div><span>R:R</span><strong>{Number(activeTrade.rr || 0).toFixed(2)}R</strong><small>{dayDate}</small></div></div></section>
-      <section className="tj-review-reference-card"><header><span>Journal Detail</span><small>{(activeTrade.confluence || activeTrade.types || []).length} confluence{(activeTrade.confluence || activeTrade.types || []).length === 1 ? "" : "s"}</small></header><div className="tj-review-journal-block"><span>CONFLUENCES</span>{(activeTrade.confluence || activeTrade.types || []).length ? <div className="tj-tagwrap">{(activeTrade.confluence || activeTrade.types || []).map((item) => <em key={item} className="tj-tag tj-tag-purple tj-tag-active">{item}</em>)}</div> : <p>No confluences logged.</p>}</div><div className="tj-review-journal-block"><span>MISTAKES</span>{activeTrade.mistakes?.length ? <div className="tj-tagwrap">{activeTrade.mistakes.map((item) => <em key={item} className="tj-tag tj-tag-red tj-tag-active">{item}</em>)}</div> : <p>No mistakes logged.</p>}</div><div className="tj-review-journal-block"><span>SCREENSHOTS</span>{activeTrade.screenshots?.length ? <div className="tj-review-trade-shots">{activeTrade.screenshots.map((src, index) => <ImagePreview key={index} src={src} alt={`Trade screenshot ${index + 1}`} />)}</div> : <p>No screenshots added.</p>}</div></section>
+      <section className="tj-review-reference-card"><header><span>Journal Detail</span><small>{(activeTrade.confluence || activeTrade.types || []).length} confluence{(activeTrade.confluence || activeTrade.types || []).length === 1 ? "" : "s"}</small></header><div className="tj-review-journal-block"><span>CONFLUENCES</span>{(activeTrade.confluence || activeTrade.types || []).length ? <div className="tj-tagwrap">{(activeTrade.confluence || activeTrade.types || []).map((item) => <em key={item} className="tj-tag tj-tag-purple tj-tag-active">{item}</em>)}</div> : <p>No confluences logged.</p>}</div><div className="tj-review-journal-block"><span>MISTAKES</span>{activeTrade.mistakes?.length ? <div className="tj-tagwrap">{activeTrade.mistakes.map((item) => <em key={item} className="tj-tag tj-tag-red tj-tag-active">{item}</em>)}</div> : <p>No mistakes logged.</p>}</div><div className="tj-review-journal-block"><span>SCREENSHOTS</span>{tradeScreenshotItems(activeTrade.screenshots).length ? <div className="tj-review-trade-shots">{tradeScreenshotItems(activeTrade.screenshots).map(({ screenshot, label, key }) => <ImagePreview key={key} src={screenshotSource(screenshot)} alt={label} />)}</div> : <p>No screenshots added.</p>}</div></section>
     </div>
     <div className="tj-grid2"><Field label="Trade reference"><select className="tj-input" value={selectedTradeId} onChange={(event) => selectTrade(event.target.value)}>{allTrades.map((item) => <option key={item.id} value={item.id}>{item.date} · {item.asset || "Trade"} · {fmtMoney(item.pnl)}</option>)}</select></Field><Field label="Review date"><input type="date" className="tj-input" value={form.date} onChange={(event) => set("date", event.target.value)} /></Field></div>
     <div className="tj-grid2"><Field label="What went well"><textarea className="tj-input tj-textarea" value={form.doneWell} onChange={(event) => set("doneWell", event.target.value)} /></Field><Field label="What went wrong"><textarea className="tj-input tj-textarea" value={form.wentWrong} onChange={(event) => set("wentWrong", event.target.value)} /></Field></div>
@@ -1338,7 +1455,9 @@ function PeriodReviewModal({ period, saved, reviews, onClose, onSave, onStartTra
   const set = (key, value) => setContent((current) => ({ ...current, [key]: value }));
   const reviewByTrade = new Map(reviews.map((review) => [review.tradeId, review]));
   const stat = period.stats;
-  const completed = stat.total > 0 && stat.reviewed === stat.total;
+  const requiredAtAGlanceFields = ["overview", "invalid", "missedTrades", "strategyPerformance"];
+  const completedFields = requiredAtAGlanceFields.filter((key) => String(content[key] || "").trim()).length;
+  const completed = completedFields === requiredAtAGlanceFields.length;
   const save = async () => { const didSave = await onSave({ type: period.type, key: period.key, content, completed }); if (didSave !== false) onClose(); };
   const periodName = period.type === "monthly" ? "Month" : period.type === "quarterly" ? "Quarter" : "Year";
   const activeDays = new Set(stat.trades.map((trade) => trade.date)).size;
@@ -1346,10 +1465,10 @@ function PeriodReviewModal({ period, saved, reviews, onClose, onSave, onStartTra
   return <Modal title={`${period.label} Review`} onClose={onClose} onConfirm={save} className="tj-period-review-modal" wide>
     <div className="tj-period-review-summary">
       <div className="tj-period-review-title"><div className="tj-section-label">{period.label.toUpperCase()} REVIEW</div><span>{period.year} · {stat.total} trade{stat.total === 1 ? "" : "s"} closed · {stat.reviewed} reviewed</span></div>
-      <div className="tj-period-metric-grid tj-period-metric-grid-reference"><div className={completed ? "tj-period-complete-yes" : "tj-period-complete-no"}><small>COMPLETED</small><strong className={completed ? "tj-green" : "tj-red"}>{completed ? "Yes" : "No"}</strong><span>{completed ? `Every ${periodName.toLowerCase()} trade has a saved review.` : `${stat.total - stat.reviewed} trade${stat.total - stat.reviewed === 1 ? "" : "s"} still need a review.`}</span></div><div><small>{periodName.toUpperCase()} P&amp;L (%)</small><strong className={stat.netPnl >= 0 ? "tj-green" : "tj-red"}>{stat.returnPct >= 0 ? "+" : ""}{stat.returnPct.toFixed(2)}%</strong><span>{fmtMoney(stat.netPnl)} net across the {periodName.toLowerCase()}.</span></div><div><small>WIN RATE</small><strong className={wrColorClass(stat.winRate)}>{stat.winRate.toFixed(1)}%</strong><span>{stat.wins} wins · {stat.losses} losses · {stat.breakeven} B/E</span></div><div><small>PERFORMANCE (0–5)</small><div className="tj-period-performance"><strong>{Math.round(stat.performance)}/5</strong><span>{[1,2,3,4,5].map((dot) => <i key={dot} className={dot <= Math.round(stat.performance) ? "tj-score-dot-on" : ""} />)}</span></div><em>Auto score {Math.round(stat.performance)}/5 before any manual override.</em></div><div><small>TRADES</small><strong>{stat.total}</strong><span>{activeDays} active day{activeDays === 1 ? "" : "s"} on the tape.</span></div><div><small>REVIEWED</small><strong>{stat.reviewed}/{stat.total || 0}</strong><span>{(stat.coverage * 100).toFixed(0)}% review coverage.</span></div><div><small>AVG RR</small><strong>{stat.avgRR.toFixed(2)}</strong><span>Risk quality across the {periodName.toLowerCase()}.</span></div><div><small>BEST SESSION</small><strong>{stat.bestSession}</strong><span>{fmtMoney(stat.bestSessionPnl)} strongest return.</span></div></div>
+      <div className="tj-period-metric-grid tj-period-metric-grid-reference"><div className={completed ? "tj-period-complete-yes" : "tj-period-complete-no"}><small>COMPLETED</small><strong className={completed ? "tj-green" : "tj-red"}>{completed ? "Yes" : "No"}</strong><span>{completed ? `${periodName} At A Glance is complete.` : `${completedFields}/4 At A Glance fields completed.`}</span></div><div><small>{periodName.toUpperCase()} P&amp;L (%)</small><strong className={stat.netPnl >= 0 ? "tj-green" : "tj-red"}>{stat.returnPct >= 0 ? "+" : ""}{stat.returnPct.toFixed(2)}%</strong><span>{fmtMoney(stat.netPnl)} net across the {periodName.toLowerCase()}.</span></div><div><small>WIN RATE</small><strong className={wrColorClass(stat.winRate)}>{stat.winRate.toFixed(1)}%</strong><span>{stat.wins} wins · {stat.losses} losses · {stat.breakeven} B/E</span></div><div><small>PERFORMANCE (0–5)</small><div className="tj-period-performance"><strong>{Math.round(stat.performance)}/5</strong><span>{[1,2,3,4,5].map((dot) => <i key={dot} className={dot <= Math.round(stat.performance) ? "tj-score-dot-on" : ""} />)}</span></div><em>Auto score {Math.round(stat.performance)}/5 before any manual override.</em></div><div><small>TRADES</small><strong>{stat.total}</strong><span>{activeDays} active day{activeDays === 1 ? "" : "s"} on the tape.</span></div><div><small>REVIEWED</small><strong>{stat.reviewed}/{stat.total || 0}</strong><span>{(stat.coverage * 100).toFixed(0)}% trade review coverage.</span></div><div><small>AVG RR</small><strong>{stat.avgRR.toFixed(2)}</strong><span>Risk quality across the {periodName.toLowerCase()}.</span></div><div><small>BEST SESSION</small><strong>{stat.bestSession}</strong><span>{fmtMoney(stat.bestSessionPnl)} strongest return.</span></div></div>
       <div className="tj-period-meter-grid"><div><small>REVIEW COVERAGE</small><b>{stat.reviewed}/{stat.total || 0}</b><i><em style={{ width: `${stat.coverage * 100}%` }} /></i><span>{(stat.coverage * 100).toFixed(0)}% of the {periodName.toLowerCase()} has a saved write-up.</span></div><div><small>RESULT MIX</small><b>{stat.wins}W · {stat.losses}L · {stat.breakeven} B/E</b><i className="tj-result-meter"><em style={{ width: `${stat.total ? stat.wins / stat.total * 100 : 0}%` }} /><strong style={{ width: `${stat.total ? stat.losses / stat.total * 100 : 0}%` }} /></i><span>{stat.wins} green · {stat.losses} red · {stat.breakeven} flat</span></div><div><small>STRONGEST EDGE</small><b>{stat.strongestEdge}</b><i><em style={{ width: `${stat.strongestEdgeShare}%` }} /></i><span>{stat.strongestEdgeWinRate.toFixed(0)}% WR · {stat.strongestEdgeShare.toFixed(0)}% share</span></div></div>
     </div>
-    <section className="tj-period-at-glance"><div className="tj-bold">{periodName} At A Glance</div><div className="tj-muted-txt">Quick reads for what mattered this {periodName.toLowerCase()}.</div><Field label="My performance"><input className="tj-input" placeholder="Add a short read…" value={content.overview || ""} onChange={(event) => set("overview", event.target.value)} /></Field><Field label="Invalid"><input className="tj-input" placeholder="Add a short read…" value={content.invalid || ""} onChange={(event) => set("invalid", event.target.value)} /></Field><Field label="Missed trades"><input className="tj-input" placeholder="Add a short read…" value={content.missedTrades || ""} onChange={(event) => set("missedTrades", event.target.value)} /></Field><Field label="Strategy performance"><input className="tj-input" placeholder="Add a short read…" value={content.strategyPerformance || ""} onChange={(event) => set("strategyPerformance", event.target.value)} /></Field></section>
+    <section className="tj-period-at-glance"><div className="tj-bold">{periodName} At A Glance</div><div className="tj-muted-txt">Complete all four fields to mark this {periodName.toLowerCase()} review as completed.</div><Field label="My performance"><input className="tj-input" placeholder="Add a short read…" value={content.overview || ""} onChange={(event) => set("overview", event.target.value)} /></Field><Field label="Invalid"><input className="tj-input" placeholder="Add a short read…" value={content.invalid || ""} onChange={(event) => set("invalid", event.target.value)} /></Field><Field label="Missed trades"><input className="tj-input" placeholder="Add a short read…" value={content.missedTrades || ""} onChange={(event) => set("missedTrades", event.target.value)} /></Field><Field label="Strategy performance"><input className="tj-input" placeholder="Add a short read…" value={content.strategyPerformance || ""} onChange={(event) => set("strategyPerformance", event.target.value)} /></Field></section>
     <section className="tj-period-trades"><div className="tj-period-trades-head"><div><div className="tj-bold">Trades Taken</div><div className="tj-muted-txt">The full {periodName.toLowerCase()} tape. Five rows stay in view; the rest scroll below.</div></div><span className="tj-count-badge">{stat.total}</span></div>{stat.trades.length ? <div className={`tj-period-trades-scroll ${stat.trades.length > 5 ? "tj-period-trades-scrollable" : ""}`}>{stat.trades.slice().sort((a, b) => `${b.date} ${b.time || ""}`.localeCompare(`${a.date} ${a.time || ""}`)).map((trade) => { const review = reviewByTrade.get(trade.id); const confluences = trade.confluence || trade.types || []; const tradeResult = classify(trade.pnl, 0); return <button type="button" className="tj-period-trade-reference-row" key={trade.id} onClick={() => onStartTradeReview(trade, review)}><div><span><strong>{trade.asset || "No instrument"}</strong><em className={trade.direction === "BUY" ? "tj-green" : "tj-red"}>{trade.direction}</em><small>{trade.entrySession || trade.session || "—"}</small><small>{trade.entryType || trade.confluenceSession || "—"}</small><b className={review ? "tj-review-status-done" : "tj-review-status-pending"}>{review ? "Reviewed" : "Review"}</b></span><span><small>{new Date(`${trade.date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</small><small>{Number(trade.rr || 0).toFixed(2)}R</small><small>{trade.mistakes?.length || 0} mistake{trade.mistakes?.length === 1 ? "" : "s"}</small>{confluences.slice(0, 3).map((item) => <em key={item}>{item}</em>)}{confluences.length > 3 && <em>+{confluences.length - 3}</em>}</span></div><strong className={tradeResult === "win" ? "tj-period-result-win" : tradeResult === "loss" ? "tj-period-result-loss" : "tj-period-result-flat"}>{tradeResult === "win" ? "WIN" : tradeResult === "loss" ? "LOSS" : "B/E"}</strong></button>; })}</div> : <div className="tj-empty">No trades were logged for this period.</div>}</section>
     <section className="tj-period-review-longform"><div className="tj-bold">Review</div><div className="tj-muted-txt">Long-form {periodName.toLowerCase()} reflection.</div><div className="tj-period-sections">{section("technical", "Technical")}{section("mistakes", "Mistakes")}{section("habits", "Habits")}{section("markups", "Markups")}{section("goals", "Goals")}{section("overall", "Overall Performance")}</div></section>
     <div className="tj-modal-actions"><button className="tj-btn-outline" onClick={onClose}>Cancel</button><button className="tj-btn-primary" onClick={save}>Save Review</button></div>
@@ -1511,7 +1630,7 @@ function DayTradesModal({ date, trades, reviews = [], movements = [], account, o
             </div>
             {tags.length > 0 && <div className="tj-day-trade-tags" title={tags.join(" · ")}>{tags.slice(0, 2).join(" · ")}{tags.length > 2 ? ` +${tags.length - 2}` : ""}</div>}
             <div className="tj-day-trade-footer">
-              <div className="tj-day-trade-shots">{(t.screenshots || []).map((src, i) => <ImagePreview key={i} src={src} alt={`Trade Screenshot ${i + 1}`} />)}</div>
+              <div className="tj-day-trade-shots">{tradeScreenshotItems(t.screenshots).map(({ screenshot, label, key }) => <ImagePreview key={key} src={screenshotSource(screenshot)} alt={label} />)}</div>
               <div className="tj-day-trade-actions">
                 <button type="button" className="tj-icon-btn" disabled={locked} title={locked ? "Trade changes are locked by the account loss limit" : "Edit trade"} aria-label="Edit trade" onClick={() => onEdit(t)}><Pencil size={14}/></button>
                 <ConfirmDeleteButton type="button" className="tj-icon-btn tj-day-trade-delete" disabled={locked} title={locked ? "Trade changes are locked by the account loss limit" : "Delete trade"} aria-label="Delete trade" onClick={() => onDelete(t.id)}><Trash2 size={14}/></ConfirmDeleteButton>
@@ -1855,6 +1974,7 @@ function ReferenceDashboardPage({ account, stats, monthCursor, setMonthCursor, o
 /* ================================ TRADE LOG ============================= */
 
 const importNumber = value => Number(String(value ?? "").replace(/[^0-9.-]/g, "")) || 0;
+const importOptionalNumber = value => { const raw = String(value ?? "").replace(/[^0-9.-]/g, ""); if (!raw || raw === "-" || raw === ".") return ""; const number = Number(raw); return Number.isFinite(number) ? number : ""; };
 const importDate = value => { const raw=String(value||"").trim(); if (!raw) return ""; const match=raw.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})|(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/); if(!match)return ""; const [,y,m,d,a,b,c]=match; return y ? `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}` : `${c}-${String(b).padStart(2,"0")}-${String(a).padStart(2,"0")}`; };
 const importTime = value => { const match=String(value||"").match(/(\d{1,2}):(\d{2})/); if (!match) return ""; let hours=Number(match[1]); const suffix=String(value||"").match(/\b(am|pm)\b/i)?.[1]?.toLowerCase(); if (suffix === "pm" && hours < 12) hours += 12; if (suffix === "am" && hours === 12) hours = 0; return `${String(hours).padStart(2,"0")}:${match[2]}`; };
 const splitImportLine = (line, delimiter) => { const cells = []; let value = ""; let quoted = false; for (let index = 0; index < line.length; index += 1) { const character = line[index]; if (character === '"') { if (quoted && line[index + 1] === '"') { value += '"'; index += 1; } else quoted = !quoted; } else if (character === delimiter && !quoted) { cells.push(value.trim()); value = ""; } else value += character; } cells.push(value.trim()); return cells; };
@@ -1870,8 +1990,10 @@ const parseBrokerTrades = (text) => {
   if (headerIndex < 0) return [];
   const rawHeaders = rows.splice(0, headerIndex + 1).at(-1).map((header) => header.toLowerCase().replace(/[^a-z0-9]/g, ""));
   let timeColumns = 0;
+  let priceColumns = 0;
   const headers = rawHeaders.map((header) => {
     if (header === "time") { timeColumns += 1; return timeColumns === 1 ? "opentime" : "closetime"; }
+    if (header === "price") { priceColumns += 1; return priceColumns === 1 ? "openprice" : "closeprice"; }
     return header;
   });
   const valueAt = (row, ...keys) => { const index = headers.findIndex((header) => keys.some((key) => header === key || header.includes(key))); return index < 0 ? "" : row[index]; };
@@ -1894,6 +2016,8 @@ const parseBrokerTrades = (text) => {
     };
     const opened = hasOpeningTimestamp ? timestampAt(["opendate", "openingdate", "entrydate", "openingdatetime"], ["opentime", "openingtime", "entrytime", "openingtimeutc", "opentimeutc", "time"]) : "";
     const closed = timestampAt(["closedate", "closingdate", "exitdate", "closingdatetime", "closedatetime"], ["closetime", "closingtime", "closedtime", "exittime", "closingtimeutc", "closetimeutc", "closetimestamp"]);
+    const entryPrice = importOptionalNumber(valueAt(row, "entryprice", "openprice", "openingprice", "priceopen", "entryrate", "openrate"));
+    const exitPrice = importOptionalNumber(valueAt(row, "exitprice", "closeprice", "closingprice", "priceclose", "exitrate", "closerate"));
     const rawCommission = importNumber(valueAt(row, "commission"));
     const rawSwap = importNumber(valueAt(row, "swap"));
     // cTrader's closed-position CSV names this column "Net $" (normalised to
@@ -1913,7 +2037,9 @@ const parseBrokerTrades = (text) => {
     // Use the closing day for journal grouping, but never pretend it was the
     // trade's entry time.
     const openingTimestampMissing = isCTraderHistory && !opened && !!closed;
-    return { id: `import-${uid()}`, importKey, legacyImportKey, date: importDate(opened || closed), time: importTime(opened), closeDate: importDate(closed), closeTime: importTime(closed), openingTimestampMissing, asset, direction, grossPnl: hasNetColumn ? pnl + Math.abs(rawCommission) + Math.abs(rawSwap) : rawProfit, commission: Math.abs(rawCommission), swap: Math.abs(rawSwap), pnl, rr: 0, session: "", entrySession: "", rating: 0, types: [], confluence: [], mistakes: [], screenshots: [], context: `Imported cTrader position #${importKey}${openingTimestampMissing ? " [close-only]" : ""}` };
+    const openTime = importTime(opened);
+    const entrySession = entrySessionFromOpenTime(openTime);
+    return { id: `import-${uid()}`, importKey, legacyImportKey, date: importDate(opened || closed), time: openTime, closeDate: importDate(closed), closeTime: importTime(closed), openingTimestampMissing, asset, direction, entryPrice, exitPrice, grossPnl: hasNetColumn ? pnl + Math.abs(rawCommission) + Math.abs(rawSwap) : rawProfit, commission: Math.abs(rawCommission), swap: Math.abs(rawSwap), pnl, rr: pnl < 0 ? -1 : 0, session: entrySession, entrySession, rating: 0, types: [], confluence: [], mistakes: [], screenshots: [], context: `Imported cTrader position #${importKey}${openingTimestampMissing ? " [close-only]" : ""}` };
   }).filter((trade) => trade?.date && trade.asset && trade.asset.length <= 32 && /[a-z]/i.test(trade.asset));
 };
 
@@ -1936,6 +2062,9 @@ const parseMt5PositionRows = (rows) => {
     const opened = importedValue(headers, row, "opentime", "time");
     const timeIndexes = headers.map((header, index) => header === "time" ? index : -1).filter((index) => index >= 0);
     const closed = timeIndexes[1] === undefined ? "" : row[timeIndexes[1]] || "";
+    const priceIndexes = headers.map((header, index) => /^(price|openprice|openingprice|entryprice|closeprice|closingprice|exitprice)$/.test(header) ? index : -1).filter((index) => index >= 0);
+    const entryPrice = importOptionalNumber(importedValue(headers, row, "entryprice", "openprice", "openingprice") || row[priceIndexes[0]]);
+    const exitPrice = importOptionalNumber(importedValue(headers, row, "exitprice", "closeprice", "closingprice") || row[priceIndexes[1]]);
     const rawCommission = importNumber(importedValue(headers, row, "commission"));
     const rawSwap = importNumber(importedValue(headers, row, "swap"));
     const grossPnl = importNumber(importedValue(headers, row, "profit"));
@@ -1943,8 +2072,10 @@ const parseMt5PositionRows = (rows) => {
     const swap = Math.abs(rawSwap);
     // A journal trade's date/time are the opening timestamp. Keeping the close
     // timestamp separate is required for positions that span midnight.
+    const openTime = importTime(opened || closed);
+    const entrySession = entrySessionFromOpenTime(openTime);
     return /^(BUY|SELL)$/.test(direction) && ticket && asset && importDate(opened || closed) ? {
-      id: `import-${uid()}`, importKey: `mt5-position:${ticket}`, date: importDate(opened || closed), time: importTime(opened || closed), closeDate: importDate(closed), closeTime: importTime(closed), asset, direction, grossPnl, commission, swap, pnl: grossPnl + rawCommission + rawSwap, rr: 0, session: "", entrySession: "", rating: 0, types: [], confluence: [], mistakes: [], screenshots: [], context: `Imported MetaTrader position #${ticket}`
+      id: `import-${uid()}`, importKey: `mt5-position:${ticket}`, date: importDate(opened || closed), time: openTime, closeDate: importDate(closed), closeTime: importTime(closed), asset, direction, entryPrice, exitPrice, grossPnl, commission, swap, pnl: grossPnl + rawCommission + rawSwap, rr: grossPnl + rawCommission + rawSwap < 0 ? -1 : 0, session: entrySession, entrySession, rating: 0, types: [], confluence: [], mistakes: [], screenshots: [], context: `Imported MetaTrader position #${ticket}`
     } : null;
   }).filter(Boolean);
 };
@@ -2015,10 +2146,40 @@ const parseBrokerFile = async (file) => {
   return { trades: parseBrokerTrades(tsv), cashMovements: [] };
 };
 function ImportTradesModal({ account, onClose, onImport }) {
-  const [platform, setPlatform] = useState(account.platform || "Manual"); const [trades, setTrades] = useState([]); const [busy, setBusy] = useState(false); const [fileError, setFileError] = useState("");
-  const load = async (file) => { if (!file) return; const imported = await parseBrokerFile(file); setTrades(imported.trades); setFileError(imported.trades.length ? "" : "No closed BUY or SELL trades were found. Export the account history as HTML, CSV, or a tab-separated file."); };
-  const submit = async () => { if (!trades.length || busy) return; setBusy(true); const ok = await onImport(trades); if (!ok) setBusy(false); };
-  return <Modal title="Import trades" onClose={onClose} className="tj-import-modal" centered><p className="tj-muted-txt">Import a MetaTrader or cTrader HTML, CSV, or tab-separated history. Every imported trade uses the same journal record as a manual trade.</p><div className="tj-grid2"><Field label="Source platform"><select className="tj-input" value={platform} onChange={event => setPlatform(event.target.value)}><option>MetaTrader 4/5</option><option>cTrader</option><option>Manual</option></select></Field><Field label="Trade history file"><input className="tj-input" type="file" accept=".html,.htm,.csv,.txt,.tsv" onChange={event => load(event.target.files?.[0])}/></Field></div>{fileError && <div className="tj-import-error">{fileError}</div>}{trades.length > 0 ? <div className="tj-import-preview"><strong>{trades.length} trades ready to import</strong>{trades.slice(0, 5).map(trade => <div key={trade.id}><span>{trade.date} · {trade.asset} · {trade.direction}</span><b className={trade.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(trade.pnl)}</b></div>)}{trades.length > 5 && <small>Plus {trades.length - 5} more trades.</small>}</div> : !fileError && <div className="tj-finance-empty">Choose an exported history file to preview its trades.</div>}<div className="tj-modal-actions"><button className="tj-btn-outline" onClick={onClose}>Cancel</button><button className="tj-btn-primary" disabled={!trades.length || busy} onClick={submit}>{busy ? "Importing…" : `Import ${trades.length || ""} trades`}</button></div></Modal>;
+  const [preview, setPreview] = useState({ trades: [], cashMovements: [] });
+  const [fileName, setFileName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [fileError, setFileError] = useState("");
+  const load = async (file) => {
+    if (!file) return;
+    setFileName(file.name);
+    setPreview({ trades: [], cashMovements: [] });
+    setFileError("");
+    setProgress(0);
+    const imported = await parseBrokerFile(file);
+    setPreview(imported);
+    if (!imported.trades.length) setFileError("No completed BUY or SELL trades were found. Export the account history as HTML, CSV, or a tab-separated file.");
+  };
+  const submit = async () => {
+    if (!preview.trades.length || busy) return;
+    setBusy(true);
+    setProgress(0);
+    const ok = await onImport(preview, setProgress);
+    setBusy(false);
+    if (ok) onClose();
+  };
+  const cashCount = preview.cashMovements?.length || 0;
+  return <Modal title="Import trades" onClose={() => !busy && onClose()} className="tj-import-modal" centered>
+    <div className="tj-import-account"><FileUp size={18}/><div><small>IMPORTING INTO</small><strong>{account.name}</strong></div></div>
+    <p className="tj-muted-txt">Choose a MetaTrader or cTrader HTML, CSV, or tab-separated report. Trades are imported directly into this active account.</p>
+    <Field label="Trade history file"><input className="tj-input" type="file" accept=".html,.htm,.csv,.txt,.tsv" disabled={busy} onChange={event => load(event.target.files?.[0])}/></Field>
+    {fileName && <div className="tj-settings-hint">{fileName}</div>}
+    {fileError && <div className="tj-import-error">{fileError}</div>}
+    {preview.trades.length > 0 ? <div className="tj-import-preview"><strong>{preview.trades.length} trades ready to import{cashCount ? ` · ${cashCount} cash movement${cashCount === 1 ? "" : "s"}` : ""}</strong>{preview.trades.slice(0, 5).map(trade => <div key={trade.id}><span>{trade.date} · {trade.asset} · {trade.direction}</span><b className={trade.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(trade.pnl)}</b></div>)}{preview.trades.length > 5 && <small>Plus {preview.trades.length - 5} more trades.</small>}</div> : !fileError && <div className="tj-finance-empty">Choose an exported history file to preview its trades.</div>}
+    {busy && <div className="tj-import-live"><i className="tj-import-progress" style={{ "--progress": `${progress}%` }}>{progress}%</i><div><strong>Importing trades…</strong><span>Saving directly to {account.name}</span></div></div>}
+    <div className="tj-modal-actions"><button className="tj-btn-outline" disabled={busy} onClick={onClose}>Cancel</button><button className="tj-btn-primary" disabled={!preview.trades.length || busy} onClick={submit}>{busy ? "Importing…" : `Import ${preview.trades.length || ""} trades`}</button></div>
+  </Modal>;
 }
 
 function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, onNewTrade, onLinkMarkup, locked = false }) {
@@ -2103,7 +2264,8 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
         <Card className="tj-panel"><div className="tj-empty">No trades match these filters.</div></Card>
       ) : (
         <div className="tj-tlog-list">
-          {visibleTrades.map((t) => {
+          {visibleTrades.map((rawTrade) => {
+            const t = { ...rawTrade, rr: tradeRiskReward(rawTrade) };
             const cls = classify(t.pnl, cap);
             const isOpen = !!expanded[t.id];
             const isReviewed = reviewedTradeIds.has(t.id);
@@ -2111,7 +2273,8 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
             const tradeReturn = account.balance ? (t.pnl / account.balance) * 100 : 0;
             const grossTradeReturn = account.balance ? (Number(t.grossPnl ?? t.pnl) / account.balance) * 100 : 0;
             const confluenceCount = (t.confluence || t.types || []).length;
-            const screenshotCount = t.screenshots?.length || 0;
+            const tradeScreenshots = tradeScreenshotItems(t.screenshots);
+            const screenshotCount = tradeScreenshots.length;
             const linkedMarkupScreenshots = linkedMarkup ? Object.entries(linkedMarkup.screenshots || {}).filter(([, images]) => Array.isArray(images)).flatMap(([slot, images]) => images.map((screenshot, index) => ({ source: screenshotSource(screenshot), key: `${slot}-${index}` }))) : [];
             const linkDraft = linkDrafts[t.id] ?? t.premarketMarkupId ?? "";
             return (
@@ -2122,7 +2285,7 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
                       <div className="tj-tlog-asset">{t.asset || "No instrument"}</div>
                     </div>
                     <span className={`tj-dirpill-sm tj-reference-trade-direction ${t.direction === "BUY" ? "tj-green" : "tj-red"}`}>{t.direction}</span>
-                    <div className="tj-reference-trade-meta"><span>Opened: {cTraderOpeningIsUnknown(t) ? "Not included in cTrader report" : `${new Date(t.date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })} · ${formatTime(t.time)}`}</span><span>Closed: {t.closeDate ? `${new Date(t.closeDate + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })} · ${t.closeTime ? formatTime(t.closeTime) : "Time not logged"}` : "Not logged"}</span></div>
+                    <div className="tj-reference-trade-meta"><span>Opened: {cTraderOpeningIsUnknown(t) ? "Not included in cTrader report" : `${formatDate(t.date)} · ${formatTime(t.time)}`}</span><span>Closed: {t.closeDate ? `${formatDate(t.closeDate)} · ${t.closeTime ? formatTime(t.closeTime) : "Time not logged"}` : "Not logged"}</span></div>
                     <span className="tj-reference-trade-session">{t.entrySession || t.session || "No session"}</span>
                   </div>
                   <div className="tj-reference-trade-right" onClick={(e) => e.stopPropagation()}>
@@ -2140,10 +2303,10 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
                   <div className="tj-tlog-expand tj-reference-trade-expand">
                     <div className="tj-reference-trade-detail-summary"><div><span>NET RETURN</span><strong className={t.pnl >= 0 ? "tj-green" : "tj-red"}>{tradeReturn >= 0 ? "+" : ""}{tradeReturn.toFixed(2)}% · {fmtMoney(t.pnl)}</strong></div><div><span>GROSS RETURN</span><strong>{account.balance ? `${grossTradeReturn >= 0 ? "+" : ""}${grossTradeReturn.toFixed(2)}%` : "—"} · {fmtMoney(Number(t.grossPnl ?? t.pnl))}</strong></div><div><span>COSTS</span><strong className="tj-red">{fmtMoney(-((Number(t.commission) || 0) + (Number(t.swap) || 0)))}</strong></div><div><span>R:R</span><strong>{t.rr ? `${t.rr.toFixed(2)}R` : "—"}</strong></div><div><span>RULES CHECKED</span><strong>{t.ruleEvaluations?.filter((entry) => entry.checked).length || 0}/{t.ruleEvaluations?.length || 0}</strong></div></div>
                     <div className="tj-reference-trade-main-grid">
-                      <section className="tj-reference-trade-brief"><div className="tj-reference-trade-section-head"><span>Trade Brief</span><div><em className={t.direction === "BUY" ? "tj-green" : "tj-red"}>{t.direction}</em><em>{t.entrySession || t.session || "—"}</em>{(t.entryType || t.confluenceSession) && <em>{t.entryType || t.confluenceSession}</em>}<em className={tradeReturn >= 0 ? "tj-green" : "tj-red"}>{tradeReturn >= 0 ? "+" : ""}{tradeReturn.toFixed(2)}%</em></div></div><div className="tj-reference-trade-brief-rows"><div><span>RESULT</span><strong>{cls === "win" ? "Win" : cls === "loss" ? "Loss" : "B/E"} · {fmtMoney(t.pnl)} · {t.rr ? `${t.rr.toFixed(2)}R` : "—"}</strong></div><div><span>ENTRY MODEL</span><strong>{t.entryType || t.confluenceSession || "—"}</strong></div><div><span>MOOD SHIFT</span><strong>{t.moodBefore || "—"} → {t.moodAfter || "—"}</strong></div><div><span>RATING</span><strong><RatingDisplay value={t.rating} noRules={!t.ruleEvaluations?.length&&!t.rating}/></strong></div></div><div className="tj-reference-trade-note">{t.context || "No trade note added."}</div></section>
+                      <section className="tj-reference-trade-brief"><div className="tj-reference-trade-section-head"><span>Trade Brief</span><div><em className={t.direction === "BUY" ? "tj-green" : "tj-red"}>{t.direction}</em><em>{t.entrySession || t.session || "—"}</em>{(t.entryType || t.confluenceSession) && <em>{t.entryType || t.confluenceSession}</em>}<em className={tradeReturn >= 0 ? "tj-green" : "tj-red"}>{tradeReturn >= 0 ? "+" : ""}{tradeReturn.toFixed(2)}%</em></div></div><div className="tj-reference-trade-brief-rows"><div><span>RESULT</span><strong>{cls === "win" ? "Win" : cls === "loss" ? "Loss" : "B/E"} · {fmtMoney(t.pnl)} · {t.rr ? `${t.rr.toFixed(2)}R` : "—"}</strong></div><div><span>ENTRY MODEL</span><strong>{t.entryType || t.confluenceSession || "—"}</strong></div><div><span>ENTRY PRICE</span><strong>{t.entryPrice === "" || t.entryPrice == null ? "—" : Number(t.entryPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</strong></div><div><span>EXIT PRICE</span><strong>{t.exitPrice === "" || t.exitPrice == null ? "—" : Number(t.exitPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</strong></div><div><span>MOOD SHIFT</span><strong>{t.moodBefore || "—"} → {t.moodAfter || "—"}</strong></div><div><span>RATING</span><strong><RatingDisplay value={t.rating} noRules={!t.ruleEvaluations?.length&&!t.rating}/></strong></div></div><div className="tj-reference-trade-note">{t.context || "No trade note added."}</div></section>
                       <section className="tj-reference-trade-markup"><div className="tj-reference-trade-section-head"><span>Linked Markup</span><small>{linkedMarkup ? "Executed" : "Not linked"}</small></div><strong className="tj-reference-linked-title">{linkedMarkup ? `${linkedMarkup.date} · ${linkedMarkup.instrument || "Untitled markup"}` : "No linked markup"}</strong><div className="tj-reference-linked-meta">{linkedMarkup ? `${linkedMarkup.market || "No session"} · ${linkedMarkup.bias || "No bias"} · Executed` : "Choose one of your three most recent markups."}</div><div className="tj-reference-link-controls"><select className="tj-input" value={linkDraft} onChange={(event) => setLinkDrafts((current) => ({ ...current, [t.id]: event.target.value }))}><option value="">No linked markup</option>{recentMarkups.map((markup) => <option key={markup.id} value={markup.id}>{markup.date} · {markup.instrument || "Untitled"} · {markup.bias || "No bias"}</option>)}</select><button className="tj-btn-outline tj-btn-small" disabled={String(linkDraft || "") === String(t.premarketMarkupId || "")} onClick={() => onLinkMarkup(t, linkDraft || null)}>Save Link</button></div><div className="tj-reference-markup-shots-head"><span>MARKUP SCREENSHOTS</span><small>{linkedMarkupScreenshots.length} shot{linkedMarkupScreenshots.length === 1 ? "" : "s"}</small></div>{linkedMarkupScreenshots.length ? <div className="tj-reference-markup-shots">{linkedMarkupScreenshots.slice(0, 3).map((image) => <ImagePreview key={image.key} src={image.source} alt="Linked markup screenshot" selected={selectedImage === image.source} onSelect={setSelectedImage}/>)}</div> : <div className="tj-reference-trade-empty">No markup screenshots.</div>}</section>
                     </div>
-                    <section className="tj-reference-journal-detail"><div className="tj-reference-trade-section-head"><span>Journal Detail</span><small>{confluenceCount} confluence{confluenceCount === 1 ? "" : "s"}</small></div><div className="tj-reference-journal-grid"><div><div className="tj-mlabel">CONFLUENCES</div><div className="tj-tlog-types">{confluenceCount ? (t.confluence || t.types || []).map((item) => <span key={item} className="tj-tag tj-tag-purple tj-tag-active tj-tag-xs">{item}</span>) : <span className="tj-muted-txt">No confluences logged.</span>}</div></div><div><div className="tj-mlabel">MISTAKES</div><div className="tj-tlog-mistakes">{t.mistakes?.length ? t.mistakes.map((m) => <span key={m} className="tj-tag tj-tag-red tj-tag-active tj-tag-xs">{m}</span>) : <span className="tj-muted-txt">No mistakes logged.</span>}</div></div></div>{screenshotCount > 0 && <div className="tj-reference-trade-screens"><div className="tj-mlabel">SCREENSHOTS</div><div className="tj-tlog-shots">{t.screenshots.map((src, i) => <ImagePreview key={i} src={src} alt="Trade screenshot" selected={selectedImage === src} onSelect={setSelectedImage}/>)}</div></div>}</section>
+                    <section className="tj-reference-journal-detail"><div className="tj-reference-trade-section-head"><span>Journal Detail</span><small>{confluenceCount} confluence{confluenceCount === 1 ? "" : "s"}</small></div><div className="tj-reference-journal-grid"><div><div className="tj-mlabel">CONFLUENCES</div><div className="tj-tlog-types">{confluenceCount ? (t.confluence || t.types || []).map((item) => <span key={item} className="tj-tag tj-tag-purple tj-tag-active tj-tag-xs">{item}</span>) : <span className="tj-muted-txt">No confluences logged.</span>}</div></div><div><div className="tj-mlabel">MISTAKES</div><div className="tj-tlog-mistakes">{t.mistakes?.length ? t.mistakes.map((m) => <span key={m} className="tj-tag tj-tag-red tj-tag-active tj-tag-xs">{m}</span>) : <span className="tj-muted-txt">No mistakes logged.</span>}</div></div></div>{screenshotCount > 0 && <div className="tj-reference-trade-screens"><div className="tj-mlabel">SCREENSHOTS</div><div className="tj-tlog-shots">{tradeScreenshots.map(({ screenshot, label, key }) => <div key={key} className="tj-trade-shot-slot"><ImagePreview src={screenshotSource(screenshot)} alt={label} selected={selectedImage === screenshotSource(screenshot)} onSelect={setSelectedImage}/><small>{label}</small></div>)}</div></div>}</section>
                   </div>
                 )}
               </Card>
@@ -3060,8 +3223,8 @@ function getWeekRangeFromEvents(offset) {
   saturday.setDate(sunday.getDate() + 6);
   return { sunday, saturday };
 }
-const fmtShortDate = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-const fmtLongDate = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+const fmtShortDate = (d) => formatDate(d);
+const fmtLongDate = (d) => formatDate(d);
 
 function sampleWeekEvents(offset) {
   if (offset !== 0) return [];
@@ -3073,7 +3236,7 @@ function sampleWeekEvents(offset) {
     d.setHours(h, m, 0, 0);
     return {
       dateKey: d.toDateString(),
-      time: d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+      time: (() => { const { hour, minute } = regionalNowParts(d); return formatTime(`${hour}:${minute}`); })(),
       currency: e.currency, impact: e.impact, title: e.title,
       forecast: e.forecast, previous: e.previous,
     };
@@ -3373,12 +3536,21 @@ function TradingJournalApp({ user, onLogout }) {
       window.removeEventListener('blur', clear); enabled.removeEventListener('change', clear);
     };
   }, []);
-  const displayName = user.user_metadata?.display_name || (user.email ? user.email.split("@")[0] : "Trader");
+  const [profileDetails, setProfileDetails] = useState(() => ({
+    fullName: user.user_metadata?.full_name || user.user_metadata?.display_name || "",
+    displayName: user.user_metadata?.display_name || user.user_metadata?.full_name || (user.email ? user.email.split("@")[0] : "Trader"),
+    avatarUrl: user.user_metadata?.avatar_url || user.user_metadata?.picture || "",
+    timezone: user.user_metadata?.timezone || "Africa/Accra", dateFormat: user.user_metadata?.date_format || "DD/MM/YYYY", timeFormat: user.user_metadata?.time_format || "12",
+  }));
+  setActiveRegionalPreferences(profileDetails);
+  const displayName = profileDetails.displayName;
   const loginQuote = useMemo(() => getLoginQuote(user), [user.id, user.last_sign_in_at]);
-  const personalProfileImage = user.user_metadata?.avatar_url || user.user_metadata?.picture || "";
+  const personalProfileImage = profileDetails.avatarUrl;
   const personalInitials = displayName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "T";
-  const [profileTheme, setProfileTheme] = useSiteTheme(user.user_metadata?.theme);
+  const [profileTheme, setProfileTheme, profileThemePreference] = useSiteTheme(user.user_metadata?.theme_preference || user.user_metadata?.theme);
+  const [profileAccent, setProfileAccent] = useProfileAccent(user.user_metadata?.accent_color || "mint", profileTheme);
   const [accounts, setAccounts] = useState(null);
+  const sessionRepairQueue = useRef(new Set());
   const [activeId, setActiveId] = useState(() => readActiveAccount(user.id));
   const [page, setPage] = useState(() => {
     const savedPage = readActivePage(user.id);
@@ -3447,6 +3619,7 @@ function TradingJournalApp({ user, onLogout }) {
   const [lastSyncedAt, setLastSyncedAt] = useState("");
   const [syncSignature, setSyncSignature] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [journalClock, setJournalClock] = useState(() => Date.now());
   const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === "undefined" ? true : window.innerWidth > 900));
   const [toast, setToast] = useState(null); // { type: 'error'|'info', text }
   const [migration, setMigration] = useState({ checked: false, pending: null, busy: false });
@@ -3458,6 +3631,13 @@ function TradingJournalApp({ user, onLogout }) {
   const showInfo = useCallback((text) => {
     setToast({ type: "info", text });
     setTimeout(() => setToast((t) => (t && t.text === text ? null : t)), 4500);
+  }, []);
+
+  useEffect(() => {
+    const updateClock = () => setJournalClock(Date.now());
+    const timer = window.setInterval(updateClock, 60 * 1000);
+    window.addEventListener("focus", updateClock);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", updateClock); };
   }, []);
 
   const applyJournalData = useCallback((data) => {
@@ -3542,11 +3722,15 @@ function TradingJournalApp({ user, onLogout }) {
     (async () => {
       const cached = readJournalCache(user.id);
       if (cached?.data) {
-        applyJournalData(cached.data);
+        const hydrated = await hydrateJournalImages(user.id, cached.data);
+        applyJournalData(hydrated.data);
         setLastSyncedAt(cached.cachedAt || "");
         setSyncSignature(cached.syncSignature || "");
         setLoaded(true);
         setMigration({ checked: true, pending: null, busy: false });
+        // Older caches deliberately omitted image payloads. Refresh from the
+        // server once if this browser has not yet saved an IndexedDB copy.
+        if (!hydrated.found) void loadFromServer();
         return;
       }
       await loadFromServer();
@@ -3568,7 +3752,9 @@ function TradingJournalApp({ user, onLogout }) {
 
   useEffect(() => {
     if (!loaded || !accounts) return;
-    writeJournalCache(user.id, { accounts, typeTags, mistakeTags, confluenceSessions, customInstruments, markups, reviews, periodReviews }, syncSignature);
+    const journalData = { accounts, typeTags, mistakeTags, confluenceSessions, customInstruments, markups, reviews, periodReviews };
+    writeJournalCache(user.id, journalData, syncSignature);
+    void writeJournalImageCache(user.id, journalData);
   }, [user.id, loaded, accounts, typeTags, mistakeTags, confluenceSessions, customInstruments, markups, reviews, periodReviews, syncSignature]);
 
   const syncJournal = async () => {
@@ -3650,8 +3836,79 @@ function TradingJournalApp({ user, onLogout }) {
     return accounts.find((a) => a.id === activeId) || accounts[0] || null;
   }, [accounts, activeId]);
   useEffect(() => {
+    if (!loaded || !accounts?.length) return;
+    const repairs = accounts.flatMap((journalAccount) => (journalAccount.trades || []).flatMap((trade) => {
+      const entrySession = entrySessionFromOpenTime(trade.time);
+      const key = `${journalAccount.id}:${trade.id}`;
+      if (!entrySession || (trade.entrySession === entrySession && trade.session === entrySession) || sessionRepairQueue.current.has(key)) return [];
+      sessionRepairQueue.current.add(key);
+      return [{ key, accountId: journalAccount.id, trade, entrySession }];
+    }));
+    if (!repairs.length) return;
+
+    let cancelled = false;
+    (async () => {
+      const results = await Promise.all(repairs.map(async (repair) => ({
+        repair,
+        result: await updateTrade(repair.trade.id, {
+          ...repair.trade,
+          userId: user.id,
+          accountId: repair.accountId,
+          entrySession: repair.entrySession,
+          session: repair.entrySession,
+        }),
+      })));
+      repairs.forEach(({ key }) => sessionRepairQueue.current.delete(key));
+      if (cancelled) return;
+      const saved = results.filter(({ result }) => !result.error).map(({ repair }) => repair);
+      if (saved.length) {
+        const sessionsByTradeId = new Map(saved.map(({ trade, entrySession }) => [trade.id, entrySession]));
+        setAccounts((current) => current.map((journalAccount) => ({
+          ...journalAccount,
+          trades: (journalAccount.trades || []).map((trade) => sessionsByTradeId.has(trade.id)
+            ? { ...trade, entrySession: sessionsByTradeId.get(trade.id), session: sessionsByTradeId.get(trade.id) }
+            : trade),
+        })));
+        showInfo(`Entry session updated automatically on ${saved.length} existing trade${saved.length === 1 ? "" : "s"}.`);
+      }
+      if (results.some(({ result }) => result.error)) showError("Some existing trade sessions could not be updated. They will retry when you reopen the journal.");
+    })();
+    return () => { cancelled = true; };
+  }, [loaded, accounts, user.id, showError, showInfo]);
+  useEffect(() => {
     if (account && account.id !== activeId) setActiveId(account.id);
   }, [account, activeId]);
+  useEffect(() => {
+    if (!account) return;
+    const now = new Date(journalClock);
+    if (now.getHours() < 22) return;
+
+    const linkedMarkupIds = new Set((account.trades || [])
+      .map((trade) => trade.premarketMarkupId)
+      .filter(Boolean)
+      .map(String));
+    const today = localDateISO(now);
+    const markupsToPass = markups.filter((markup) => (
+      markup.accountId === account.id
+      && markup.status === "Planned"
+      && markup.date <= today
+      && !linkedMarkupIds.has(String(markup.id))
+    ));
+    if (!markupsToPass.length) return;
+
+    let cancelled = false;
+    (async () => {
+      const results = await Promise.all(markupsToPass.map((markup) => updateMarkup(markup.id, { ...markup, status: "Passed" })));
+      if (cancelled) return;
+      const saved = results.filter((result) => !result.error && result.data).map((result) => result.data);
+      if (saved.length) {
+        const savedById = new Map(saved.map((markup) => [markup.id, markup]));
+        setMarkups((items) => items.map((markup) => savedById.get(markup.id) || markup));
+      }
+      if (results.some((result) => result.error)) showError("Some expired markups could not be marked as passed. They will be retried automatically.");
+    })();
+    return () => { cancelled = true; };
+  }, [account, markups, journalClock, showError]);
   useEffect(() => {
     setTypeTags(account?.typeTags || []);
     setMistakeTags(account?.mistakeTags || []);
@@ -3728,6 +3985,19 @@ function TradingJournalApp({ user, onLogout }) {
       if (res.error) { showError(res.error); return; }
       setAccounts((accs) => accs.map((a) => (a.id !== account.id ? a : { ...a, trades: [...a.trades, res.data] })));
     }
+    const rewardPreset = Number(trade.rr);
+    if (Number.isFinite(rewardPreset) && rewardPreset > 0) {
+      const existingPresets = (account.rewardPresets || []).map(Number).filter((value) => Number.isFinite(value) && value > 0);
+      if (!existingPresets.some((value) => Math.abs(value - rewardPreset) < 1e-9)) {
+        const rewardPresets = [...existingPresets, rewardPreset].sort((left, right) => left - right);
+        const presetResult = await updateAccount(account.id, { ...account, rewardPresets });
+        if (presetResult.error) {
+          showError(`Trade saved, but the reward preset could not be remembered: ${presetResult.error}`);
+        } else {
+          setAccounts((accs) => accs.map((item) => item.id === account.id ? { ...item, rewardPresets } : item));
+        }
+      }
+    }
     await markMarkupExecuted(trade.premarketMarkupId);
     await persistCustomInstrument(trade.asset);
     setModal(null); setEditingTrade(null); setNewTradeDraft(null);
@@ -3743,16 +4013,39 @@ function TradingJournalApp({ user, onLogout }) {
       const cTraderKey = trade.context?.match(/Imported cTrader position #(ctrader:\S+)/)?.[1];
       return cTraderKey || [trade.date, trade.time || "", trade.closeDate || "", trade.closeTime || "", trade.asset, trade.direction, Number(trade.pnl || 0).toFixed(2)].join("|");
     };
-    const existingByKey = new Map((targetAccount.trades || []).map((trade) => [tradeKey(trade), trade]));
+    // Broker positions can be re-uploaded. Keep the richer copy and remove only
+    // an exact duplicate that was imported from cTrader or MetaTrader; manually
+    // logged trades are never candidates for this cleanup.
+    const isImportedBrokerTrade = (trade) => /Imported (?:cTrader position #ctrader:|MetaTrader position #)/i.test(trade.context || "");
+    const importDetailScore = (trade) => [
+      trade.premarketMarkupId, trade.entryPrice !== "" && trade.entryPrice != null,
+      trade.exitPrice !== "" && trade.exitPrice != null, tradeScreenshotItems(trade.screenshots).length,
+      trade.ruleEvaluations?.length, trade.context?.includes("[opening-time:manual]"),
+    ].filter(Boolean).length;
+    const existingByKey = new Map();
+    const duplicateImportedTrades = [];
+    for (const candidate of targetAccount.trades || []) {
+      const key = tradeKey(candidate);
+      const known = existingByKey.get(key);
+      if (!known) { existingByKey.set(key, candidate); continue; }
+      if (!isImportedBrokerTrade(known) || !isImportedBrokerTrade(candidate)) continue;
+      const candidateWins = importDetailScore(candidate) > importDetailScore(known)
+        || (importDetailScore(candidate) === importDetailScore(known) && String(candidate.createdAt || "") < String(known.createdAt || ""));
+      duplicateImportedTrades.push(candidateWins ? known : candidate);
+      if (candidateWins) existingByKey.set(key, candidate);
+    }
+    const existingTrades = [...existingByKey.values()];
     const seen = new Set(existingByKey.keys());
-    const closeTimingUpdates = [];
+    const importedTradeUpdates = [];
+    const challengeStartedAt = Date.parse(challenge.state.automation?.startedAt || "");
+    const challengeExistingTradeIds = [];
     const unique = trades.filter((trade) => {
       const key = tradeKey(trade);
       // Older cTrader imports used their opening timestamp in the import key.
       // Fall back to the immutable position details so re-uploading repairs
       // their close timing instead of adding another trade.
       const cTraderMatch = trade.importKey?.startsWith("ctrader:")
-        ? (targetAccount.trades || []).find((item) => /Imported cTrader position #/i.test(item.context || "")
+        ? existingTrades.find((item) => /Imported cTrader position #/i.test(item.context || "")
           && item.asset === trade.asset && item.direction === trade.direction
           && item.date === trade.date && (trade.openingTimestampMissing
             ? (item.closeDate === trade.closeDate && ((item.closeTime || "") === (trade.closeTime || "") || (item.time || "") === (trade.closeTime || "")))
@@ -3761,23 +4054,31 @@ function TradingJournalApp({ user, onLogout }) {
         : null;
       const existing = existingByKey.get(key) || (trade.legacyImportKey ? existingByKey.get(trade.legacyImportKey) : null) || cTraderMatch;
       if (existing) {
+        if (targetAccount.id === account.id && challenge.state.automation?.mode && Number.isFinite(challengeStartedAt) && Date.parse(existing.createdAt || "") >= challengeStartedAt) challengeExistingTradeIds.push(existing.id);
         // Re-uploading a broker report also repairs old imports made before
         // close timestamps were mapped correctly. It never creates a duplicate.
         const needsCloseTiming = trade.closeDate && (existing.closeDate !== trade.closeDate || existing.closeTime !== trade.closeTime);
         const needsOpeningRepair = trade.openingTimestampMissing && !cTraderOpeningWasEnteredManually(existing) && !/\[close-only\]/i.test(existing.context || "") && !!existing.time;
-        if (needsCloseTiming || needsOpeningRepair) {
-          closeTimingUpdates.push({ ...existing, time: needsOpeningRepair ? "" : existing.time, closeDate: trade.closeDate, closeTime: trade.closeTime || "", context: needsOpeningRepair ? trade.context : existing.context });
+        const needsEntryPriceRepair = trade.entryPrice !== "" && trade.entryPrice != null && (existing.entryPrice === "" || existing.entryPrice == null);
+        const needsExitPriceRepair = trade.exitPrice !== "" && trade.exitPrice != null && (existing.exitPrice === "" || existing.exitPrice == null);
+        if (needsCloseTiming || needsOpeningRepair || needsEntryPriceRepair || needsExitPriceRepair) {
+          importedTradeUpdates.push({ ...existing, time: needsOpeningRepair ? "" : existing.time, closeDate: trade.closeDate || existing.closeDate, closeTime: trade.closeTime || existing.closeTime || "", entryPrice: needsEntryPriceRepair ? trade.entryPrice : existing.entryPrice, exitPrice: needsExitPriceRepair ? trade.exitPrice : existing.exitPrice, context: needsOpeningRepair ? trade.context : existing.context });
         }
         return false;
       }
       if (seen.has(key)) return false;
       seen.add(key); return true;
     });
-    if (!unique.length && !cashMovements.length && !closeTimingUpdates.length) { showInfo("Those trades are already in this account."); return false; }
+    if (!unique.length && !cashMovements.length && !importedTradeUpdates.length && !duplicateImportedTrades.length) { showInfo("Those trades are already in this account."); return false; }
     const imported = [];
-    const total = unique.length + cashMovements.length + closeTimingUpdates.length;
+    const total = unique.length + cashMovements.length + importedTradeUpdates.length + duplicateImportedTrades.length;
     let completed = 0;
-    for (const trade of closeTimingUpdates) {
+    for (const trade of duplicateImportedTrades) {
+      const result = await deleteTrade(trade.id);
+      if (result.error) { showError(result.error); return false; }
+      completed += 1; onProgress?.(Math.round(completed / total * 100));
+    }
+    for (const trade of importedTradeUpdates) {
       const result = await updateTrade(trade.id, { ...trade, userId: user.id, accountId: targetAccount.id });
       if (result.error) { showError(result.error); return false; }
       completed += 1; onProgress?.(Math.round(completed / total * 100));
@@ -3819,9 +4120,14 @@ function TradingJournalApp({ user, onLogout }) {
       const result = await updateAccount(targetAccount.id, nextAccount);
       if (result.error) { showError(result.error); return false; }
     }
-    setAccounts((items) => items.map((item) => item.id === targetAccount.id ? { ...nextAccount, trades: [...(item.trades || []).map((trade) => closeTimingUpdates.find((updated) => updated.id === trade.id) || trade), ...imported], financeMovements: [...importedCash, ...relabelledCash, ...(item.financeMovements || []).filter((movement) => !relabelledCash.some((updated) => updated.id === movement.id))] } : item));
+    setAccounts((items) => items.map((item) => item.id === targetAccount.id ? { ...nextAccount, trades: [...(item.trades || []).filter((trade) => !duplicateImportedTrades.some((duplicate) => duplicate.id === trade.id)).map((trade) => importedTradeUpdates.find((updated) => updated.id === trade.id) || trade), ...imported], financeMovements: [...importedCash, ...relabelledCash, ...(item.financeMovements || []).filter((movement) => !relabelledCash.some((updated) => updated.id === movement.id))] } : item));
+    const challengeTradeIds = [...new Set([...imported.map((trade) => trade.id), ...challengeExistingTradeIds])];
+    if (targetAccount.id === account.id && challengeTradeIds.length && challenge.state.automation?.mode) {
+      const challengeSaved = await challenge.includeImportedTrades(challengeTradeIds);
+      if (!challengeSaved) showError("Trades were imported, but challenge progress could not be updated. Open Challenge and retry after checking its connection.");
+    }
     for (const instrument of [...new Set(imported.map((trade) => trade.asset))]) await persistCustomInstrument(instrument);
-    showInfo(`${imported.length} trade${imported.length === 1 ? "" : "s"}${importedCash.length ? ` and ${importedCash.length} cash movement${importedCash.length === 1 ? "" : "s"}` : ""}${closeTimingUpdates.length ? `; close date/time repaired on ${closeTimingUpdates.length} existing trade${closeTimingUpdates.length === 1 ? "" : "s"}` : ""}${importedDepositBase ? `; ${fmtMoney(importedDepositBase)} added to the account base` : ""}${unique.length !== trades.length ? `; ${trades.length - unique.length} duplicate${trades.length - unique.length === 1 ? " was" : "s were"} skipped` : ""}.`);
+    showInfo(`${imported.length} trade${imported.length === 1 ? "" : "s"}${importedCash.length ? ` and ${importedCash.length} cash movement${importedCash.length === 1 ? "" : "s"}` : ""}${duplicateImportedTrades.length ? `; ${duplicateImportedTrades.length} duplicate broker import${duplicateImportedTrades.length === 1 ? "" : "s"} removed` : ""}${importedTradeUpdates.length ? `; import details repaired on ${importedTradeUpdates.length} existing trade${importedTradeUpdates.length === 1 ? "" : "s"}` : ""}${importedDepositBase ? `; ${fmtMoney(importedDepositBase)} added to the account base` : ""}${unique.length !== trades.length ? `; ${trades.length - unique.length} duplicate${trades.length - unique.length === 1 ? " was" : "s were"} skipped` : ""}.`);
     return true;
   };
 
@@ -3925,11 +4231,12 @@ function TradingJournalApp({ user, onLogout }) {
     return true;
   };
 
-  const handleSaveProfileSettings = async ({ displayName: nextName, avatarUrl, theme, sessionTimeoutMinutes: nextTimeout }) => {
-    const profileResult = await updateProfile({ displayName: nextName, avatarUrl, sessionTimeoutMinutes: nextTimeout, theme });
+  const handleSaveProfileSettings = async ({ fullName, displayName: nextName, avatarUrl, themePreference, accentColor, timezone, dateFormat, timeFormat, sessionTimeoutMinutes: nextTimeout }) => {
+    const profileResult = await updateProfile({ fullName, displayName: nextName, avatarUrl, sessionTimeoutMinutes: nextTimeout, theme: profileTheme, themePreference, accentColor, timezone, dateFormat, timeFormat });
     if (profileResult.error) { showError(profileResult.error); return false; }
-    setProfileTheme(theme);
-    window.localStorage.setItem(`tj:profile-theme:${user.id}`, theme);
+    setProfileTheme(themePreference); setProfileAccent(accentColor);
+    setProfileDetails({ fullName, displayName: nextName || fullName, avatarUrl, timezone, dateFormat, timeFormat });
+    window.localStorage.setItem(`tj:profile-theme:${user.id}`, themePreference);
     setModal(null);
     return true;
   };
@@ -3938,12 +4245,19 @@ function TradingJournalApp({ user, onLogout }) {
     const next = previous === "dark" ? "light" : "dark";
     setProfileTheme(next);
     window.localStorage.setItem(`tj:profile-theme:${user.id}`, next);
-    const result = await updateProfile({ displayName, avatarUrl: personalProfileImage, sessionTimeoutMinutes, theme: next });
+    const result = await updateProfile({ fullName: profileDetails.fullName || displayName, displayName, avatarUrl: personalProfileImage, sessionTimeoutMinutes, theme: next, themePreference: next, accentColor: profileAccent, timezone: profileDetails.timezone, dateFormat: profileDetails.dateFormat, timeFormat: profileDetails.timeFormat });
     if (result.error) {
       setProfileTheme(previous);
       window.localStorage.setItem(`tj:profile-theme:${user.id}`, previous);
       showError(result.error);
     }
+  };
+  const handleDeleteProfile = async () => {
+    const result = await deleteProfilePermanently();
+    if (result.error) return result;
+    try { window.localStorage.clear(); window.sessionStorage.clear(); } catch {}
+    await onLogout();
+    return result;
   };
 
   const handleToggleCheckin = async (ruleId, date, checked) => {
@@ -4001,13 +4315,17 @@ function TradingJournalApp({ user, onLogout }) {
           <div className="tj-nav">{NAV.filter(n => (n.id !== 'challenge' || isChallengeEnabled(account)) && (n.id !== 'finance' || account.finance?.enabled)).map((n) => <button key={n.id} className={`tj-nav-item ${page === n.id ? "tj-nav-active" : ""}`} onClick={() => { setPage(n.id); setShowAccountMenu(false); if (window.innerWidth <= 900) setSidebarOpen(false); }}>{n.symbol ? <NavSymbol src={n.symbol} /> : <n.icon size={16} />} <span>{n.label}</span></button>)}</div>
           <div className="tj-nav-label">SETTINGS</div>
           <div className="tj-nav">
-            <button className="tj-nav-item" disabled={guardrails.tradeEntryLocked} title={guardrails.tradeEntryLocked ? "Account settings are locked by the account loss limit" : "Account settings"} onClick={() => setModal("account")}><NavSymbol src={accountSettingsSymbol} /> <span>{guardrails.tradeEntryLocked ? "Account Locked" : "Account"}</span></button>
-            <button className="tj-nav-item" onClick={() => setModal("profile")}><NavSymbol src={profileSettingsSymbol} /> <span>Profile</span></button>
-            <ConfirmDeleteButton className="tj-nav-item" disabled={guardrails.tradeEntryLocked} title={guardrails.tradeEntryLocked ? "Reset Data is locked by the account loss limit" : "Reset Data"} onClick={handleResetData}><Trash2 size={16} /> <span>Reset Data</span></ConfirmDeleteButton>
+            <button className="tj-nav-item" disabled={guardrails.tradeEntryLocked} title={guardrails.tradeEntryLocked ? "Account settings are locked by the account loss limit" : "Account settings"} onClick={() => setModal("account")}><WalletCards size={16} /> <span>{guardrails.tradeEntryLocked ? "Account Locked" : "Account"}</span></button>
+            <button className="tj-nav-item" onClick={() => setModal("profile")}><UserRound size={16} /> <span>Profile</span></button>
             <button className="tj-nav-item tj-nav-danger" onClick={onLogout}><LogOut size={16} /> <span>Log Out</span></button>
             <button className="tj-nav-item tj-theme-nav" onClick={handleQuickThemeToggle} aria-label={profileTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"} title={profileTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>{profileTheme === "dark" ? <Sun size={17}/> : <Moon size={17}/>}</button>
             <button className="tj-nav-item tj-sync-nav" disabled={syncing} onClick={syncJournal} title={lastSyncedAt ? `Sync journal · last synced ${new Date(lastSyncedAt).toLocaleString()}` : "Sync journal"}><RefreshCw className={syncing ? "tj-syncing-icon" : ""} size={16}/><span>{syncing ? "Syncing…" : "Sync"}</span></button>
           </div>
+        </div>
+        <div className="tj-sidebar-import">
+          <button className="tj-nav-item tj-import-nav" title="Import trades" aria-label="Import trades" onClick={() => { if (guardrails.tradeEntryLocked) return showInfo("Trade imports are paused by this account's loss limit."); setModal("import"); setShowAccountMenu(false); }}>
+            <FileUp size={16} /> <span>Import trades</span>
+          </button>
         </div>
         <div className="tj-sidebar-footer" ref={accountMenuRef}>
           {showAccountMenu && (
@@ -4045,7 +4363,7 @@ function TradingJournalApp({ user, onLogout }) {
         <div className="tj-topbar">
           <div className="tj-topbar-left">
             <button className="tj-icon-btn tj-sidebar-toggle" title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"} aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"} aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((v) => !v)}>{sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button>
-            <div><div className="tj-page-title">{NAV.find((n) => n.id === page)?.label || "Settings"}</div><div className="tj-page-sub">{new Date().toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</div></div>
+            <div><div className="tj-page-title">{NAV.find((n) => n.id === page)?.label || "Settings"}</div><div className="tj-page-sub">{formatDate(new Date())}</div></div>
           </div>
           {page === "dashboard" ? <button className="tj-btn-primary" onClick={() => { setEditingMarkup(null); setModal("markup"); }}><Plus size={16} /> Start Day</button> : <button className={`tj-btn-primary ${guardrails.tradeEntryLocked ? "tj-btn-disabled" : ""}`} disabled={guardrails.tradeEntryLocked} title={guardrails.tradeEntryLocked ? "Trade entry is paused by your account loss cap" : "Log a new trade"} onClick={() => openNewTrade()}><Plus size={16} /> {guardrails.tradeEntryLocked ? "Trade Locked" : "Log Trade"}</button>}
         </div>
@@ -4070,8 +4388,9 @@ function TradingJournalApp({ user, onLogout }) {
         </div>
       </div>
       {modal === "newtrade" && <NewTradeModal editing={editingTrade} draft={newTradeDraft} typeTags={typeTags} mistakeTags={allMistakeTags(mistakeTags)} confluenceSessions={confluenceSessions} instruments={knownInstruments} markups={markups.filter((markup)=>markup.accountId===account.id)} rules={account.rules} defaultCommission={account.defaultCommission} account={account} onClose={() => { setModal(null); setEditingTrade(null); setNewTradeDraft(null); }} onSave={saveTrade} />}
-      {modal === "account" && !guardrails.tradeEntryLocked && <AccountSettingsModal key={account.id} account={account} challenge={challenge} onClose={() => setModal(null)} onSave={handleSaveAccountSettings} onImport={(trades, onProgress) => importTradesToAccount(account, trades, onProgress)} onDelete={handleDeleteAccount} />}
-      {modal === "profile" && <ProfileSettingsModal user={user} account={account} themeValue={profileTheme} onClose={() => setModal(null)} onSave={handleSaveProfileSettings} />}
+      {modal === "account" && !guardrails.tradeEntryLocked && <AccountSettingsModal key={account.id} account={account} challenge={challenge} onClose={() => setModal(null)} onSave={handleSaveAccountSettings} onImport={(trades, onProgress) => importTradesToAccount(account, trades, onProgress)} onDelete={handleDeleteAccount} onReset={handleResetData} />}
+      {modal === "import" && !guardrails.tradeEntryLocked && <ImportTradesModal account={account} onClose={() => setModal(null)} onImport={(plan, onProgress) => importTradesToAccount(account, plan, onProgress)} />}
+      {modal === "profile" && <ProfileSettingsModal user={{ ...user, user_metadata: { ...user.user_metadata, full_name: profileDetails.fullName, display_name: displayName, avatar_url: personalProfileImage, timezone: profileDetails.timezone, date_format: profileDetails.dateFormat, time_format: profileDetails.timeFormat } }} account={account} themeValue={profileTheme} themePreference={profileThemePreference} accentValue={profileAccent} onPreviewAppearance={(nextTheme, nextAccent) => { setProfileTheme(nextTheme); setProfileAccent(nextAccent); }} onClose={() => setModal(null)} onSave={handleSaveProfileSettings} onDeleteProfile={handleDeleteProfile} />}
       {modal === "markup" && <MarkupModal editing={editingMarkup} instruments={knownInstruments} onClose={()=>{setModal(null);setEditingMarkup(null);}} onSave={handleSaveMarkup} />}
       {modal === "addaccount" && <AddAccountModal onClose={() => setModal(null)} onCreate={handleCreateAccount} />}
       {dayModalDate && (
@@ -4111,7 +4430,7 @@ html:has(.tj-root) { font-size: 93.75%; }
   --tj-text: #F4F7FA; --tj-muted: #95A1B1; --tj-green: #50C6A0; --tj-red: #BC5967;
   --tj-purple: #8B7CF6; --tj-blue: #60A5FA; --tj-amber: #FBBF24; --tj-winrate-amber: #D9A441;
   --tj-input-bg: #141B26; --tj-chart-bg: #141B26; --tj-chart-grid: #27313D; --tj-chart-text: #95A1B1;
-  --tj-tooltip-bg: #1C232B; --tj-primary-hover: #44A188; --tj-primary-muted: rgba(80,198,160,0.18);
+  --tj-tooltip-bg: #1C232B; --tj-primary-hover: #44A188; --tj-primary-muted: rgba(80,198,160,0.18); --tj-accent: #6EE7B7; --tj-accent-muted: rgba(110,231,183,.16); --tj-accent-border: rgba(110,231,183,.48);
   --tj-shadow: 0 16px 36px rgba(0,0,0,0.32); --tj-primary-contrast: #0B241E; --tj-grid-line: rgba(149,161,177,0.045);
   --tj-bg-glow-left: rgba(18,96,72,.17); --tj-bg-glow-right: rgba(62,78,124,.15);
   --tj-scroll-track: #111A23; --tj-scroll-thumb: #2E7669; --tj-scroll-thumb-hover: #50C6A0;
@@ -4121,7 +4440,7 @@ html:has(.tj-root) { font-size: 93.75%; }
   --tj-text: #17221A; --tj-muted: #65746A; --tj-green: #44A188; --tj-red: #B95664;
   --tj-purple: #6D5FD8; --tj-blue: #2563EB; --tj-amber: #B45309; --tj-winrate-amber: #9A6700;
   --tj-input-bg: #FFFFFF; --tj-chart-bg: #FFFFFF; --tj-chart-grid: #D7E1D9; --tj-chart-text: #536258;
-  --tj-tooltip-bg: #FFFFFF; --tj-primary-hover: #357F6D; --tj-primary-muted: rgba(80,198,160,0.14);
+  --tj-tooltip-bg: #FFFFFF; --tj-primary-hover: #357F6D; --tj-primary-muted: rgba(80,198,160,0.14); --tj-accent: #059669; --tj-accent-muted: rgba(5,150,105,.14); --tj-accent-border: rgba(5,150,105,.48);
   --tj-shadow: 0 14px 30px rgba(19,35,26,0.10); --tj-primary-contrast: #FFFFFF; --tj-grid-line: rgba(52, 86, 113, .075);
   --tj-bg-glow-left: rgba(58, 170, 132, .11); --tj-bg-glow-right: rgba(86, 125, 188, .13);
   --tj-scroll-track: #E7EEF2; --tj-scroll-thumb: #83B7A9; --tj-scroll-thumb-hover: #44A188;
@@ -4179,20 +4498,20 @@ html:has(.tj-root) { font-size: 93.75%; }
 .tj-green { color: var(--tj-green); } .tj-red { color: var(--tj-red); } .tj-blue { color: var(--tj-blue); }
 .tj-muted-txt { color: var(--tj-muted); } .tj-purple-txt { color: var(--tj-purple); }
 
-.tj-sidebar { width: 220px; min-width: 220px; height: 100vh; background: var(--tj-chrome); border-right: 1px solid var(--tj-border); display: flex; flex-direction: column; padding: 18px 14px; position: relative; flex-shrink: 0; transition: transform .6s cubic-bezier(.22,1,.36,1), width .6s cubic-bezier(.22,1,.36,1), min-width .6s cubic-bezier(.22,1,.36,1), padding .6s cubic-bezier(.22,1,.36,1); box-shadow: 12px 0 28px rgba(0,0,0,0.08); }
+.tj-sidebar { width:220px; min-width:0; height:100vh; overflow:visible; background:var(--tj-chrome); border-right:1px solid var(--tj-border); display:flex; flex-direction:column; padding:18px 14px; position:relative; flex:0 0 auto; will-change:width,padding; transition:width .3s cubic-bezier(.4,0,.2,1), padding .3s cubic-bezier(.4,0,.2,1); box-shadow:12px 0 28px rgba(0,0,0,0.08); }
 .tj-sidebar-toggle { background: var(--tj-panel-alt); border: 1px solid var(--tj-border); border-radius: 9px; width: 32px; height: 32px; }
 @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
   .tj-root :is(button, a, [role="button"], [role="tab"], tr) { transition: background-color .25s ease, box-shadow .3s ease, border-color .25s ease, translate .3s cubic-bezier(.22,1,.36,1); }
   .tj-root .tj-pointer-lit {
-    background-image: radial-gradient(180px circle at var(--pointer-x, 50%) var(--pointer-y, 50%), color-mix(in srgb, var(--tj-green) 22%, transparent), transparent 80%) !important;
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tj-green) 45%, transparent), 0 5px 15px color-mix(in srgb, var(--tj-green) 10%, transparent);
+    background-image: radial-gradient(180px circle at var(--pointer-x, 50%) var(--pointer-y, 50%), color-mix(in srgb, var(--tj-accent) 22%, transparent), transparent 80%) !important;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tj-accent) 45%, transparent), 0 5px 15px color-mix(in srgb, var(--tj-accent) 10%, transparent);
   }
   .tj-root .tj-pointer-lit:not(tr):not(td) { translate: 0 -1px; }
 }
-.tj-root :is(button, a, [role="button"], [role="tab"]):focus-visible { outline: 2px solid var(--tj-green); outline-offset: 2px; }
+.tj-root :is(button, a, [role="button"], [role="tab"]):focus-visible { outline: 2px solid var(--tj-accent); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { .tj-sidebar { transition: none; } }
-.tj-sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; }
-.tj-sidebar-collapsed { width: 64px; min-width: 64px; padding: 14px 8px; }
+.tj-sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width:none; -ms-overflow-style:none; }.tj-sidebar-scroll::-webkit-scrollbar { display:none; }
+.tj-sidebar-collapsed { width:64px; padding:14px 8px; }
 .tj-backdrop { display: none; }
 .tj-sidebar-profile { width: 100%; min-height: 80px; display: grid; place-items: center; margin: 0 0 18px; padding: 4px; border: 0; background: transparent; color: var(--tj-text); cursor: pointer; }
 .tj-sidebar-profile:hover .tj-sidebar-profile-avatar { border-color: var(--tj-green); box-shadow: 0 8px 24px color-mix(in srgb, var(--tj-green) 24%, transparent); }
@@ -4209,10 +4528,13 @@ html:has(.tj-root) { font-size: 93.75%; }
 .tj-symbol-title, .tj-management-title { display: inline-flex; align-items: center; gap: 8px; }
 .tj-symbol-title .tj-nav-symbol, .tj-management-title .tj-nav-symbol { width: 18px; height: 18px; flex-basis: 18px; }
 .tj-nav-item:hover { background: var(--tj-panel-alt); color: var(--tj-text); }
-.tj-nav-active { background: var(--tj-primary-muted); border-color: rgba(80,198,160,0.34); color: var(--tj-green) !important; font-weight: 700; box-shadow: inset 3px 0 0 var(--tj-green); }
+.tj-nav-active { background: var(--tj-accent-muted); border-color: var(--tj-accent-border); color: var(--tj-accent) !important; font-weight: 700; box-shadow: inset 3px 0 0 var(--tj-accent); }
 .tj-nav-danger:hover { color: var(--tj-red) !important; }
+.tj-sidebar-import { padding: 12px 0 10px; border-top: 1px solid var(--tj-border); }
+.tj-import-nav { width: 100%; justify-content: center; color: var(--tj-green); border-color: color-mix(in srgb, var(--tj-green) 42%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 10%, var(--tj-panel-alt)); font-weight: 800; }
+.tj-import-nav:hover { color: var(--tj-green); border-color: var(--tj-green); background: color-mix(in srgb, var(--tj-green) 18%, var(--tj-panel-alt)); }
 .tj-sidebar-footer { position: relative; flex-shrink: 0; padding-top: 10px; }
-.tj-sidebar-user { display: flex; align-items: center; gap: 10px; width: 100%; background: var(--tj-panel-alt); border: 1px solid var(--tj-border); border-radius: 10px; padding: 8px 10px; cursor: pointer; font-family: inherit; color: var(--tj-text); }
+.tj-sidebar-user { display:flex; align-items:center; gap:10px; width:100%; box-sizing:border-box; background:var(--tj-panel-alt); border:1px solid var(--tj-border); border-radius:10px; padding:8px 10px; cursor:pointer; font-family:inherit; color:var(--tj-text); }
 .tj-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--tj-panel); display: flex; align-items: center; justify-content: center; font-size: 1.08rem; flex-shrink: 0; }
 .tj-avatar-sm { width: 22px; height: 22px; border-radius: 50%; background: var(--tj-panel); display: flex; align-items: center; justify-content: center; font-size: 0.875rem; flex-shrink: 0; }
 .tj-account-name { font-size: 0.9375rem; font-weight: 600; } .tj-account-sub { font-size: 0.8125rem; color: var(--tj-muted); }
@@ -4261,12 +4583,18 @@ html:has(.tj-root) { font-size: 93.75%; }
 .tj-sidebar-collapsed .tj-sidebar-scroll { overflow: hidden; }
 .tj-sidebar-collapsed .tj-sidebar-profile { min-height: 52px; margin-bottom: 10px; padding: 5px 0 12px; border-width: 0 0 1px; border-radius: 0; background: transparent; box-shadow: none; }
 .tj-sidebar-collapsed .tj-sidebar-profile-avatar { width: 40px; height: 40px; font-size: 1rem; }
-.tj-sidebar-collapsed .tj-nav-label, .tj-sidebar-collapsed .tj-nav-item > span, .tj-sidebar-collapsed .tj-sidebar-user > div:nth-child(2), .tj-sidebar-collapsed .tj-sidebar-user-chevron { display: none; }
-.tj-sidebar-collapsed .tj-nav-item { width: 46px; min-height: 42px; justify-content: center; gap: 0; padding: 9px; }
+.tj-nav-label, .tj-nav-item > span, .tj-sidebar-user > div:nth-child(2), .tj-sidebar-user-chevron { transition:opacity .14s ease; }.tj-nav-item { overflow:hidden; }.tj-nav-item > span { white-space:nowrap; }
+.tj-sidebar-collapsed .tj-nav-label, .tj-sidebar-collapsed .tj-nav-item > span, .tj-sidebar-collapsed .tj-sidebar-user > div:nth-child(2), .tj-sidebar-collapsed .tj-sidebar-user-chevron { opacity:0; pointer-events:none; }
+.tj-sidebar-collapsed .tj-nav-label { height:0; margin:0; overflow:hidden; }.tj-sidebar-collapsed .tj-nav-item > span, .tj-sidebar-collapsed .tj-sidebar-user > div:nth-child(2), .tj-sidebar-collapsed .tj-sidebar-user-chevron { width:0; overflow:hidden; }
+.tj-sidebar-collapsed .tj-nav-item { width:46px; min-height:42px; justify-content:center; gap:0; padding:9px; }
 .tj-sidebar-collapsed .tj-nav-item svg, .tj-sidebar-collapsed .tj-nav-symbol { flex: 0 0 auto; }
+.tj-sidebar-collapsed .tj-nav-item svg { color: var(--tj-accent); }.tj-sidebar-collapsed .tj-nav-item:hover svg, .tj-sidebar-collapsed .tj-nav-active svg { color: var(--tj-accent); filter: drop-shadow(0 0 5px color-mix(in srgb,var(--tj-accent) 45%,transparent)); }
+.tj-sidebar-collapsed .tj-nav-symbol { opacity:1; }.tj-root[data-profile-accent="mint"] .tj-sidebar-collapsed .tj-nav-symbol { filter:brightness(0) saturate(100%) invert(85%) sepia(27%) saturate(680%) hue-rotate(105deg) brightness(99%) contrast(85%); }.tj-root[data-profile-accent="blue"] .tj-sidebar-collapsed .tj-nav-symbol { filter:brightness(0) saturate(100%) invert(69%) sepia(56%) saturate(571%) hue-rotate(177deg) brightness(103%) contrast(93%); }.tj-root[data-profile-accent="violet"] .tj-sidebar-collapsed .tj-nav-symbol { filter:brightness(0) saturate(100%) invert(65%) sepia(35%) saturate(994%) hue-rotate(215deg) brightness(98%) contrast(96%); }.tj-root[data-profile-accent="teal"] .tj-sidebar-collapsed .tj-nav-symbol { filter:brightness(0) saturate(100%) invert(79%) sepia(52%) saturate(724%) hue-rotate(121deg) brightness(89%) contrast(92%); }.tj-root[data-profile-accent="amber"] .tj-sidebar-collapsed .tj-nav-symbol { filter:brightness(0) saturate(100%) invert(79%) sepia(64%) saturate(844%) hue-rotate(342deg) brightness(101%) contrast(96%); }.tj-root[data-profile-accent="rose"] .tj-sidebar-collapsed .tj-nav-symbol { filter:brightness(0) saturate(100%) invert(68%) sepia(69%) saturate(640%) hue-rotate(305deg) brightness(99%) contrast(98%); }
 .tj-sidebar-collapsed .tj-nav-active { box-shadow: none; }
 .tj-sidebar-collapsed .tj-nav + .tj-nav-label + .tj-nav { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--tj-border); }
-.tj-sidebar-collapsed .tj-sidebar-user { min-height: 44px; justify-content: center; padding: 6px; }
+.tj-sidebar-collapsed .tj-sidebar-import { padding: 10px 0; }
+.tj-sidebar-collapsed .tj-import-nav { width: 46px; min-height: 42px; justify-content: center; gap: 0; padding: 9px; }
+.tj-sidebar-collapsed .tj-sidebar-user { width:46px; min-height:44px; align-self:center; justify-content:center; gap:0; padding:6px; }
 .tj-sidebar-collapsed .tj-sidebar-user .tj-account-initial { width: 28px; height: 28px; }
 .tj-sidebar-collapsed .tj-account-menu { left: calc(100% + 10px); bottom: 0; }
 
@@ -4279,8 +4607,8 @@ html:has(.tj-root) { font-size: 93.75%; }
 .tj-content-inner { width: calc(100% - clamp(0px, 10vw, 192px)); max-width: none; min-height: 100%; margin: 0 auto; }
 .tj-topbar { flex-shrink: 0; }
 
-.tj-btn-primary { background: var(--tj-green); color: var(--tj-primary-contrast); border: 1px solid var(--tj-green); border-radius: 8px; padding: 9px 16px; font-weight: 700; font-size: 0.9375rem; cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: inherit; white-space: nowrap; box-shadow: 0 7px 16px rgba(80,198,160,0.22); transition: transform .16s ease, background .16s ease, box-shadow .16s ease; }
-.tj-btn-primary:hover { background: var(--tj-primary-hover); transform: translateY(-1px); box-shadow: 0 9px 20px rgba(80,198,160,0.28); }
+.tj-btn-primary { background: var(--tj-accent); color: var(--tj-primary-contrast); border: 1px solid var(--tj-accent); border-radius: 8px; padding: 9px 16px; font-weight: 700; font-size: 0.9375rem; cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: inherit; white-space: nowrap; box-shadow: 0 7px 16px color-mix(in srgb, var(--tj-accent) 22%, transparent); transition: transform .16s ease, background .16s ease, box-shadow .16s ease; }
+.tj-btn-primary:hover { background: var(--tj-primary-hover); transform: translateY(-1px); box-shadow: 0 9px 20px color-mix(in srgb, var(--tj-accent) 28%, transparent); }
 .tj-btn-outline { background: none; border: 1px solid var(--tj-border); color: var(--tj-text); border-radius: 8px; padding: 8px 14px; font-size: 0.9375rem; cursor: pointer; font-family: inherit; }
 .tj-btn-outline:hover { background: var(--tj-panel-alt); }
 .tj-icon-btn { background: none; border: none; color: var(--tj-muted); cursor: pointer; padding: 4px; border-radius: 6px; display: inline-flex; }
@@ -4498,9 +4826,12 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-inline-add { display: flex; gap: 8px; margin-top: 8px; }
 .tj-chip-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .tj-chip { background: var(--tj-panel-alt); border: 1px solid var(--tj-border); color: var(--tj-muted); border-radius: 6px; padding: 5px 10px; font-size: 0.875rem; cursor: pointer; }
-.tj-chip-active { border-color: var(--tj-green); color: var(--tj-green); background: var(--tj-primary-muted); box-shadow: 0 0 0 1px rgba(80,198,160,0.16); }
+.tj-chip-active { border-color: var(--tj-accent); color: var(--tj-accent); background: var(--tj-accent-muted); box-shadow: 0 0 0 1px color-mix(in srgb, var(--tj-accent) 16%, transparent); }
 .tj-chip-big { flex: 1; background: var(--tj-panel-alt); border: 1px solid var(--tj-border); color: var(--tj-muted); border-radius: 8px; padding: 10px; font-size: 0.90625rem; font-weight: 700; cursor: pointer; }
 .tj-theme-choice-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tj-theme-choice-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.tj-accent-head { display:flex; justify-content:space-between; gap:12px; align-items:baseline; margin:14px 0 8px; }.tj-accent-head strong { font-size:.875rem; }.tj-accent-head span { color:var(--tj-muted); font-size:.75rem; }
+.tj-accent-row { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:7px; }.tj-accent-option { display:grid; justify-items:center; gap:5px; min-width:0; padding:8px 3px; border:1px solid var(--tj-border); border-radius:9px; background:var(--tj-panel); color:var(--tj-muted); font:inherit; font-size:.68rem; cursor:pointer; }.tj-accent-option i { width:22px; height:22px; border-radius:50%; box-shadow:inset 0 0 0 1px #fff5; }.tj-accent-option.tj-accent-selected { color:var(--tj-text); border-color:var(--tj-accent); background:var(--tj-accent-muted); box-shadow:0 0 0 1px color-mix(in srgb,var(--tj-accent) 24%,transparent); }
 .tj-theme-choice { transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease; }
 .tj-theme-choice.tj-chip-active { background: var(--tj-primary-muted); color: var(--tj-green); border-color: var(--tj-green); box-shadow: inset 3px 0 0 var(--tj-green), 0 0 0 1px rgba(80,198,160,0.22); }
 .tj-theme-choice:hover { border-color: var(--tj-green); color: var(--tj-text); }
@@ -4518,9 +4849,12 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-grade-pip { border: 1px solid var(--tj-border); color: var(--tj-muted); background: none; border-radius: 6px; padding: 3px 8px; font-size: 0.8125rem; font-weight: 700; cursor: pointer; }
 .tj-grades-sm .tj-grade-pip { padding: 1px 6px; font-size: 0.75rem; cursor: default; }
 
-.tj-dropzone { border: 1.5px dashed var(--tj-border); border-radius: 10px; padding: 16px; text-align: center; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 6px; background: var(--tj-panel-alt); }
+.tj-dropzone { border: 1.5px dashed var(--tj-border); border-radius: 10px; padding: 16px; text-align: center; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 6px; background: var(--tj-panel-alt); outline: none; }
+.tj-dropzone:focus { border-color: var(--tj-green); background: color-mix(in srgb, var(--tj-green) 10%, var(--tj-panel-alt)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--tj-green) 32%, transparent); }
 .tj-dropzone-active { border-color: var(--tj-purple); background: rgba(139,124,246,0.08); }
 .tj-dropzone-text { font-size: 0.875rem; color: var(--tj-muted); }
+.tj-dropzone-file { border: 1px solid var(--tj-border); border-radius: 6px; background: var(--tj-panel); color: var(--tj-text); padding: 5px 9px; font: inherit; font-size: 0.75rem; font-weight: 700; cursor: pointer; }
+.tj-dropzone-file:hover { border-color: var(--tj-green); color: var(--tj-green); }
 .tj-shot-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
 .tj-shot-thumb { position: relative; width: 100%; height: auto; aspect-ratio: 3 / 2; border-radius: 8px; overflow: hidden; border: 1px solid var(--tj-border); }
 .tj-image-preview { display: block; appearance: none; border: 1px solid var(--tj-border); background: var(--tj-panel-alt); padding: 0; border-radius: 8px; overflow: hidden; cursor: zoom-in; line-height: 0; }
@@ -4530,7 +4864,8 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-shot-remove { position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.7); border: none; color: #fff; border-radius: 50%; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
 .tj-shot-caption { position: absolute; z-index: 1; left: 5px; right: 5px; bottom: 5px; width: calc(100% - 10px); min-width: 0; border: 1px solid color-mix(in srgb, var(--tj-text) 35%, transparent); border-radius: 5px; background: color-mix(in srgb, var(--tj-panel) 88%, transparent); color: var(--tj-text); padding: 4px 6px; font: inherit; font-size: 0.7rem; line-height: 1.2; }
 .tj-shot-caption::placeholder { color: var(--tj-muted); }
-.tj-shot-add { width: 100%; height: auto; aspect-ratio: 3 / 2; border-radius: 8px; border: 1px dashed var(--tj-border); display: flex; align-items: center; justify-content: center; }
+.tj-shot-add { width: 100%; height: auto; aspect-ratio: 3 / 2; border-radius: 8px; border: 1px dashed var(--tj-border); display: flex; align-items: center; justify-content: center; background: transparent; cursor: pointer; }
+.tj-shot-add:hover { border-color: var(--tj-green); }
 .tj-tlog-shots { display: flex; gap: 10px; flex-wrap: wrap; }
 .tj-tlog-shots .tj-image-preview { width: min(260px, 100%); height: 180px; }
 .tj-markup-images { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; align-items: start; }
@@ -4538,8 +4873,15 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-markup-image-section .tj-tlog-shots { margin-top: 8px; }
 .tj-markup-image-section .tj-image-preview { width: 100%; height: 220px; }
 .tj-image-viewer { position: fixed; inset: 0; z-index: 200100; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,0.78); backdrop-filter: blur(5px); cursor: zoom-out; }
-.tj-image-viewer img { display: block; max-width: min(1400px, 96vw); max-height: 90vh; width: auto; height: auto; object-fit: contain; border-radius: 10px; box-shadow: var(--tj-shadow); cursor: default; }
+.tj-image-viewer-stage { max-width: 96vw; max-height: 90vh; overflow: auto; cursor: default; }
+.tj-image-viewer img { display: block; max-width: min(1400px, 96vw); max-height: 90vh; width: auto; height: auto; object-fit: contain; border-radius: 10px; box-shadow: var(--tj-shadow); cursor: default; transform-origin: center; transition: transform 120ms ease; }
 .tj-image-viewer-close { position: fixed; top: 18px; right: 18px; width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,0.42); background: rgba(0,0,0,0.55); color: #FFF; border-radius: 50%; cursor: pointer; }
+.tj-image-viewer-controls { position: fixed; z-index: 1; bottom: 22px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; overflow: hidden; border: 1px solid rgba(255,255,255,0.35); border-radius: 9px; background: rgba(8,13,19,0.86); box-shadow: var(--tj-shadow); }
+.tj-image-viewer-controls button { width: 38px; height: 36px; display: grid; place-items: center; border: 0; border-right: 1px solid rgba(255,255,255,0.16); background: transparent; color: #FFF; cursor: pointer; }
+.tj-image-viewer-controls button:last-child { border-right: 0; }
+.tj-image-viewer-controls button:hover:not(:disabled) { background: rgba(88,208,170,0.2); }
+.tj-image-viewer-controls button:disabled { opacity: 0.42; cursor: not-allowed; }
+.tj-image-viewer-controls .tj-image-viewer-zoom-level { width: 58px; font-size: 0.75rem; font-weight: 800; }
 
 /* calendar heatmap */
 .tj-heatmap { display: flex; gap: 3px; overflow-x: auto; padding: 6px 0; }
@@ -4867,6 +5209,14 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-settings-hero-avatar { grid-row: span 2; width: 74px; height: 74px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--tj-green) 24%, var(--tj-border)); border-radius: 22px; background: color-mix(in srgb, var(--tj-input-bg) 90%, transparent); color: var(--tj-text); font-size: 1.89rem; cursor: pointer; }.tj-settings-hero-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }.tj-settings-hero-copy { display: grid; align-content: center; gap: 5px; }.tj-settings-hero-copy > span { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: 1.1px; }.tj-settings-hero-copy strong { font-size: 1.5525rem; letter-spacing: -.4px; }.tj-settings-hero-copy p { max-width: 560px; margin: 0; color: var(--tj-muted); font-size: 0.8125rem; line-height: 1.42; }
 .tj-settings-hero-metrics { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 9px; }.tj-settings-hero-metrics > div { display: grid; align-content: center; gap: 4px; min-width: 0; min-height: 82px; padding: 11px 12px; border: 1px solid var(--tj-border); border-radius: 15px; background: color-mix(in srgb, var(--tj-panel) 87%, transparent); }.tj-settings-hero-metrics small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .7px; }.tj-settings-hero-metrics b { overflow: hidden; font-size: 1.1475rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }.tj-settings-hero-metrics span { color: var(--tj-muted); font-size: 0.75rem; line-height: 1.25; }.tj-settings-hero-metrics .tj-settings-balance-tile { border-color: color-mix(in srgb, var(--tj-blue) 24%, var(--tj-border)); background: color-mix(in srgb, var(--tj-blue) 4%, var(--tj-panel)); }.tj-settings-hero-metrics .tj-settings-month-goal { border-color: color-mix(in srgb, var(--tj-green) 31%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 6%, var(--tj-panel)); }.tj-settings-hero-metrics .tj-settings-year-goal { border-color: color-mix(in srgb, var(--tj-purple) 34%, var(--tj-border)); background: color-mix(in srgb, var(--tj-purple) 6%, var(--tj-panel)); }.tj-settings-hero-metrics .tj-settings-daily-loss, .tj-settings-hero-metrics .tj-settings-month-loss { border-color: color-mix(in srgb, var(--tj-red) 31%, var(--tj-border)); background: color-mix(in srgb, var(--tj-red) 6%, var(--tj-panel)); }.tj-settings-hero-metrics .tj-settings-goal-on b { color: var(--tj-text); }.tj-settings-hero-metrics .tj-settings-risk-on b { color: var(--tj-text); }
 .tj-settings-section { border: 1px solid color-mix(in srgb, var(--tj-border) 78%, transparent); border-radius: 16px; background: color-mix(in srgb, var(--tj-panel-alt) 88%, transparent); margin: 12px 0; overflow: hidden; box-shadow: inset 0 1px 0 color-mix(in srgb, var(--tj-text) 2%, transparent); }
+.tj-settings-section:not(.tj-settings-section-danger):nth-of-type(2n) { border-color: color-mix(in srgb, var(--tj-blue) 34%, var(--tj-border)); background: linear-gradient(118deg, color-mix(in srgb, var(--tj-blue) 10%, var(--tj-panel-alt)), color-mix(in srgb, var(--tj-panel-alt) 96%, transparent) 62%); }
+.tj-settings-section:not(.tj-settings-section-danger):nth-of-type(3n) { border-color: color-mix(in srgb, var(--tj-purple) 35%, var(--tj-border)); background: linear-gradient(118deg, color-mix(in srgb, var(--tj-purple) 10%, var(--tj-panel-alt)), color-mix(in srgb, var(--tj-panel-alt) 96%, transparent) 62%); }
+.tj-settings-section:not(.tj-settings-section-danger):nth-of-type(5n) { border-color: color-mix(in srgb, var(--tj-green) 37%, var(--tj-border)); background: linear-gradient(118deg, color-mix(in srgb, var(--tj-green) 10%, var(--tj-panel-alt)), color-mix(in srgb, var(--tj-panel-alt) 96%, transparent) 62%); }
+.tj-settings-section:not(.tj-settings-section-danger):nth-of-type(7n) { border-color: color-mix(in srgb, var(--tj-amber) 40%, var(--tj-border)); background: linear-gradient(118deg, color-mix(in srgb, var(--tj-amber) 10%, var(--tj-panel-alt)), color-mix(in srgb, var(--tj-panel-alt) 96%, transparent) 62%); }
+.tj-settings-section:not(.tj-settings-section-danger):nth-of-type(2n) .tj-settings-section-title > i { border-color: color-mix(in srgb, var(--tj-blue) 34%, var(--tj-border)); background: color-mix(in srgb, var(--tj-blue) 10%, transparent); color: var(--tj-blue); }
+.tj-settings-section:not(.tj-settings-section-danger):nth-of-type(3n) .tj-settings-section-title > i { border-color: color-mix(in srgb, var(--tj-purple) 34%, var(--tj-border)); background: color-mix(in srgb, var(--tj-purple) 10%, transparent); color: var(--tj-purple); }
+.tj-settings-section:not(.tj-settings-section-danger):nth-of-type(5n) .tj-settings-section-title > i { border-color: color-mix(in srgb, var(--tj-green) 34%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 10%, transparent); color: var(--tj-green); }
+.tj-settings-section:not(.tj-settings-section-danger):nth-of-type(7n) .tj-settings-section-title > i { border-color: color-mix(in srgb, var(--tj-amber) 38%, var(--tj-border)); background: color-mix(in srgb, var(--tj-amber) 10%, transparent); color: var(--tj-amber); }
 .tj-settings-section-head { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: none; background: none; color: var(--tj-text); padding: 15px 16px; text-align: left; cursor: pointer; font: inherit; }.tj-settings-section-head:hover { background: color-mix(in srgb, var(--tj-panel) 42%, transparent); }
 .tj-settings-section-title { min-width: 0; display: flex; align-items: center; gap: 11px; }.tj-settings-section-title > i { width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--tj-border) 78%, transparent); border-radius: 11px; color: var(--tj-muted); font-style: normal; }.tj-settings-section-title > span { min-width: 0; display: grid; gap: 3px; }.tj-settings-section-head small { color: var(--tj-muted); font-size: 0.8125rem; font-weight: 400; }.tj-settings-section-head svg { transition: transform .16s ease; color: var(--tj-muted); }.tj-settings-section-end { display: inline-flex; align-items: center; gap: 9px; flex-shrink: 0; }.tj-settings-section-end em { max-width: 140px; overflow: hidden; padding: 4px 9px; border: 1px solid var(--tj-border); border-radius: 999px; color: var(--tj-muted); font-size: 0.75rem; font-style: normal; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .tj-settings-section-body { border-top: 1px solid color-mix(in srgb, var(--tj-border) 72%, transparent); padding: 16px; }.tj-settings-section-body .tj-field:last-child { margin-bottom: 0; }.tj-settings-hint { font-size: 0.8125rem; line-height: 1.4; margin-top: 5px; }.tj-settings-off-note { margin-top: 4px; color: var(--tj-muted); font-size: 0.8125rem; line-height: 1.4; }
@@ -4882,6 +5232,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-stats-grid > *, .tj-tradelog-stats > *, .tj-markup-overview-grid > *, .tj-review-month-grid > *, .tj-review-quarter-grid > *, .tj-period-metric-grid > *, .tj-period-meter-grid > *, .tj-performance-stat-grid > *, .tj-live-analytics-grid > *, .tj-management-grid > * { min-width: 0; align-self: stretch; }
 .tj-settings-hero-metrics > div, .tj-markup-overview-grid > *, .tj-review-library-card, .tj-performance-stat-card { height: 100%; }
 .tj-theme-nav { width: 38px; min-height: 38px; justify-content: center; margin: 7px 0 0 4px; padding: 0; border: none; border-radius: 10px; background: transparent; box-shadow: none; }.tj-theme-nav svg { flex: 0 0 auto; color: var(--tj-green); }.tj-theme-nav:hover { background: transparent; color: var(--tj-green); box-shadow: none; }.tj-theme-nav:hover svg { filter: brightness(1.15); }
+.tj-sidebar-collapsed .tj-theme-nav { width:46px; min-height:42px; margin:0; padding:9px; }.tj-sidebar-collapsed .tj-sync-nav { margin-top:0; }
 .tj-sync-nav { margin-top: 3px; color: var(--tj-green); }.tj-sync-nav svg { color: var(--tj-green); }.tj-sync-nav:disabled { opacity: .62; cursor: wait; }.tj-syncing-icon { animation: tj-sync-spin .8s linear infinite; }@keyframes tj-sync-spin { to { transform: rotate(360deg); } }
 .tj-profile-row { display: flex; align-items: center; gap: 12px; padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--tj-border); }.tj-profile-preview { width: 58px; height: 58px; padding: 0; flex: 0 0 58px; overflow: hidden; border: 1px solid var(--tj-border); border-radius: 50%; background: var(--tj-panel); color: var(--tj-text); font-size: 1.5525rem; cursor: pointer; }.tj-profile-preview img { width: 100%; height: 100%; display: block; object-fit: cover; }.tj-profile-actions { display: grid; gap: 8px; }.tj-btn-small { font-size: 0.8125rem; min-height: 28px; padding: 5px 9px; }
 .tj-theme-choice { min-height: 62px; display: grid; align-content: center; gap: 3px; text-align: left; }.tj-theme-choice span { font-size: 0.9375rem; }.tj-theme-choice small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 500; }.tj-theme-choice.tj-chip-active small { color: color-mix(in srgb, var(--tj-green) 76%, var(--tj-muted)); }
@@ -4889,6 +5240,9 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-personal-profile-heading, .tj-personal-section-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }.tj-personal-profile-heading > div, .tj-personal-section-title > div { display: grid; gap: 4px; }.tj-personal-profile-heading > div > span { color: var(--tj-green); font-size: 0.75rem; font-weight: 850; letter-spacing: 1px; }.tj-personal-profile-heading strong { font-size: 1.35rem; }.tj-personal-profile-heading p, .tj-personal-section-title span { margin: 0; color: var(--tj-muted); font-size: 0.8125rem; line-height: 1.4; }.tj-personal-profile-heading > em, .tj-personal-section-title > em { max-width: 250px; overflow: hidden; padding: 4px 9px; border: 1px solid var(--tj-border); border-radius: 999px; color: var(--tj-muted); font-size: 0.75rem; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .tj-personal-profile-photo-row { display: flex; align-items: center; gap: 14px; margin: 18px 0; padding: 15px; border: 1px dashed color-mix(in srgb, var(--tj-green) 38%, var(--tj-border)); border-radius: 12px; background: color-mix(in srgb, var(--tj-green) 6%, var(--tj-panel)); }.tj-personal-profile-avatar { position: relative; width: 78px; height: 78px; flex: 0 0 78px; padding: 0; border: 1px solid color-mix(in srgb, var(--tj-green) 50%, var(--tj-border)); border-radius: 50%; background: var(--tj-green); color: white; font: inherit; font-size: 1.5525rem; font-weight: 800; cursor: pointer; }.tj-personal-profile-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; border-radius: inherit; }.tj-personal-profile-avatar i { position: absolute; right: -2px; bottom: 0; display: grid; place-items: center; width: 25px; height: 25px; border: 2px solid var(--tj-panel-alt); border-radius: 50%; background: var(--tj-green); color: white; }.tj-personal-profile-photo-row > div { display: grid; gap: 4px; min-width: 0; }.tj-personal-profile-photo-row > div > strong { font-size: 1.08rem; }.tj-personal-profile-photo-row > div > span { overflow: hidden; color: var(--tj-muted); font-size: 0.8125rem; text-overflow: ellipsis; }.tj-personal-profile-photo-row .tj-chip-row { margin-top: 5px; }
 .tj-personal-profile-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }.tj-personal-profile-fields .tj-field { margin-bottom: 0; }.tj-personal-profile-fields input:read-only { color: var(--tj-muted); background: color-mix(in srgb, var(--tj-input-bg) 72%, var(--tj-panel)); cursor: not-allowed; }
+.tj-profile-danger { display:grid; align-content:start; gap:8px; padding:10px; border:1px solid color-mix(in srgb,var(--tj-red) 55%,var(--tj-border)); border-radius:10px; background:color-mix(in srgb,var(--tj-red) 7%,var(--tj-panel)); }.tj-profile-danger > strong { color:var(--tj-red); font-size:.78rem; letter-spacing:.55px; text-transform:uppercase; }.tj-danger-button { justify-content:center; min-height:34px; padding:7px 10px; border:1px solid color-mix(in srgb,var(--tj-red) 75%,var(--tj-border)); border-radius:7px; background:color-mix(in srgb,var(--tj-red) 12%,var(--tj-panel)); color:var(--tj-red); font:inherit; font-size:.8rem; font-weight:800; cursor:pointer; }.tj-danger-button:disabled { opacity:.55; cursor:not-allowed; }.tj-profile-danger-confirm { display:grid; gap:8px; color:var(--tj-muted); font-size:.75rem; line-height:1.35; }.tj-profile-danger-confirm b { color:var(--tj-red); }.tj-profile-danger-confirm > div { display:flex; justify-content:flex-end; gap:7px; }
+.tj-settings-danger-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }.tj-settings-danger-grid .tj-settings-danger-action { height:100%; }
+.tj-regional-fields { grid-template-columns: minmax(0,1.5fr) repeat(2,minmax(0,1fr)); }
 .tj-password-link { width: fit-content; margin-top: 7px; padding: 0; border: 0; background: transparent; color: var(--tj-green); font: inherit; font-size: 0.75rem; font-weight: 750; cursor: pointer; }.tj-password-link:hover { text-decoration: underline; }.tj-password-editor { display: grid; gap: 7px; margin-top: 8px; padding: 10px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel); }.tj-password-editor > span { font-size: 0.75rem; line-height: 1.35; }.tj-password-editor .tj-btn-small { justify-self: start; }
 .tj-personal-section-title { margin-bottom: 13px; }.tj-personal-section-title strong { font-size: 1.0125rem; }.tj-personal-appearance-card .tj-theme-choice { padding: 12px 14px; border: 1px solid var(--tj-border); border-radius: 11px; background: var(--tj-panel); color: var(--tj-text); font-family: inherit; cursor: pointer; }
 .tj-avatar { overflow: hidden; }.tj-avatar img, .tj-avatar-sm img { width: 100%; height: 100%; object-fit: cover; display: block; }.tj-avatar-sm { overflow: hidden; }
@@ -4943,6 +5297,9 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-reference-journal-grid .tj-tlog-types, .tj-reference-journal-grid .tj-tlog-mistakes { min-height: 32px; padding-top: 6px; }
 .tj-reference-trade-screens { padding-top: 10px; border-top: 1px solid var(--tj-border); }
 .tj-reference-trade-screens .tj-tlog-shots { margin-top: 7px; }
+.tj-reference-trade-screens .tj-trade-shot-slot { width: 92px; display: grid; gap: 4px; }
+.tj-reference-trade-screens .tj-trade-shot-slot .tj-image-preview { width: 92px; height: 66px; flex: 0 0 92px; border-color: color-mix(in srgb, var(--tj-green) 35%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel-alt)); }
+.tj-reference-trade-screens .tj-trade-shot-slot small { color: var(--tj-muted); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .45px; }
 .tj-tradelog-compact-toolbar { position: relative; z-index: 8; }
 .tj-reference-trade-left { display:grid; grid-template-columns:minmax(108px,1.1fr) minmax(48px,.7fr) minmax(182px,2fr) minmax(82px,1fr); column-gap:24px; }
 .tj-reference-trade-left .tj-reference-trade-meta, .tj-reference-trade-left .tj-tlog-main, .tj-reference-trade-direction, .tj-reference-trade-session { min-width:0; }
@@ -5555,7 +5912,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-finance-page { display: grid; gap: 14px; }.tj-finance-hero { display: flex; align-items: stretch; justify-content: space-between; gap: 18px; padding: 19px 20px; border: 1px solid color-mix(in srgb, var(--tj-green) 32%, var(--tj-border)); border-radius: 16px; background: linear-gradient(120deg, color-mix(in srgb, var(--tj-green) 10%, var(--tj-panel)), var(--tj-panel) 60%); }.tj-finance-hero > div { display: grid; gap: 5px; }.tj-finance-hero span, .tj-finance-card-title small, .tj-finance-summary small, .tj-finance-saving small { color: var(--tj-muted); font-size: .69rem; font-weight: 800; letter-spacing: 1px; }.tj-finance-hero h1 { margin: 0; font-size: clamp(26px, 3vw, 38px); letter-spacing: -.9px; }.tj-finance-hero p { margin: 0; color: var(--tj-muted); font-size: .83rem; }.tj-finance-hero aside { width: min(360px, 36%); padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--tj-green) 35%, var(--tj-border)); border-radius: 12px; background: color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel)); display: grid; grid-template-columns: auto 1fr; align-content: center; gap: 4px 9px; }.tj-finance-hero aside svg { grid-row: span 2; color: var(--tj-green); }.tj-finance-hero aside strong { color: var(--tj-green); font-size: .75rem; }.tj-finance-hero aside em { font-size: .78rem; line-height: 1.45; }.tj-finance-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, 28%); align-items: start; gap: 14px; }.tj-finance-ledger { padding: 14px; }.tj-finance-card-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 13px; }.tj-finance-card-title > div { display: grid; gap: 3px; }.tj-finance-card-title strong { font-size: .95rem; }.tj-finance-card-title > span { padding: 4px 7px; border: 1px solid var(--tj-border); font-size: .63rem; letter-spacing: .7px; color: var(--tj-muted); }.tj-finance-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }.tj-finance-form .tj-field { min-width: 0; }.tj-finance-record { margin-top: 10px; }.tj-finance-movement-list { max-height: 390px; overflow: auto; margin-top: 14px; border-top: 1px solid var(--tj-border); }.tj-finance-movement { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--tj-border); }.tj-finance-movement > i { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; font-style: normal; }.tj-finance-movement-in { color: var(--tj-green); background: color-mix(in srgb, var(--tj-green) 13%, transparent); }.tj-finance-movement-out { color: var(--tj-red); background: color-mix(in srgb, var(--tj-red) 12%, transparent); }.tj-finance-movement > div { min-width: 0; display: grid; gap: 2px; }.tj-finance-movement strong { font-size: .8rem; }.tj-finance-movement span { overflow: hidden; color: var(--tj-muted); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }.tj-finance-movement > b { font-size: .85rem; font-variant-numeric: tabular-nums; white-space: nowrap; }.tj-finance-delete { width: 29px; height: 29px; padding: 0; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--tj-red) 50%, var(--tj-border)); border-radius: 50%; color: var(--tj-red); background: transparent; }.tj-finance-summary { display: grid; gap: 10px; }.tj-finance-summary .tj-card { min-height: 93px; padding: 14px; display: grid; align-content: center; gap: 5px; }.tj-finance-summary strong { overflow: hidden; font-size: clamp(1.05rem, 2vw, 1.4rem); font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }.tj-finance-summary span, .tj-finance-saving span { color: var(--tj-muted); font-size: .72rem; }.tj-finance-total-card { border-color: color-mix(in srgb, var(--tj-green) 42%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel)); }.tj-finance-savings { padding: 14px; border: 1px solid var(--tj-border); border-radius: 15px; background: var(--tj-panel); }.tj-finance-saving { display: grid; grid-template-columns: minmax(150px, .9fr) minmax(140px, .7fr) minmax(230px, 1.3fr); align-items: center; gap: 18px; padding: 13px 0; border-top: 1px solid var(--tj-border); }.tj-finance-saving > div { display: grid; gap: 3px; min-width: 0; }.tj-finance-saving strong { font-size: .92rem; }.tj-finance-saving-progress > i { display: block; height: 7px; overflow: hidden; border-radius: 99px; background: var(--tj-panel-alt); }.tj-finance-saving-progress > i b { display: block; height: 100%; border-radius: inherit; background: var(--tj-green); }.tj-finance-empty { padding: 22px 8px; color: var(--tj-muted); font-size: .82rem; text-align: center; }.tj-finance-settings-list { display: grid; gap: 10px; margin: 12px 0; }.tj-finance-settings-account { padding: 12px; border: 1px solid var(--tj-border); border-radius: 12px; background: var(--tj-panel-alt); }.tj-finance-settings-account-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; }.tj-finance-settings-account-head strong { font-size: .82rem; }
 .tj-finance-card-capital { border-color: color-mix(in srgb, var(--tj-green) 42%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel)); }.tj-finance-card-capital strong { color: var(--tj-green); }.tj-finance-card-savings { border-color: color-mix(in srgb, var(--tj-purple) 45%, var(--tj-border)); background: color-mix(in srgb, var(--tj-purple) 7%, var(--tj-panel)); }.tj-finance-card-savings strong { color: var(--tj-purple); }.tj-finance-card-deposit { border-color: color-mix(in srgb, var(--tj-green) 32%, var(--tj-border)); }.tj-finance-card-deposit strong { color: var(--tj-green); }.tj-finance-card-withdrawal { border-color: color-mix(in srgb, var(--tj-red) 45%, var(--tj-border)); background: color-mix(in srgb, var(--tj-red) 5%, var(--tj-panel)); }.tj-finance-card-withdrawal strong { color: var(--tj-red); }.tj-finance-movement:has(.tj-finance-movement-out) > b { color: var(--tj-red); }.tj-finance-movement:has(.tj-finance-movement-in) > b { color: var(--tj-green); }.tj-finance-movement:has(.tj-finance-movement-out) > i { color: var(--tj-red); }.tj-finance-movement-list { max-height: 365px; }.tj-finance-saving { grid-template-columns: minmax(145px, .8fr) minmax(140px, .65fr) minmax(190px, 1.1fr) minmax(155px, .75fr); }.tj-finance-saving-transfer { justify-self: end; text-align: right; }.tj-finance-saving-transfer strong { font-size: 1rem; }.tj-finance-saving-transfer strong small { font-size: .58rem; }.tj-finance-saving-transfer span { font-size: .67rem; }.tj-finance-saving-transfer button { margin-top: 4px; white-space: nowrap; }
 .tj-finance-form { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-.tj-tradelog-actions { position: fixed; right: 22px; bottom: 22px; z-index: 8; display: flex; align-items: center; gap: 8px; }.tj-tradelog-actions .tj-fab { position: static; }.tj-import-modal { width: min(620px, calc(100vw - 40px)); height: auto; max-height: calc(100dvh - 40px); border-radius: 14px; }.tj-import-preview { display: grid; gap: 7px; max-height: 245px; overflow: auto; margin-top: 14px; padding: 12px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel-alt); font-size: .8rem; }.tj-import-preview > div { display: flex; justify-content: space-between; gap: 12px; padding-top: 7px; border-top: 1px solid var(--tj-border); }.tj-import-preview span { overflow: hidden; color: var(--tj-muted); text-overflow: ellipsis; white-space: nowrap; }.tj-import-preview small { color: var(--tj-muted); }.tj-import-error { margin-top: 12px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--tj-red) 55%, var(--tj-border)); border-radius: 9px; color: var(--tj-red); background: color-mix(in srgb, var(--tj-red) 8%, var(--tj-panel)); font-size: .8rem; line-height: 1.4; }
+.tj-tradelog-actions { position: fixed; right: 22px; bottom: 22px; z-index: 8; display: flex; align-items: center; gap: 8px; }.tj-tradelog-actions .tj-fab { position: static; }.tj-import-modal { width: min(620px, calc(100vw - 40px)); height: auto; max-height: calc(100dvh - 40px); border-radius: 14px; }.tj-import-account { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--tj-green) 36%, var(--tj-border)); border-radius: 10px; background: color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel)); color: var(--tj-green); }.tj-import-account > div { display: grid; gap: 2px; }.tj-import-account small { color: var(--tj-muted); font-size: .65rem; font-weight: 800; letter-spacing: .8px; }.tj-import-account strong { color: var(--tj-text); font-size: .875rem; }.tj-import-preview { display: grid; gap: 7px; max-height: 245px; overflow: auto; margin-top: 14px; padding: 12px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel-alt); font-size: .8rem; }.tj-import-preview > div { display: flex; justify-content: space-between; gap: 12px; padding-top: 7px; border-top: 1px solid var(--tj-border); }.tj-import-preview span { overflow: hidden; color: var(--tj-muted); text-overflow: ellipsis; white-space: nowrap; }.tj-import-preview small { color: var(--tj-muted); }.tj-import-live { display: flex; align-items: center; gap: 9px; margin-top: 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--tj-green) 40%, var(--tj-border)); border-radius: 10px; background: color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel)); }.tj-import-live > div { display: grid; gap: 2px; }.tj-import-live strong { font-size: .8125rem; }.tj-import-live span { color: var(--tj-muted); font-size: .75rem; }.tj-import-error { margin-top: 12px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--tj-red) 55%, var(--tj-border)); border-radius: 9px; color: var(--tj-red); background: color-mix(in srgb, var(--tj-red) 8%, var(--tj-panel)); font-size: .8rem; line-height: 1.4; }
 .tj-import-button { display: inline-flex; align-items: center; gap: 7px; margin-top: 9px; }.tj-import-progress { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--tj-panel) var(--progress), color-mix(in srgb, var(--tj-panel) 34%, transparent) 0); color: var(--tj-panel); font-size: .52rem; font-style: normal; font-weight: 900; line-height: 1; }
 .tj-list-pagination { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 9px; padding-top: 4px; color: var(--tj-muted); font-size: .8125rem; }.tj-list-pagination > span, .tj-pagination-arrows > span { font-variant-numeric: tabular-nums; }.tj-pagination-arrows { display: inline-flex; align-items: center; gap: 7px; }.tj-pagination-arrows > span { min-width: 42px; text-align: center; }
 @media (max-width: 900px) { .tj-finance-layout { grid-template-columns: 1fr; }.tj-finance-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tj-finance-hero aside { width: 43%; }.tj-finance-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tj-finance-saving { grid-template-columns: 1fr 1fr; }.tj-finance-saving-transfer { justify-self: start; text-align: left; } }

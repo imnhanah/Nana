@@ -12,7 +12,11 @@ export function resetAutomation(state, trades, mode, level = state.activeLevel, 
   if (level <= 30) statuses[level] = 'In progress';
   return {activeLevel:level, statuses, notes:{...state.notes}, automation:{
     mode:validMode(mode), startedAt:now.toISOString(), version:2,
-    excludedIds:trades.map(t=>t.id)
+    excludedIds:trades.map(t=>t.id),
+    // Trades imported after this checkpoint are added explicitly by the
+    // importer. This avoids a broker/server timestamp putting a new import
+    // outside the active challenge window.
+    includedIds:[]
   }};
 }
 export function replayChallenge(baseline, account) {
@@ -20,11 +24,12 @@ export function replayChallenge(baseline, account) {
   const config=baseline.automation;
   if (!isChallengeEnabled(account) || !validMode(config?.mode) || !config.startedAt) return state;
   const excluded=new Set(config.excludedIds || []);
+  const included=new Set(config.includedIds || []);
   const plan=buildChallengePlan(account.challengeStartingBalance, config.mode);
   const loggedAt=t=>Date.parse(t.createdAt || `${t.date}T${t.time || '00:00'}`);
   const rows=(account.trades || []).filter(t=>{
     if (excluded.has(t.id) || (t.accountId && t.accountId !== account.id)) return false;
-    return loggedAt(t) >= Date.parse(config.startedAt) && t.grossPnl != null && Number.isFinite(Number(t.grossPnl));
+    return (included.has(t.id) || loggedAt(t) >= Date.parse(config.startedAt)) && t.grossPnl != null && Number.isFinite(Number(t.grossPnl));
   }).sort((a,b)=>loggedAt(a)-loggedAt(b) || String(a.id).localeCompare(String(b.id)));
   let cents=0;
   for (const trade of rows) {

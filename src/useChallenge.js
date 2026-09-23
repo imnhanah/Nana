@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {supabase} from './supabaseClient';
 import {emptyChallenge, isChallengeEnabled, changeChallengeStatus} from './challengeModel';
-import {resetAutomation, replayChallenge} from './challengeAutomation';
+import {resetAutomation, replayChallenge, validMode} from './challengeAutomation';
 import {queueChallengeWrite, waitForChallengeWrites} from './challengeAutosave';
 
 export default function useChallenge(account, userId) {
@@ -57,6 +57,13 @@ export default function useChallenge(account, userId) {
     setMode:mode=>reset(mode,state.activeLevel),
     configure:(mode,level)=>reset(mode,level),
     setLevel:level=>reset(baseline.automation?.mode,level),
+    includeImportedTrades:tradeIds=>{
+      const ids=[...new Set((tradeIds || []).filter(Boolean))];
+      if(!ids.length || !validMode(baseline.automation?.mode)) return true;
+      const included=new Set(baseline.automation.includedIds || []);
+      ids.forEach(id=>included.add(id));
+      return persist({...baseline,automation:{...baseline.automation,includedIds:[...included]}});
+    },
     setStatus:(level,status)=>{
       const next=changeChallengeStatus(state,level,status);
       return persist(resetAutomation(next,account.trades || [],baseline.automation?.mode,next.activeLevel));
