@@ -72,8 +72,12 @@ export function useSiteTheme(fallback = 'dark') {
     // Do not force a resolved color scheme while using System. Leaving both
     // schemes available lets Chromium/Safari continue to follow macOS changes.
     document.documentElement.style.colorScheme = preference === 'system' ? 'light dark' : theme;
+    // The document itself is visible in iPhone Safari's covered safe areas.
+    // Mirroring the journal's existing theme class here lets its --tj-bg token
+    // paint those areas without altering the app shell or its components.
+    document.documentElement.classList.toggle('tj-theme-light', theme === 'light');
     const themeColor = document.querySelector('meta[name="theme-color"]');
-    if (themeColor) themeColor.content = theme === 'light' ? '#f3f8f7' : '#0b1016';
+    if (themeColor) themeColor.content = theme === 'light' ? '#EEF3F7' : '#0B1016';
     try { localStorage.setItem(key, preference); } catch {}
   }, [theme, preference]);
   const changeTheme = useCallback(value => {
