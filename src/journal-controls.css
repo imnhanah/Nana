@@ -16,3 +16,4 @@
 .tj-root .tj-time-columns-12 .tj-picker-options{gap:3px}
 .tj-root .tj-time-columns-12 .tj-picker-options button{min-height:32px;padding:5px;font-size:12px}
 .tj-root .tj-time-columns-12+.tj-picker-clear{margin-top:8px;font-size:12px;min-height:32px;padding:5px}
+.tj-root .tj-floating-picker{will-change:transform,opacity}

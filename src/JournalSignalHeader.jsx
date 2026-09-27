@@ -9,7 +9,7 @@ export default function JournalSignalHeader({loginQuote, ...data}) {
   const pageOffset = String(data.page || '').split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
   const pageQuote = TRADING_QUOTES[(baseIndex + pageOffset) % TRADING_QUOTES.length] || loginQuote;
   return <section className="tj-dashboard-welcome" aria-label={`${names[data.page]} journal insight`}>
-    <div className="tj-dashboard-welcome-copy">{data.page === 'dashboard' && <a className="tj-dashboard-landing-link" href="/landing">AAICOREFX / DASHBOARD</a>}<h1>{message.title}<br/><span className="tj-signal-secondary">{message.subtitle}</span></h1><p>{message.detail}</p></div>
+    <div className="tj-dashboard-welcome-copy"><h1>{message.title}<br/><span className="tj-signal-secondary">{message.subtitle}</span></h1><p>{message.detail}</p></div>
     <aside className="tj-dashboard-quote"><span className="tj-dashboard-quote-icon" aria-hidden="true"><Lightbulb size={21}/></span><div><strong>Trading Quote</strong><blockquote>“{pageQuote}”</blockquote></div></aside>
   </section>;
 }

@@ -4,12 +4,24 @@ const key = 'tj:site-theme';
 const eventName = 'tj:theme-change';
 const accentKey = 'tj:profile-accent';
 export const ACCENT_OPTIONS = [
-  { id: 'mint', label: 'Mint', dark: '#6EE7B7', light: '#059669' }, { id: 'blue', label: 'Blue', dark: '#60A5FA', light: '#2563EB' },
-  { id: 'violet', label: 'Violet', dark: '#A78BFA', light: '#7C3AED' }, { id: 'teal', label: 'Teal', dark: '#2DD4BF', light: '#0F766E' },
-  { id: 'amber', label: 'Amber', dark: '#FBBF24', light: '#D97706' }, { id: 'rose', label: 'Rose', dark: '#FB7185', light: '#E11D48' },
+  { id: 'ocean-blue', label: 'Ocean Blue', dark: '#38BDF8', light: '#0284C7' },
+  { id: 'neon', label: 'Neon', dark: '#2DD4BF', light: '#0F766E' },
+  { id: 'sunset', label: 'Sunset', dark: '#FB923C', light: '#EA580C' },
+  { id: 'purple', label: 'Purple', dark: '#A78BFA', light: '#7C3AED' },
+  { id: 'deep-yellow', label: 'Deep Yellow', dark: '#FACC15', light: '#CA8A04' },
+  { id: 'rose-gold', label: 'Rose Gold', dark: '#FB7185', light: '#E11D48' },
+  { id: 'mint-frost', label: 'Mint Frost', dark: '#6EE7B7', light: '#059669' },
+  { id: 'ice', label: 'Ice', dark: '#22D3EE', light: '#0891B2' },
+  { id: 'crimson', label: 'Crimson', dark: '#FB4A54', light: '#DC2626' },
+  { id: 'mono', label: 'Mono', dark: '#E5E7EB', light: '#374151' },
+  { id: 'sage', label: 'Sage', dark: '#A3E635', light: '#4D7C0F' },
 ];
 export const normaliseThemePreference = (value) => ['dark', 'light', 'system'].includes(value) ? value : 'dark';
-export const normaliseAccent = (value) => value === 'default' || ACCENT_OPTIONS.some((accent) => accent.id === value) ? value : 'mint';
+const legacyAccents = { mint: 'mint-frost', blue: 'ocean-blue', violet: 'purple', teal: 'neon', amber: 'deep-yellow', rose: 'rose-gold' };
+export const normaliseAccent = (value) => {
+  const next = legacyAccents[value] || value;
+  return next === 'default' || ACCENT_OPTIONS.some((accent) => accent.id === next) ? next : 'default';
+};
 function readTheme(fallback) { try { const value = localStorage.getItem(key); if (['light', 'dark', 'system'].includes(value)) return value; } catch {} return normaliseThemePreference(fallback); }
 const systemTheme = () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 export function applyAccent(accentId, theme) {
@@ -73,7 +85,7 @@ export function useSiteTheme(fallback = 'dark') {
   return [theme, changeTheme, preference];
 }
 
-export function useProfileAccent(fallback = 'mint', theme = 'dark') {
+export function useProfileAccent(fallback = 'default', theme = 'dark') {
   const [accent, setAccent] = useState(() => { try { return normaliseAccent(localStorage.getItem(accentKey) || fallback); } catch { return normaliseAccent(fallback); } });
   useEffect(() => { applyAccent(accent, theme); try { localStorage.setItem(accentKey, accent); } catch {} }, [accent, theme]);
   return [accent, useCallback((value) => setAccent(normaliseAccent(value)), [])];

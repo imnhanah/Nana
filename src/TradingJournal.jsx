@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { flushSync } from "react-dom";
 import {
-  ResponsiveContainer, AreaChart, Area, BarChart, Bar, Cell,
+  ResponsiveContainer as RechartsResponsiveContainer, AreaChart, Area, BarChart, Bar, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, RadarChart, PolarGrid,
   PolarAngleAxis, Radar,
 } from "recharts";
@@ -10,7 +11,7 @@ import {
   ChevronLeft, ChevronRight, Trash2, Pencil, PanelLeftClose, PanelLeftOpen, Search, ChevronDown,
   ChevronUp, Trophy, Key, DollarSign, ShieldCheck, Satellite, Snowflake,
   ImagePlus, ClipboardCheck, ScanLine, CheckCircle2, SlidersHorizontal, ArrowDownUp, FileUp,
-  AlertTriangle, Sun, Moon, Landmark, ArrowDownToLine, ArrowUpFromLine, Repeat2, RefreshCw, WalletCards, UserRound,
+  AlertTriangle, Sun, Moon, Landmark, ArrowDownToLine, ArrowUpFromLine, Repeat2, RefreshCw, RotateCcw, WalletCards, UserRound,
 } from "lucide-react";
 import PublicSite from "./PublicSite";
 import { ACCENT_OPTIONS, useProfileAccent, useSiteTheme } from './siteTheme';
@@ -36,6 +37,14 @@ import {
   createTrade, updateTrade, deleteTrade, createRule, updateRule, deleteRule, setCheckin,
   saveManagedLists, createMarkup, updateMarkup, deleteMarkup, saveTradeReview, savePeriodReview, hasMigratedLocalData, markLocalDataMigrated, importLegacyAccount, saveFinanceSettings, createSavingsAccount, updateSavingsAccount, deleteSavingsAccount, createFinanceMovement, updateFinanceMovement, deleteFinanceMovement, fetchJournalSyncSignature,
 } from "./db";
+
+// Recharts observes every intermediate pixel during a layout resize. Batching
+// that observer work keeps chart-heavy pages (especially Dashboard) responsive
+// while the navigation rail is moving. A caller can still opt out with
+// debounce={0} when an immediate resize is genuinely needed.
+function ResponsiveContainer({ debounce = 180, ...props }) {
+  return <RechartsResponsiveContainer {...props} debounce={debounce} />;
+}
 
 /* ----------------------------- constants ----------------------------- */
 
@@ -81,7 +90,7 @@ const NAV = [
   { id: "challenge", label: "Challenge", icon: Trophy },
   { id: "finance", label: "Finance", icon: Landmark },
   { id: "psychology", label: "Psychology", icon: Brain },
-  { id: "insights", label: "Insights & AI Coach", icon: Lightbulb },
+  { id: "insights", label: "Insight", icon: Lightbulb },
   { id: "news", label: "News", icon: Newspaper },
   { id: "management", label: "Management", icon: SlidersHorizontal },
 ];
@@ -122,6 +131,12 @@ const formatDate = (value) => {
   if (activeRegionalPreferences.dateFormat === "YYYY-MM-DD") return `${year}-${month}-${day}`;
   return `${day}/${month}/${year}`;
 };
+const formatMonthYear = (value) => {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})/);
+  if (!match) return "Date not set";
+  const [, year, month] = match;
+  return activeRegionalPreferences.dateFormat === "YYYY-MM-DD" ? `${year}-${month}` : `${month}/${year}`;
+};
 const regionalNowParts = (date = new Date()) => {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone: activeRegionalPreferences.timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(date);
   const part = (type) => parts.find((item) => item.type === type)?.value;
@@ -129,6 +144,15 @@ const regionalNowParts = (date = new Date()) => {
 };
 const todayISO = () => { const { year, month, day } = regionalNowParts(); return `${year}-${month}-${day}`; };
 const localDateISO = (date = new Date()) => { const { year, month, day } = regionalNowParts(date); return `${year}-${month}-${day}`; };
+// Trade dates are calendar values, not UTC timestamps. Keep calculations in
+// local calendar components so grouping never shifts a trade to another day.
+const calendarDateFromISO = (value) => {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : null;
+};
+const calendarDateISO = (date) => date
+  ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+  : "";
 const nowTime = () => { const { hour, minute } = regionalNowParts(); return `${hour}:${minute}`; };
 const formatTime = (time) => {
   if (!time) return "Time not set";
@@ -211,7 +235,10 @@ const wrHex = (wr) => (wr > 50 ? UI_COLORS.primary : wr >= 30 ? UI_COLORS.warnin
 /* ---------------------------- stats engine ---------------------------- */
 
 function computeStats(trades, cap = 0) {
-  const sorted = [...trades].sort((a, b) => (a.date < b.date ? -1 : 1));
+  // A save may be briefly optimistic while the database response arrives.
+  // Ignore an invalid placeholder rather than allowing one malformed row to
+  // take down the entire journal view.
+  const sorted = (Array.isArray(trades) ? trades : []).filter(Boolean).sort((a, b) => (a.date < b.date ? -1 : 1));
   const total = sorted.length;
   const wins = sorted.filter((t) => classify(t.pnl, cap) === "win");
   const losses = sorted.filter((t) => classify(t.pnl, cap) === "loss");
@@ -463,7 +490,7 @@ function Modal({ title, onClose, children, wide, onConfirm, confirmDisabled = fa
       <div className={`tj-modal ${wide ? "tj-modal-wide" : ""} ${className}`}>
         <div className="tj-modal-head">
           <div className="tj-modal-title">{title}</div>
-          <div className="tj-modal-head-actions">{onConfirm && <button className="tj-icon-btn tj-modal-confirm" title="Save" disabled={confirmDisabled} onClick={onConfirm}><CheckCircle2 size={18} /></button>}<button className="tj-icon-btn" title="Close" onClick={onClose}><X size={18} /></button></div>
+          <div className="tj-modal-head-actions">{onConfirm && <button className="tj-icon-btn tj-modal-confirm" title="Save" disabled={confirmDisabled} onClick={onConfirm}><CheckCircle2 size={18} /></button>}<button className="tj-icon-btn tj-modal-close" title="Cancel" aria-label="Cancel" onClick={onClose}><X size={18} /></button></div>
         </div>
         <ThemedFields.Provider value={true}><div className="tj-modal-body">{children}</div></ThemedFields.Provider>
       </div>
@@ -554,18 +581,51 @@ const ImageViewerContext = React.createContext(() => {});
 
 function ImageViewer({ src, alt = "Full-size image", onClose }) {
   const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const dragRef = useRef(null);
+  const stageRef = useRef(null);
+  const imageRef = useRef(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
   useEffect(() => {
     if (!src) return undefined;
     setZoom(1);
+    setPan({ x: 0, y: 0 });
     const onKeyDown = (event) => { if (event.key === "Escape") closeRef.current(); };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [src]);
 
-  const changeZoom = (amount) => setZoom((current) => Math.min(4, Math.max(0.5, Math.round((current + amount) * 100) / 100)));
+  const changeZoom = (amount) => setZoom((current) => {
+    const next = Math.min(4, Math.max(0.5, Math.round((current + amount) * 100) / 100));
+    setPan({ x: 0, y: 0 });
+    dragRef.current = null;
+    return next;
+  });
+  const startPan = (event) => {
+    if (zoom <= 1) return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    const stage = stageRef.current?.getBoundingClientRect();
+    const image = imageRef.current?.getBoundingClientRect();
+    const maxX = stage && image ? Math.max(0, (image.width - stage.width) / 2) : 0;
+    const maxY = stage && image ? Math.max(0, (image.height - stage.height) / 2) : 0;
+    dragRef.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y, maxX, maxY, moved: false };
+  };
+  const movePan = (event) => {
+    if (!dragRef.current) return;
+    const offsetX = event.clientX - dragRef.current.x;
+    const offsetY = event.clientY - dragRef.current.y;
+    if (!dragRef.current.moved && Math.hypot(offsetX, offsetY) < 8) return;
+    dragRef.current.moved = true;
+    setPan({ x: Math.max(-dragRef.current.maxX, Math.min(dragRef.current.maxX, dragRef.current.panX + offsetX)), y: Math.max(-dragRef.current.maxY, Math.min(dragRef.current.maxY, dragRef.current.panY + offsetY)) });
+  };
+  const stopPan = () => { dragRef.current = null; };
+  const zoomWithWheel = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    changeZoom(event.deltaY < 0 ? .2 : -.2);
+  };
 
   if (!src) return null;
   return <div className="tj-image-viewer" role="dialog" aria-modal="true" aria-label={alt} onMouseDown={onClose}>
@@ -575,8 +635,8 @@ function ImageViewer({ src, alt = "Full-size image", onClose }) {
       <button type="button" className="tj-image-viewer-zoom-level" onClick={() => setZoom(1)} aria-label="Reset zoom">{Math.round(zoom * 100)}%</button>
       <button type="button" onClick={() => changeZoom(0.25)} disabled={zoom >= 4} aria-label="Zoom in"><Plus size={17}/></button>
     </div>
-    <div className="tj-image-viewer-stage" onMouseDown={(event) => event.stopPropagation()}>
-      <img src={src} alt={alt} style={{ transform: `scale(${zoom})` }} />
+    <div ref={stageRef} className={`tj-image-viewer-stage ${zoom > 1 ? "tj-image-viewer-stage-pannable" : ""}`} onMouseDown={(event) => event.stopPropagation()} onWheel={zoomWithWheel} onPointerDown={startPan} onPointerMove={movePan} onPointerUp={stopPan} onPointerCancel={stopPan} onPointerLeave={stopPan}>
+      <img ref={imageRef} src={src} alt={alt} draggable="false" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} />
     </div>
   </div>;
 }
@@ -826,7 +886,7 @@ function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags,
     <div className="tj-section-label">Entry Type &amp; Markup</div>
     <div className="tj-grid2">
       <Field label="Entry Type"><select className="tj-input" value={form.entryType} onChange={(event) => set("entryType", event.target.value)}><option value="">None</option>{confluenceSessions.map((entryType) => <option key={entryType} value={entryType}>{entryType}</option>)}</select></Field>
-      <Field label="Markup"><select className="tj-input" value={form.premarketMarkupId || ""} onChange={(event) => set("premarketMarkupId", event.target.value || null)}><option value="">None</option>{recentMarkups.map((markup) => <option key={markup.id} value={markup.id}>{markup.date} · {markup.instrument || markup.market || "Untitled"} · {markup.bias || "No bias"}</option>)}</select></Field>
+      <Field label="Markup"><select className="tj-input" value={form.premarketMarkupId || ""} onChange={(event) => set("premarketMarkupId", event.target.value || null)}><option value="">None</option>{recentMarkups.map((markup) => <option key={markup.id} value={markup.id}>{formatDate(markup.date)} · {markup.instrument || markup.market || "Untitled"} · {markup.bias || "No bias"}</option>)}</select></Field>
     </div>
     <div className="tj-section-label">Confluence</div>
     <TagPicker options={typeTags} selected={form.confluence} onToggle={(value) => toggleArr("confluence", value)} color="purple" />
@@ -844,7 +904,7 @@ function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags,
       <div><div className="tj-field-label">Exit</div><ScreenshotUploader screenshots={tradeImageSessions(form.screenshots).exit} onChange={setScreenshots("exit")} /></div>
     </div>
     <Field label="Notes"><textarea className="tj-input tj-textarea" placeholder="Context..." value={form.context} onChange={(event) => set("context", event.target.value)} /></Field>
-    <div className="tj-modal-actions"><button className="tj-btn-outline" onClick={onClose}>Cancel</button><button className="tj-btn-primary" onClick={save}>Save</button></div>
+    <div className="tj-modal-actions"><button className="tj-btn-outline tj-modal-cancel" aria-label="Cancel" title="Cancel" onClick={onClose}><X size={15}/></button><button className="tj-btn-primary" onClick={save}>Save</button></div>
   </Modal>;
 }
 
@@ -932,12 +992,10 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, onReset, onI
     if (monthlyGoalSource === "amount") setMonthlyGoalPct(percentageFromMoney(monthlyGoalAmount, nextBase)); else setMonthlyGoalAmount(moneyFromPercentage(monthlyGoalPct, nextBase));
     if (yearlyGoalSource === "amount") setYearlyGoalPct(percentageFromMoney(yearlyGoalAmount, nextBase)); else setYearlyGoalAmount(moneyFromPercentage(yearlyGoalPct, nextBase));
   };
-  const saveSettings = async () => {
+  const saveSettings = () => {
     if (!name.trim() || !baseCurrency || savingSettings) return;
-    setSavingSettings(true);
-    try {
-    await onSave({ ...account, challengeEnabled: isChallengeEnabled({ challengeEnabled, challengeStartingBalance }), challengeStartingBalance: Number(challengeStartingBalance) > 0 ? Number(challengeStartingBalance) : 0, financeEnabled, platform, name: name.trim() || "Main Account", icon: baseCurrency, balance: parseFloat(balance) || 0, breakevenCap: parseFloat(beCap) || 0, defaultCommission: parseFloat(defaultCommission) || 0, monthlyGoalPct: parseFloat(monthlyGoalPct) || 0, yearlyGoalPct: parseFloat(yearlyGoalPct) || 0, monthlyGoalAmount: parseFloat(monthlyGoalAmount) || 0, yearlyGoalAmount: parseFloat(yearlyGoalAmount) || 0, monthlyGoalSource, yearlyGoalSource, dailyLossLimitPct: parseFloat(dailyLossLimitPct) || 0, monthlyLossLimitPct: parseFloat(monthlyLossLimitPct) || 0, positionSizeEnabled, baseCurrency, defaultRiskPct: parseFloat(defaultRiskPct) || 0, defaultStopLossPips: parseFloat(defaultStopLossPips) || 0 }, challengeDraft, { enabled: financeEnabled, savingsAccounts: savingsDraft });
-    } finally { setSavingSettings(false); }
+    void onSave({ ...account, challengeEnabled: isChallengeEnabled({ challengeEnabled, challengeStartingBalance }), challengeStartingBalance: Number(challengeStartingBalance) > 0 ? Number(challengeStartingBalance) : 0, financeEnabled, platform, name: name.trim() || "Main Account", icon: baseCurrency, balance: parseFloat(balance) || 0, breakevenCap: parseFloat(beCap) || 0, defaultCommission: parseFloat(defaultCommission) || 0, monthlyGoalPct: parseFloat(monthlyGoalPct) || 0, yearlyGoalPct: parseFloat(yearlyGoalPct) || 0, monthlyGoalAmount: parseFloat(monthlyGoalAmount) || 0, yearlyGoalAmount: parseFloat(yearlyGoalAmount) || 0, monthlyGoalSource, yearlyGoalSource, dailyLossLimitPct: parseFloat(dailyLossLimitPct) || 0, monthlyLossLimitPct: parseFloat(monthlyLossLimitPct) || 0, positionSizeEnabled, baseCurrency, defaultRiskPct: parseFloat(defaultRiskPct) || 0, defaultStopLossPips: parseFloat(defaultStopLossPips) || 0 }, challengeDraft, { enabled: financeEnabled, savingsAccounts: savingsDraft });
+    onClose();
   };
   return (
     <Modal title={<span className="tj-symbol-title"><WalletCards size={18} />Account Settings</span>} onClose={() => { if (!savingSettings) onClose(); }} onConfirm={saveSettings} confirmDisabled={!name.trim() || !baseCurrency || savingSettings || (challengeEnabled && challenge.loading && !challenge.error)} wide>
@@ -976,7 +1034,7 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, onReset, onI
         <div className="tj-settings-danger-grid"><div className="tj-settings-danger-action"><span><strong>Reset Account Data</strong><small>Erases this account’s trade history and check-ins, but keeps the account settings.</small></span><ConfirmDeleteButton type="button" className="tj-btn-danger-outline" onClick={onReset}><RefreshCw size={14}/> Reset Data</ConfirmDeleteButton></div><div className="tj-settings-danger-action"><span><strong>Delete Account</strong><small>Permanently deletes this account and all of its trades, markups, reviews, and history.</small></span><ConfirmDeleteButton type="button" className="tj-btn-danger-outline" onClick={() => onDelete(account)}><Trash2 size={14}/> Delete Account</ConfirmDeleteButton></div></div>
       </AccountSettingsSection>
       <div className="tj-modal-actions">
-        <button className="tj-btn-outline" onClick={onClose}>Cancel</button>
+        <button className="tj-btn-outline tj-modal-cancel" aria-label="Cancel" title="Cancel" onClick={onClose}><X size={15}/></button>
         <button className="tj-btn-primary" disabled={!name.trim() || !baseCurrency || savingSettings || (challengeEnabled && challenge.loading && !challenge.error)} title={!baseCurrency ? "Choose an account base currency before saving" : ""} onClick={saveSettings}>{savingSettings ? "Saving…" : "Save Settings"}</button>
       </div>
     </Modal>
@@ -989,9 +1047,10 @@ function ProfileSettingsModal({ user, account, themeValue, themePreference, acce
   const existingPhoto = user.user_metadata?.avatar_url || user.user_metadata?.picture || "";
   const [fullName, setFullName] = useState(fallbackName);
   const [displayName, setDisplayName] = useState(fallbackDisplayName);
+  const [editingDisplayName, setEditingDisplayName] = useState(false);
   const [profileImage, setProfileImage] = useState(existingPhoto);
   const [theme, setTheme] = useState(themePreference || user.user_metadata?.theme_preference || themeValue || account.theme || "dark");
-  const [accent, setAccent] = useState(accentValue || user.user_metadata?.accent_color || "mint");
+  const [accent, setAccent] = useState(accentValue || user.user_metadata?.accent_color || "default");
   const [timezone, setTimezone] = useState(user.user_metadata?.timezone || "Africa/Accra");
   const [dateFormat, setDateFormat] = useState(user.user_metadata?.date_format || "DD/MM/YYYY");
   const [timeFormat, setTimeFormat] = useState(user.user_metadata?.time_format || "12");
@@ -1011,20 +1070,19 @@ function ProfileSettingsModal({ user, account, themeValue, themePreference, acce
   // Preview updates the parent appearance state. Preserve the initial saved
   // values separately so that previewing never makes the Save button think
   // there are no pending profile changes.
-  const original = useRef({ fullName: fallbackName, displayName: fallbackDisplayName, profileImage: existingPhoto, theme: themePreference || user.user_metadata?.theme_preference || themeValue || account.theme || "dark", accent: accentValue || user.user_metadata?.accent_color || "mint", timezone: user.user_metadata?.timezone || "Africa/Accra", dateFormat: user.user_metadata?.date_format || "DD/MM/YYYY", timeFormat: user.user_metadata?.time_format || "12", timeout: Number.isFinite(savedTimeout) ? savedTimeout : 90 }).current;
+  const original = useRef({ fullName: fallbackName, displayName: fallbackDisplayName, profileImage: existingPhoto, theme: themePreference || user.user_metadata?.theme_preference || themeValue || account.theme || "dark", accent: accentValue || user.user_metadata?.accent_color || "default", timezone: user.user_metadata?.timezone || "Africa/Accra", dateFormat: user.user_metadata?.date_format || "DD/MM/YYYY", timeFormat: user.user_metadata?.time_format || "12", timeout: Number.isFinite(savedTimeout) ? savedTimeout : 90 }).current;
   const unchanged = fullName.trim() === original.fullName && displayName.trim() === original.displayName && profileImage === original.profileImage && theme === original.theme && accent === original.accent && timezone === original.timezone && dateFormat === original.dateFormat && timeFormat === original.timeFormat && sessionTimeoutMinutes === original.timeout;
   const initials = (displayName || fullName).trim().split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "T";
   const preview = (nextTheme = theme, nextAccent = accent) => onPreviewAppearance?.(nextTheme, nextAccent);
+  const accentChoices = [{ id: "default", label: "Default", dark: "#60A5FA", light: "#2563EB" }, ...ACCENT_OPTIONS];
   const uploadProfile = async (files) => {
     const file = files?.[0];
     if (!file || !file.type.startsWith("image/")) return;
     try { setProfileImage(await resizeProfileImage(file)); } catch (error) { /* keep the current photo */ }
   };
-  const save = async () => {
-    if (!fullName.trim() || saving) return;
-    setSaving(true);
-    const saved = await onSave({ fullName: fullName.trim(), displayName: displayName.trim() || fullName.trim(), avatarUrl: profileImage, themePreference: theme, accentColor: accent, timezone, dateFormat, timeFormat, sessionTimeoutMinutes });
-    if (!saved) setSaving(false);
+  const save = () => {
+    if (!displayName.trim() || saving) return;
+    void onSave({ fullName: displayName.trim(), displayName: displayName.trim(), avatarUrl: profileImage, themePreference: theme, accentColor: accent, timezone, dateFormat, timeFormat, sessionTimeoutMinutes });
   };
   const changePassword = async () => {
     if (newPassword.length < 6) return setPasswordStatus({ type: "error", text: "Password must be at least 6 characters." });
@@ -1046,35 +1104,29 @@ function ProfileSettingsModal({ user, account, themeValue, themePreference, acce
     if (result?.error) { setDeleteError(result.error); setDeleting(false); }
   };
   return (
-    <Modal title={<span className="tj-symbol-title"><UserRound size={18} />Profile</span>} onClose={close} onConfirm={save} confirmDisabled={saving || !fullName.trim()} wide>
+    <Modal title={<span className="tj-symbol-title"><UserRound size={18} />Profile</span>} onClose={close} onConfirm={save} confirmDisabled={saving || !displayName.trim()} className="tj-profile-modal tj-profile-modal-editing" wide>
       <div className="tj-personal-profile-card">
-        <div className="tj-personal-profile-heading"><div><span>PERSONAL INFORMATION</span><strong>Profile settings</strong></div></div>
-        <div className="tj-personal-profile-photo-row">
-          <button type="button" className="tj-personal-profile-avatar" onClick={() => photoRef.current?.click()} aria-label="Change profile photo">{profileImage ? <img src={profileImage} alt="Profile" /> : <span>{initials}</span>}<i><ImagePlus size={14} /></i></button>
-          <div><strong>{displayName.trim() || fullName.trim() || "Your name"}</strong><div className="tj-chip-row"><button type="button" className="tj-btn-outline tj-btn-small" onClick={() => photoRef.current?.click()}>Change photo</button>{profileImage && <ConfirmDeleteButton type="button" className="tj-btn-outline tj-btn-small" onClick={async () => { setProfileImage(""); }}>Remove photo</ConfirmDeleteButton>}</div></div>
-          <input ref={photoRef} type="file" accept="image/*" style={{ display: "none" }} onChange={(event) => { uploadProfile(event.target.files); event.target.value = ""; }} />
-        </div>
-        <div className="tj-personal-profile-fields">
-          <Field label="Full Name"><input className="tj-input" value={fullName} onChange={(event) => setFullName(event.target.value)} placeholder="Enter your full name" /></Field>
-          <Field label="Display Name"><input className="tj-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Name shown around the journal" /></Field>
-          <Field label="Email Address"><input className="tj-input" value={user.email || ""} readOnly /><button type="button" className="tj-password-link" aria-expanded={passwordOpen} onClick={() => { setPasswordOpen((open) => !open); setPasswordStatus(null); }}>Change password</button>{passwordOpen && <div className="tj-password-editor"><input type="password" className="tj-input" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="New password" autoComplete="new-password" /><input type="password" className="tj-input" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Confirm password" autoComplete="new-password" onKeyDown={(event) => event.key === "Enter" && changePassword()} /><button type="button" className="tj-btn-primary tj-btn-small" disabled={changingPassword} onClick={changePassword}>{changingPassword ? "Changing…" : "Update password"}</button>{passwordStatus && <span className={passwordStatus.type === "error" ? "tj-red" : "tj-green"}>{passwordStatus.text}</span>}</div>}</Field>
-          <div className="tj-profile-danger"><strong>Danger Zone</strong>{!deleteOpen ? <button type="button" className="tj-danger-button" onClick={() => setDeleteOpen(true)}>Delete profile</button> : <div className="tj-profile-danger-confirm"><span>Type <b>DELETE</b> to permanently erase this profile and all journal data.</span><input className="tj-input" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="DELETE" autoComplete="off" /><div><button type="button" className="tj-btn-outline tj-btn-small" disabled={deleting} onClick={() => { setDeleteOpen(false); setDeleteConfirmation(""); setDeleteError(""); }}>Cancel</button><button type="button" className="tj-danger-button" disabled={deleteConfirmation !== "DELETE" || deleting} onClick={deleteProfile}>{deleting ? "Deleting…" : "Delete forever"}</button></div>{deleteError && <small className="tj-red">{deleteError}</small>}</div>}</div>
-        </div>
+        <div className="tj-profile-reference-head"><div className="tj-profile-avatar-tools"><button type="button" className="tj-personal-profile-avatar" onClick={() => photoRef.current?.click()} aria-label="Change profile photo">{profileImage ? <img src={profileImage} alt="Profile" /> : <span>{initials}</span>}</button><button type="button" className="tj-profile-avatar-tool" onClick={() => photoRef.current?.click()} title="Upload photo" aria-label="Upload photo"><ImagePlus size={14}/></button><input ref={photoRef} type="file" accept="image/*" style={{display:"none"}} onChange={(event) => { uploadProfile(event.target.files); event.target.value = ""; }} /></div><div className="tj-profile-reference-identity"><div>{editingDisplayName ? <input className="tj-profile-name-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && setEditingDisplayName(false)} autoFocus aria-label="Display name" /> : <strong>{displayName.trim() || "Your name"}</strong>}{!editingDisplayName && <em>Verified</em>}</div><span>{user.email || "No email address"}</span></div><div className="tj-profile-reference-stats"><div><small>MEMBER SINCE</small><strong>{user.created_at ? formatDate(user.created_at) : "—"}</strong></div><div><small>LAST SIGN IN</small><strong>{user.last_sign_in_at ? formatDate(user.last_sign_in_at) : "—"}</strong></div></div><button type="button" className="tj-profile-reference-edit" onClick={() => setEditingDisplayName((open) => !open)}><Pencil size={14}/>{editingDisplayName ? "Done" : "Edit"}</button></div>
+        <div className="tj-personal-profile-heading tj-personal-profile-summary-head"><div className="tj-profile-avatar-tools"><button type="button" className="tj-personal-profile-avatar" onClick={() => photoRef.current?.click()} aria-label="Change profile photo">{profileImage ? <img src={profileImage} alt="Profile" /> : <span>{initials}</span>}</button><button type="button" className="tj-profile-avatar-tool" onClick={() => photoRef.current?.click()} title="Upload photo" aria-label="Upload photo"><ImagePlus size={14}/></button><input ref={photoRef} type="file" accept="image/*" style={{display:"none"}} onChange={(event) => { uploadProfile(event.target.files); event.target.value = ""; }} /></div><div><span>PROFILE PREFERENCES</span><strong>{displayName.trim() || "Your name"}</strong></div></div>
       </div>
       <section className="tj-personal-appearance-card">
         <div className="tj-personal-section-title"><div><strong>Appearance</strong></div><em>{theme === "system" ? "System" : theme === "light" ? "Light" : "Dark"}</em></div>
         <div className="tj-theme-choice-row tj-theme-choice-three">{[["dark","Dark"],["light","Light"],["system","System"]].map(([value,label]) => <button key={value} type="button" aria-pressed={theme === value} className={`tj-theme-choice ${theme === value ? "tj-chip-active" : ""}`} onClick={() => { setTheme(value); preview(value); }}><span>{label}</span></button>)}</div>
-        <div className="tj-accent-head"><strong>Accent color</strong></div><div className="tj-accent-row">{ACCENT_OPTIONS.map((option) => <button key={option.id} type="button" className={`tj-accent-option ${accent === option.id ? "tj-accent-selected" : ""}`} aria-pressed={accent === option.id} title={accent === option.id ? "Click again to restore the default color" : `Use ${option.label}`} onClick={() => { const next = accent === option.id ? "default" : option.id; setAccent(next); preview(theme, next); }}><i style={{ background: themeValue === "light" ? option.light : option.dark }} /><span>{option.label}</span></button>)}</div>
+        <div className="tj-accent-head"><strong>Accent colors</strong><span>Click the selected color again to restore Default.</span></div><div className="tj-accent-row tj-accent-row-twelve">{accentChoices.map((option) => <button key={option.id} type="button" className={`tj-accent-option ${accent === option.id ? "tj-accent-selected" : ""}`} aria-pressed={accent === option.id} title={accent === option.id && option.id !== "default" ? "Restore Default color" : `Use ${option.label}`} onClick={() => { const next = accent === option.id && option.id !== "default" ? "default" : option.id; setAccent(next); preview(theme, next); }}><i style={{ background: themeValue === "light" ? option.light : option.dark }} /><span>{option.label}</span></button>)}</div>
       </section>
       <section className="tj-personal-appearance-card">
         <div className="tj-personal-section-title"><div><strong>Regional Preferences</strong></div></div>
         <div className="tj-personal-profile-fields tj-regional-fields"><Field label="Timezone"><select className="tj-input" value={timezone} onChange={(event) => setTimezone(event.target.value)}><option value="Africa/Accra">Africa/Accra (UTC+0)</option><option value="Europe/London">Europe/London</option><option value="America/New_York">America/New_York</option><option value="America/Chicago">America/Chicago</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="Asia/Dubai">Asia/Dubai</option></select></Field><Field label="Date Format"><select className="tj-input" value={dateFormat} onChange={(event) => setDateFormat(event.target.value)}><option value="DD/MM/YYYY">DD/MM/YYYY</option><option value="MM/DD/YYYY">MM/DD/YYYY</option><option value="YYYY-MM-DD">YYYY-MM-DD</option></select></Field><Field label="Time Format"><select className="tj-input" value={timeFormat} onChange={(event) => setTimeFormat(event.target.value)}><option value="12">12-hour (AM/PM)</option><option value="24">24-hour</option></select></Field></div>
       </section>
       <section className="tj-personal-appearance-card tj-personal-security-card">
-        <div className="tj-personal-section-title"><div><strong>Session &amp; Security</strong></div><em>{sessionTimeoutMinutes === 90 ? "1h 30m" : "No timeout"}</em></div>
+        <div className="tj-personal-section-title"><div><strong>Session</strong></div><em>{sessionTimeoutMinutes === 90 ? "1h 30m" : "No timeout"}</em></div>
         <div className="tj-theme-choice-row"><button type="button" aria-pressed={sessionTimeoutMinutes === 90} className={`tj-theme-choice ${sessionTimeoutMinutes === 90 ? "tj-chip-active" : ""}`} onClick={() => setSessionTimeoutMinutes(90)}><span>1h 30m</span></button><button type="button" aria-pressed={sessionTimeoutMinutes === 0} className={`tj-theme-choice ${sessionTimeoutMinutes === 0 ? "tj-chip-active" : ""}`} onClick={() => setSessionTimeoutMinutes(0)}><span>Stay signed in</span></button></div>
       </section>
-      <div className="tj-modal-actions"><button className="tj-btn-outline" onClick={close}>Cancel</button><button className="tj-btn-primary" disabled={saving || !fullName.trim() || unchanged} onClick={save}>{saving ? "Saving…" : "Save Profile"}</button></div>
+      <section className="tj-personal-appearance-card tj-profile-account-security">
+        <div className="tj-personal-section-title"><div><strong>Account &amp; Security</strong></div></div>
+        <div className="tj-profile-account-security-options"><div className="tj-profile-account-email"><button type="button" className="tj-btn-outline tj-btn-small" aria-expanded={passwordOpen} onClick={() => { setPasswordOpen((open) => !open); setDeleteOpen(false); setDeleteConfirmation(""); setDeleteError(""); setPasswordStatus(null); }}>Change password</button>{passwordOpen && <div className="tj-password-editor"><input type="password" className="tj-input" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="New password" autoComplete="new-password" /><input type="password" className="tj-input" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Confirm password" autoComplete="new-password" onKeyDown={(event) => event.key === "Enter" && changePassword()} /><div className="tj-password-actions"><button type="button" className="tj-btn-primary tj-btn-small" disabled={changingPassword} onClick={changePassword}>{changingPassword ? "Saving…" : "Save"}</button></div>{passwordStatus && <span className={passwordStatus.type === "error" ? "tj-red" : "tj-green"}>{passwordStatus.text}</span>}</div>}</div><div className="tj-profile-danger"><button type="button" className="tj-danger-button" onClick={() => { setDeleteOpen(true); setPasswordOpen(false); setNewPassword(""); setConfirmPassword(""); setPasswordStatus(null); }}>Delete profile</button>{deleteOpen && <div className="tj-profile-danger-confirm"><span>Type <b>DELETE</b> to permanently erase this profile and all journal data.</span><input className="tj-input" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="DELETE" autoComplete="off" /><div><button type="button" className="tj-btn-outline tj-btn-small tj-modal-cancel" aria-label="Cancel profile deletion" title="Cancel" disabled={deleting} onClick={() => { setDeleteOpen(false); setDeleteConfirmation(""); setDeleteError(""); }}><X size={15}/></button><button type="button" className="tj-danger-button" disabled={deleteConfirmation !== "DELETE" || deleting} onClick={deleteProfile}>{deleting ? "Deleting…" : "Delete forever"}</button></div>{deleteError && <small className="tj-red">{deleteError}</small>}</div>}</div></div>
+      </section>
+      <div className="tj-modal-actions"><button className="tj-btn-primary" disabled={saving || !displayName.trim()} onClick={save}>{saving ? "Saving…" : "Save"}</button></div>
     </Modal>
   );
 }
@@ -1120,12 +1172,12 @@ function MistakeManager({ mistakes, onSave }) {
 }
 
 function ManagementPage({ account, typeTags, mistakeTags, confluenceSessions, instruments, onTypeTags, onMistakes, onConfluence, onInstruments, onAddRule, onUpdateRule, onRemoveRule }) {
-  return <div className="tj-management-workspace"><div className="tj-page-intro"><div><div className="tj-bold tj-management-title" style={{fontSize: 19.44}}><SlidersHorizontal size={18} />Management</div><div className="tj-muted-txt" style={{fontSize: 14}}>Manage the options available on future trades and markups. Historical records remain unchanged.</div></div></div><div className="tj-management-grid">
-    <RulesPage account={account} onAddRule={onAddRule} onUpdateRule={onUpdateRule} onRemoveRule={onRemoveRule} />
+  return <div className="tj-management-workspace"><div className="tj-management-grid">
     <InstrumentManager instruments={instruments} onSave={onInstruments} />
+    <MistakeManager mistakes={mistakeTags} onSave={onMistakes} />
     <ListManager title="Confluence" items={typeTags} onSave={onTypeTags} note="Former tag records. Select one or more confluences while logging a trade." />
     <ListManager title="Entry Type" items={confluenceSessions} onSave={onConfluence} note="Former Confluence Session records. Drives Entry Type analytics and setup cards." />
-    <MistakeManager mistakes={mistakeTags} onSave={onMistakes} />
+    <RulesPage account={account} onAddRule={onAddRule} onUpdateRule={onUpdateRule} onRemoveRule={onRemoveRule} />
   </div></div>;
 }
 
@@ -1147,7 +1199,7 @@ function MarkupModal({ onClose, onSave, editing, instruments = [] }) {
     <div className="tj-markup-section"><div className="tj-section-label">Expectations</div><Field label="Core narrative / what am I expecting?"><textarea className="tj-input tj-textarea" value={f.notes} onChange={e=>set("notes",e.target.value)} placeholder="What needs to happen for the idea to be valid? Include entry conditions and invalidation."/></Field></div>
     <div className="tj-markup-section"><div className="tj-section-label">Post-Session Markup</div><div className="tj-grid2"><div><div className="tj-field-label">MTF chart</div><ScreenshotUploader max={2} captions screenshots={f.screenshots.postH4} onChange={setShots("postH4")}/></div><div><div className="tj-field-label">LTF chart</div><ScreenshotUploader max={2} captions screenshots={f.screenshots.postM15} onChange={setShots("postM15")}/></div></div></div>
     <div className="tj-markup-session-review"><button type="button" className="tj-markup-session-review-toggle" aria-expanded={sessionReviewOpen} onClick={()=>setSessionReviewOpen(open=>!open)}><span><ChevronDown size={15} style={{transform:sessionReviewOpen?"rotate(0deg)":"rotate(-90deg)"}}/> Session Review</span></button>{sessionReviewOpen&&<div className="tj-markup-session-review-body"><Field label="Did the market play out as expected? If not, how did it differ?"><textarea className="tj-input tj-textarea" value={f.sessionReview?.marketOutcome||""} onChange={e=>setReview("marketOutcome",e.target.value)}/></Field><Field label="Did I wait for my key conditions before entering?"><textarea className="tj-input tj-textarea" value={f.sessionReview?.waitedForConditions||""} onChange={e=>setReview("waitedForConditions",e.target.value)}/></Field><Field label="If I took trades outside the plan, what drove that decision?"><textarea className="tj-input tj-textarea" value={f.sessionReview?.outsidePlanReason||""} onChange={e=>setReview("outsidePlanReason",e.target.value)}/></Field></div>}</div>
-    <div className="tj-modal-actions"><button className="tj-btn-outline" onClick={onClose}>Cancel</button><button className="tj-btn-primary" onClick={save}>{editing ? "Save Changes" : "Save Markup"}</button></div>
+    <div className="tj-modal-actions"><button className="tj-btn-outline tj-modal-cancel" aria-label="Cancel" title="Cancel" onClick={onClose}><X size={15}/></button><button className="tj-btn-primary" onClick={save}>{editing ? "Save Changes" : "Save Markup"}</button></div>
   </Modal>;
 }
 function MarkupsPage({ markups, trades, onNew, onEdit, onDelete }) {
@@ -1164,6 +1216,7 @@ function useCloseOnOutside(isOpen, onClose) {
   useEffect(() => {
     if (!isOpen) return undefined;
     const closeWhenOutside = (event) => {
+      if (event.target instanceof Element && event.target.closest(".tj-image-viewer")) return;
       if (!surfaceRef.current?.contains(event.target)) onClose();
     };
     const closeWithEscape = (event) => {
@@ -1200,20 +1253,31 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
   const [instrumentFilter, setInstrumentFilter] = useState("All");
   const [monthFilter, setMonthFilter] = useState("All");
   const [weekFilter, setWeekFilter] = useState("All");
-  const [statusFilter, setStatusFilter] = useState("All");
+  const [alignmentFilter, setAlignmentFilter] = useState("All");
   const [resultFilter, setResultFilter] = useState("All");
+  const [linkFilter, setLinkFilter] = useState("All");
   const [sort, setSort] = useState("newest");
   const [open, setOpen] = useState({});
+  const [closing, setClosing] = useState({});
+  const closeTimers = useRef({});
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
   const [selectedChart, setSelectedChart] = useState("");
   const [listPage, setListPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
   const toolbarRef = useCloseOnOutside(filtersOpen || sortOpen, () => { setFiltersOpen(false); setSortOpen(false); });
+  const expandedMarkupRef = useCloseOnOutside(Object.keys(open).length > 0, () => setOpen({}));
   const slots = [["preHTF", "HTF"], ["preH4", "MTF"], ["preM15", "LTF"], ["postH4", "MTF"], ["postM15", "LTF"]];
   const preSlots = slots.slice(0, 3);
   const postSlots = slots.slice(3);
   const linkedTrades = (markup) => trades.filter((trade) => trade.premarketMarkupId === markup.id);
+  const alignmentOf = (markup) => {
+    const connected = linkedTrades(markup);
+    if (!connected.length) return "Not linked";
+    const expectedDirection = /bullish/i.test(markup.bias || "") ? "BUY" : /bearish/i.test(markup.bias || "") ? "SELL" : null;
+    if (!expectedDirection) return "No bias";
+    return connected.some((trade) => trade.direction !== expectedDirection) ? "Against markup" : "Aligned";
+  };
   const totalLinkedPnl = (markup) => linkedTrades(markup).reduce((sum, trade) => sum + trade.pnl, 0);
   const effectiveStatus = (markup) => linkedTrades(markup).length ? "Executed" : (markup.status || "Planned");
   const top = (items, key) => Object.entries(items.reduce((all, item) => ({ ...all, [item[key] || "Unspecified"]: (all[item[key] || "Unspecified"] || 0) + 1 }), {})).sort((a, b) => b[1] - a[1])[0]?.[0] || "—";
@@ -1236,10 +1300,12 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
   const shown = markups.filter((markup) => {
     const pnl = totalLinkedPnl(markup);
     const resultMatches = resultFilter === "All" || (resultFilter === "Profit" && pnl > 0) || (resultFilter === "Loss" && pnl < 0) || (resultFilter === "Break-even" && pnl === 0 && linkedTrades(markup).length > 0) || (resultFilter === "No linked trades" && !linkedTrades(markup).length);
+    const isLinked = linkedTrades(markup).length > 0;
     return (instrumentFilter === "All" || markup.instrument === instrumentFilter)
       && (monthFilter === "All" || markup.date?.slice(0, 7) === monthFilter)
       && (weekFilter === "All" || weekOfMonth(markup.date) === Number(weekFilter))
-      && (statusFilter === "All" || effectiveStatus(markup) === statusFilter)
+      && (alignmentFilter === "All" || alignmentOf(markup) === alignmentFilter)
+      && (linkFilter === "All" || (linkFilter === "Linked" ? isLinked : !isLinked))
       && resultMatches;
   }).sort((a, b) => {
     if (sort === "oldest") return `${a.date} ${a.time || ""}`.localeCompare(`${b.date} ${b.time || ""}`);
@@ -1257,34 +1323,60 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
   const markupPageCount = Math.max(1, Math.ceil(shown.length / 10));
   const activeMarkupPage = Math.min(listPage, markupPageCount);
   const visibleMarkups = showAll ? shown : shown.slice((activeMarkupPage - 1) * 10, activeMarkupPage * 10);
-  useEffect(() => { setListPage(1); }, [instrumentFilter, monthFilter, weekFilter, statusFilter, resultFilter, sort]);
+  useEffect(() => () => Object.values(closeTimers.current).forEach(window.clearTimeout), []);
+  const toggleMarkup = (id) => {
+    if (!open[id]) {
+      window.clearTimeout(closeTimers.current[id]);
+      setClosing({});
+      setOpen({ [id]: true });
+      return;
+    }
+    setClosing({ [id]: true });
+    closeTimers.current[id] = window.setTimeout(() => {
+      setOpen({});
+      setClosing({});
+    }, 180);
+  };
+  useEffect(() => { setListPage(1); }, [instrumentFilter, monthFilter, weekFilter, alignmentFilter, resultFilter, linkFilter, sort]);
+  const restoreMarkupBoard = () => {
+    setInstrumentFilter("All"); setMonthFilter("All"); setWeekFilter("All"); setAlignmentFilter("All");
+    setResultFilter("All"); setLinkFilter("All"); setSort("newest"); setListPage(1); setShowAll(false);
+    setFiltersOpen(false); setSortOpen(false); setSelectedChart("");
+  };
 
   return <div className="tj-reference-markups">
     <div className="tj-rules-head"><div><div className="tj-bold" style={{ fontSize: 19.44 }}>Markups</div><div className="tj-muted-txt" style={{ fontSize: 14 }}>Prepare context before execution, then attach the final trade to its plan.</div></div><button className="tj-btn-primary" onClick={onNew}><Plus size={15}/> New Markup</button></div>
     <div className="tj-markup-overview-grid">
-      <Card className="tj-markup-overview-card"><div className="tj-stat-label">MARKUPS IN VIEW</div><strong>{markups.length}</strong><span>{top(markups, "instrument")} is showing up most</span><div className="tj-markup-progress"><i style={{width: markups.length ? "100%" : "0%"}}/></div><small>Top session: {top(markups, "market")} · {executed} executed · {planned} planned</small></Card>
-      <Card className="tj-markup-overview-card"><div className="tj-stat-label">EXECUTION MATCH</div><strong className={executionMatch >= 70 ? "tj-green" : "tj-amber-txt"}>{executionMatch}%</strong><span>{linked.length} of {markups.length} markups were linked to execution</span><div className="tj-markup-split"><i style={{width: `${executionMatch}%`}}/><b style={{width: `${100 - executionMatch}%`}}/></div><small>{allLinkedTrades.length} linked trades · {profitableLinked} profitable · {losingLinked} losing</small></Card>
+      <Card className="tj-markup-overview-card"><div className="tj-stat-label">MARKUPS IN VIEW</div><strong>{markups.length}</strong><span>{top(markups, "instrument")} is showing up most</span><div className="tj-markup-progress"><i style={{transform: `scaleX(${markups.length ? 1 : 0})`}}/></div><small>Top session: {top(markups, "market")} · {executed} executed · {planned} planned</small></Card>
+      <Card className="tj-markup-overview-card"><div className="tj-stat-label">EXECUTION MATCH</div><strong className={executionMatch >= 70 ? "tj-green" : "tj-amber-txt"}>{executionMatch}%</strong><span>{linked.length} of {markups.length} markups were linked to execution</span><div className="tj-markup-split"><i style={{transform: `scaleX(${executionMatch / 100})`}}/><b style={{transform: `scaleX(${(100 - executionMatch) / 100})`}}/></div><small>{allLinkedTrades.length} linked trades · {profitableLinked} profitable · {losingLinked} losing</small></Card>
       <Card className="tj-markup-overview-card"><div className="tj-stat-label">LINKED P&amp;L</div><strong className={allPnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(allPnl)}</strong><span>Average {linked.length ? fmtMoney(allPnl / linked.length) : fmtMoney(0)} per linked markup</span><div className="tj-markup-bestworst"><div><small>Best linked</small><b className={best >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(best)}</b></div><div><small>Worst linked</small><b className={worst >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(worst)}</b></div></div></Card>
       <Card className="tj-markup-overview-card"><div className="tj-stat-label">CAPTURE COVERAGE</div><strong>{Math.round((planCoverage + preCoverage + postCoverage) / 3)}%</strong><span>How complete the markup journal is across plan, pre-session, and review assets.</span><div className="tj-markup-coverage"><div><small>Plan</small><i><b style={{width: `${planCoverage}%`}}/></i><em>{planCoverage}%</em></div><div><small>Pre</small><i><b style={{width: `${preCoverage}%`}}/></i><em>{preCoverage}%</em></div><div><small>Post</small><i><b style={{width: `${postCoverage}%`}}/></i><em>{postCoverage}%</em></div></div></Card>
     </div>
     <div className="tj-markup-toolbar" ref={toolbarRef}>
-      <div className="tj-markup-toolbar-actions"><button className={`tj-icon-btn tj-markup-toolbar-button ${filtersOpen ? "tj-icon-btn-active" : ""}`} title="Filter markups" onClick={() => { setFiltersOpen((value) => !value); setSortOpen(false); }}><SlidersHorizontal size={16}/></button><button className={`tj-icon-btn tj-markup-toolbar-button ${sortOpen ? "tj-icon-btn-active" : ""}`} title="Sort markups" onClick={() => { setSortOpen((value) => !value); setFiltersOpen(false); }}><ArrowDownUp size={16}/></button></div>
+      <div className="tj-markup-toolbar-actions"><button className={`tj-icon-btn tj-markup-toolbar-button ${filtersOpen ? "tj-icon-btn-active" : ""}`} title="Filter markups" onClick={() => { setFiltersOpen((value) => !value); setSortOpen(false); }}><SlidersHorizontal size={16}/></button><button className={`tj-icon-btn tj-markup-toolbar-button ${sortOpen ? "tj-icon-btn-active" : ""}`} title="Sort markups" onClick={() => { setSortOpen((value) => !value); setFiltersOpen(false); }}><ArrowDownUp size={16}/></button><button className="tj-icon-btn tj-markup-toolbar-button" title="Restore markups board" aria-label="Restore markups board" onClick={restoreMarkupBoard}><RotateCcw size={15}/></button></div>
       <div className="tj-markup-toolbar-status"><span>{shown.length} shown</span><b>{showAll ? "All visible" : `Page ${activeMarkupPage} of ${markupPageCount}`}</b></div>
       {filtersOpen && <div className="tj-markup-filter-popover">
         <div className="tj-markup-filter-head"><div><strong>Filter markups</strong><span>Keep the markup board clean while focusing on the exact setup window you want.</span></div><button className="tj-icon-btn" title="Close filters" onClick={() => setFiltersOpen(false)}><X size={14}/></button></div>
         <div className="tj-markup-filter-grid">
           <Field label="Instrument"><select className="tj-toolbar-dd" value={instrumentFilter} onChange={(event) => setInstrumentFilter(event.target.value)}>{instruments.map((item) => <option key={item} value={item}>{item === "All" ? "All Instruments" : item}</option>)}</select></Field>
-          <Field label="Month"><select className="tj-toolbar-dd" value={monthFilter} onChange={(event) => { setMonthFilter(event.target.value); setWeekFilter("All"); }}><option value="All">All Months</option>{months.slice(1).map((item) => <option key={item} value={item}>{new Date(`${item}-01T00:00:00`).toLocaleDateString(undefined, { month: "long", year: "numeric" })}</option>)}</select></Field>
+          <Field label="Month"><select className="tj-toolbar-dd" value={monthFilter} onChange={(event) => { setMonthFilter(event.target.value); setWeekFilter("All"); }}><option value="All">All Months</option>{months.slice(1).map((item) => <option key={item} value={item}>{formatMonthYear(item)}</option>)}</select></Field>
           <Field label="Week"><select className="tj-toolbar-dd" disabled={monthFilter === "All"} value={weekFilter} onChange={(event) => setWeekFilter(event.target.value)}><option value="All">{monthFilter === "All" ? "Select a month first" : "All Weeks"}</option>{[1,2,3,4,5,6].map((week) => <option key={week} value={week}>Week {week}</option>)}</select></Field>
-          <Field label="Status"><select className="tj-toolbar-dd" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="All">All Statuses</option>{["Planned", "Watching", "Executed", "Passed"].map((item) => <option key={item}>{item}</option>)}</select></Field>
+          <Field label="Alignment"><select className="tj-toolbar-dd" value={alignmentFilter} onChange={(event) => setAlignmentFilter(event.target.value)}><option value="All">All alignments</option><option value="Aligned">Aligned</option><option value="Against markup">Against markup</option><option value="Not linked">Not linked</option><option value="No bias">No bias</option></select></Field>
           <Field label="Result"><select className="tj-toolbar-dd" value={resultFilter} onChange={(event) => setResultFilter(event.target.value)}><option value="All">All Results</option>{["Profit", "Loss", "Break-even", "No linked trades"].map((item) => <option key={item}>{item}</option>)}</select></Field>
         </div>
-        <div className="tj-markup-filter-summary">{[instrumentFilter, monthFilter, weekFilter, statusFilter, resultFilter].every((value) => value === "All") ? "No filters applied." : `${shown.length} markup${shown.length === 1 ? "" : "s"} match the selected filters.`}</div>
+        <div className="tj-markup-filter-summary">{[instrumentFilter, monthFilter, weekFilter, alignmentFilter, resultFilter].every((value) => value === "All") ? "No filters applied." : `${shown.length} markup${shown.length === 1 ? "" : "s"} match the selected filters.`}</div>
       </div>}
-      {sortOpen && <div className="tj-markup-sort-controls"><span>Sort markups by</span><select className="tj-toolbar-dd" value={sort} onChange={(event) => setSort(event.target.value)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="pnl">Linked P&amp;L</option><option value="links">Most linked trades</option></select></div>}
+      {sortOpen && <div className="tj-markup-sort-controls"><span>Sort markups</span><div className="tj-markup-sort-options">{[
+        ["Newest first", () => { setSort("newest"); setLinkFilter("All"); setResultFilter("All"); }, sort === "newest" && linkFilter === "All" && resultFilter === "All"],
+        ["Oldest", () => { setSort("oldest"); setLinkFilter("All"); setResultFilter("All"); }, sort === "oldest" && linkFilter === "All" && resultFilter === "All"],
+        ["Linked", () => { setSort("newest"); setLinkFilter("Linked"); setResultFilter("All"); }, linkFilter === "Linked" && resultFilter === "All"],
+        ["Unlinked", () => { setSort("newest"); setLinkFilter("Unlinked"); setResultFilter("All"); }, linkFilter === "Unlinked"],
+        ["Profit", () => { setSort("pnl"); setLinkFilter("Linked"); setResultFilter("Profit"); }, resultFilter === "Profit"],
+        ["Loss", () => { setSort("pnl"); setLinkFilter("Linked"); setResultFilter("Loss"); }, resultFilter === "Loss"],
+      ].map(([label, apply, active]) => <button type="button" key={label} className={`tj-markup-sort-option ${active ? "tj-markup-sort-option-active" : ""}`} aria-pressed={active} onClick={apply}>{label}</button>)}</div></div>}
     </div>
-    <div className="tj-tlog-list">{shown.length ? visibleMarkups.map((markup) => {
-      const related = linkedTrades(markup), pnl = totalLinkedPnl(markup), expanded = !!open[markup.id];
+    <div className="tj-markup-card-grid">{shown.length ? visibleMarkups.map((markup) => {
+      const related = linkedTrades(markup), pnl = totalLinkedPnl(markup), expanded = !!open[markup.id], isClosing = !!closing[markup.id], visible = expanded || isClosing;
       const status = effectiveStatus(markup);
       const chartCount = slots.reduce((count, [key]) => count + (markup.screenshots?.[key]?.length || 0), 0);
       const planFields = [markup.structure, markup.levels, markup.notes];
@@ -1293,20 +1385,26 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
         const chartItems = groupSlots.flatMap(([key, label]) => (markup.screenshots?.[key] || []).map((screenshot, index) => ({ key: `${markup.id}:${key}:${index}`, label, source: screenshotSource(screenshot), caption: screenshotCaption(screenshot) })));
         return <div className="tj-markup-chart-group">{chartItems.length ? chartItems.map((chart) => <button type="button" key={chart.key} className={`tj-markup-chart-card ${selectedChart === chart.key ? "tj-markup-chart-card-selected" : ""}`} onClick={() => { setSelectedChart(chart.key); openImage(chart.source); }}><img src={chart.source} alt={chart.caption || chart.label}/><strong>{chart.caption || chart.label}</strong>{chart.caption && <small>{chart.label}</small>}</button>) : <div className="tj-markup-chart-empty">{emptyText}</div>}</div>;
       };
-      return <Card key={markup.id} className={`tj-tlog-card tj-reference-markup-card ${expanded ? "tj-reference-markup-expanded" : ""}`}>
-        <div className="tj-reference-markup-row" onClick={() => setOpen((current) => ({ ...current, [markup.id]: !current[markup.id] }))}>
-          <div className="tj-reference-markup-identity"><div><strong>{markup.instrument || "Untitled markup"}</strong><span>{markup.bias || "No bias"}</span><span className={`tj-markup-status tj-markup-status-${status.toLowerCase()}`}>{status}</span></div><small>{markup.date} · {formatTime(markup.time)} · {markup.market || "No session"} · {related.length} linked trade{related.length === 1 ? "" : "s"}</small></div>
-          <div className="tj-reference-markup-actions"><div className="tj-markup-pnl"><strong className={pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(pnl)}</strong><span>{related.length ? "linked P&L" : "No linked P&L"}</span></div><button className="tj-markup-trade-button" onClick={(event) => { event.stopPropagation(); onTrade(markup); }}><Plus size={14}/> Trade</button><button className="tj-markup-round-button" title="Edit markup" onClick={(event) => { event.stopPropagation(); onEdit(markup); }}><Pencil size={14}/></button><ConfirmDeleteButton className="tj-markup-round-button tj-markup-delete-button" title="Delete markup" onClick={(event) => { event.stopPropagation(); onDelete(markup.id); }}><Trash2 size={14}/></ConfirmDeleteButton><button className="tj-markup-round-button" title={expanded ? "Collapse markup" : "Expand markup"} onClick={(event) => { event.stopPropagation(); setOpen((current) => ({ ...current, [markup.id]: !current[markup.id] })); }}>{expanded ? <ChevronUp size={15}/> : <ChevronDown size={15}/>}</button></div>
+      return <div key={markup.id} ref={visible ? expandedMarkupRef : null} className="tj-markup-card-shell"><Card className={`tj-tlog-card tj-reference-markup-card ${visible ? "tj-reference-markup-expanded" : ""}`}>
+        <div className="tj-reference-markup-row" onClick={() => toggleMarkup(markup.id)}>
+          {expanded ? <div className="tj-reference-markup-identity"><div><strong>{markup.instrument || "Untitled markup"}</strong><span>{markup.bias || "No bias"}</span><span className={`tj-markup-status tj-markup-status-${status.toLowerCase()}`}>{status}</span></div><small>{formatDate(markup.date)} · {formatTime(markup.time)} · {markup.market || "No session"} · {related.length} linked trade{related.length === 1 ? "" : "s"}</small></div> : <div className="tj-reference-markup-identity tj-markup-card-identity">
+            <small className="tj-markup-card-date">{formatDate(markup.date)} · {formatTime(markup.time)}</small>
+            <strong className="tj-markup-card-instrument">{markup.instrument || "Untitled markup"}</strong>
+            <div className="tj-markup-card-status"><span>{markup.bias || "No bias"}</span><span className={`tj-markup-status tj-markup-status-${status.toLowerCase()}`}>{status}</span></div>
+            <div className="tj-markup-card-metrics"><div><span>SESSION</span><strong>{markup.market || "—"}</strong></div><div><span>PLAN</span><strong>{planFilled}%</strong></div><div><span>CHARTS</span><strong>{chartCount}</strong></div><div><span>LINKED TRADES</span><strong>{related.length}</strong></div></div>
+            <p className="tj-markup-card-structure">{markup.structure || "No structure note added yet."}</p>
+          </div>}
+          <div className="tj-reference-markup-actions"><div className="tj-markup-pnl"><strong className={pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(pnl)}</strong><span>{related.length ? "linked P&L" : "No linked P&L"}</span></div>{expanded && <><button className="tj-markup-trade-button" onClick={(event) => { event.stopPropagation(); onTrade(markup); }}><Plus size={14}/> Trade</button><button className="tj-markup-round-button" title="Edit markup" onClick={(event) => { event.stopPropagation(); onEdit(markup); }}><Pencil size={14}/></button><ConfirmDeleteButton className="tj-markup-round-button tj-markup-delete-button" title="Delete markup" onClick={(event) => { event.stopPropagation(); onDelete(markup.id); }}><Trash2 size={14}/></ConfirmDeleteButton></>}<button className="tj-markup-round-button" title={expanded ? "Collapse markup" : "Expand markup"} onClick={(event) => { event.stopPropagation(); toggleMarkup(markup.id); }}>{expanded ? <ChevronUp size={15}/> : <ChevronDown size={15}/>}</button></div>
         </div>
-        {expanded && <div className="tj-reference-markup-detail">
+        <div className={`tj-reference-markup-detail ${visible ? "tj-reference-markup-detail-open" : ""} ${isClosing ? "tj-reference-detail-closing" : ""}`} aria-hidden={!visible}><div className="tj-reference-markup-detail-inner">
           <div className="tj-markup-detail-top"><div><div className="tj-mlabel">SESSION</div><strong>{markup.market || "—"}</strong></div><div><div className="tj-mlabel">PLAN FILLED</div><strong>{planFilled}%</strong></div><div><div className="tj-mlabel">LINKED TRADES</div><strong>{related.length}</strong></div><div><div className="tj-mlabel">CHARTS SAVED</div><strong>{chartCount}</strong></div></div>
           <div className="tj-markup-expanded-grid">
             <section className="tj-markup-plan-card"><div className="tj-markup-detail-heading"><span>Pre-session Plan</span><div><em>{markup.market || "—"}</em><em>{markup.bias || "—"}</em><em className={`tj-markup-status tj-markup-status-${status.toLowerCase()}`}>{status}</em><em className={pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(pnl)}</em></div></div>{planFields.some(Boolean) ? <div className="tj-markup-plan-rows"><div><span>STRUCTURE</span><strong>{markup.structure || "—"}</strong></div><div><span>LEVELS / ZONES</span><strong>{markup.levels || "—"}</strong></div><div><span>EXPECTATIONS</span><strong>{markup.notes || "—"}</strong></div></div> : <div className="tj-markup-panel-empty">No extra notes added yet.</div>}</section>
-            <section className="tj-markup-linked-card"><div className="tj-markup-detail-heading"><span>Linked Trades</span><small>{related.length} linked</small></div>{related.length ? <div className={`tj-linked-markup-trades ${related.length > 4 ? "tj-linked-markup-trades-scroll" : ""}`}>{related.map((trade) => <div className="tj-linked-markup-trade" key={trade.id}><div><strong>{trade.asset} · {trade.direction}</strong><span>{trade.date} · {formatTime(trade.time)} · R:R {trade.rr ? `${Number(trade.rr).toFixed(2)}R` : "—"}</span></div><div><strong className={trade.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(trade.pnl)}</strong></div></div>)}</div> : <div className="tj-markup-panel-empty">No trade linked</div>}</section>
+            <section className="tj-markup-linked-card"><div className="tj-markup-detail-heading"><span>Linked Trades</span><small>{related.length} linked</small></div>{related.length ? <div className={`tj-linked-markup-trades ${related.length > 3 ? "tj-linked-markup-trades-scroll" : ""}`}>{related.map((trade) => <div className="tj-linked-markup-trade" key={trade.id}><div><strong>{trade.asset} · {trade.direction}</strong><span>{formatDate(trade.date)} · {formatTime(trade.time)} · R:R {trade.rr ? `${Number(trade.rr).toFixed(2)}R` : "—"}</span></div><div><strong className={trade.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(trade.pnl)}</strong></div></div>)}</div> : <div className="tj-markup-panel-empty">No trade linked</div>}</section>
           </div>
           <section className="tj-markup-charts-card"><div className="tj-markup-charts-head"><span>Pre-session Charts <small>{preSlots.reduce((count, [key]) => count + (markup.screenshots?.[key]?.length || 0), 0)} chart{preSlots.reduce((count, [key]) => count + (markup.screenshots?.[key]?.length || 0), 0) === 1 ? "" : "s"}</small></span><span>Post-session Charts <small>{postSlots.reduce((count, [key]) => count + (markup.screenshots?.[key]?.length || 0), 0)} chart{postSlots.reduce((count, [key]) => count + (markup.screenshots?.[key]?.length || 0), 0) === 1 ? "" : "s"}</small></span></div><div className="tj-markup-chart-columns"><div>{renderChartGroup(preSlots, "No pre-session charts yet.")}</div><div>{renderChartGroup(postSlots, "No post-session charts yet.")}</div></div></section>
-        </div>}
-      </Card>;
+        </div></div>
+      </Card></div>;
     }) : <div className="tj-empty-block"><ScanLine size={32} color="var(--tj-muted)"/><div className="tj-empty-title">No markups match these filters</div><button className="tj-btn-primary" onClick={onNew}>Create a markup</button></div>}</div>
     <ListPagination total={shown.length} page={activeMarkupPage} showAll={showAll} onPageChange={setListPage} onShowAll={(next) => { setShowAll(next); if (!next) setListPage(1); }} label="markups"/>
   </div>;
@@ -1384,9 +1482,8 @@ function TradeReviewEditorModal({ trade, trades = [], existing, reviews = [], ma
   const costReturn = accountBase ? -costs / accountBase * 100 : 0;
   const checkedRules = (activeTrade.ruleEvaluations || []).filter((item) => item.checked).length;
   const totalRules = account?.rules?.filter((rule) => rule.active).length || 0;
-  const tradeDate = new Date(`${activeTrade.date}T00:00:00`);
-  const compactDate = tradeDate.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  const dayDate = tradeDate.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const compactDate = formatDate(activeTrade.date);
+  const dayDate = formatDate(activeTrade.date);
   const set = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const selectTrade = (id) => {
     const selected = allTrades.find((item) => item.id === id) || trade;
@@ -1394,18 +1491,18 @@ function TradeReviewEditorModal({ trade, trades = [], existing, reviews = [], ma
     setSelectedTradeId(id);
     setForm(createForm(selected, saved));
   };
-  const save = async () => { const didSave = await onSave({ ...form, tradeId: activeTrade.id }); if (didSave !== false) onClose(); };
+  const save = () => { void onSave({ ...form, tradeId: activeTrade.id }); onClose(); };
   const pct = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
   return <Modal title="Write Trade Review" onClose={onClose} onConfirm={save} className="tj-review-editor-modal" wide>
     <div className="tj-review-editor-intro"><span>Keep it light: capture the lesson, save it, move on.</span><b className={`tj-pill ${resultClass === "win" ? "tj-pill-green" : resultClass === "loss" ? "tj-pill-red" : "tj-pill-blue"}`}>{resultLabel}</b></div>
     <div className="tj-review-trade-banner"><div><strong>{activeTrade.asset || "Trade"}</strong><span><b className={activeTrade.direction === "BUY" ? "tj-green" : "tj-red"}>{activeTrade.direction}</b><em>{activeTrade.entrySession || activeTrade.session || "—"}</em><em>{compactDate}</em><em>{Number(activeTrade.rr || 0).toFixed(2)}R</em></span></div><strong className={activeTrade.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(activeTrade.pnl)}</strong></div>
     <div className="tj-review-reference-stack">
       <section className="tj-review-reference-card"><header><span>Trade Brief</span><div><em className={activeTrade.direction === "BUY" ? "tj-green" : "tj-red"}>{activeTrade.direction}</em><em>{activeTrade.entrySession || activeTrade.session || "—"}</em><em>{activeTrade.entryType || activeTrade.confluenceSession || "No model"}</em><em className={netReturn >= 0 ? "tj-green" : "tj-red"}>{pct(netReturn)}</em></div></header><div className="tj-review-brief-rows"><div><span>RESULT</span><strong>{resultLabel} · {fmtMoney(activeTrade.pnl)} · {Number(activeTrade.rr || 0).toFixed(2)}R</strong></div><div><span>ENTRY MODEL</span><strong>{activeTrade.entryType || activeTrade.confluenceSession || "Not logged"}</strong></div><div><span>ENTRY PRICE</span><strong>{activeTrade.entryPrice === "" || activeTrade.entryPrice == null ? "—" : Number(activeTrade.entryPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</strong></div><div><span>EXIT PRICE</span><strong>{activeTrade.exitPrice === "" || activeTrade.exitPrice == null ? "—" : Number(activeTrade.exitPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</strong></div><div><span>MOOD SHIFT</span><strong>{activeTrade.moodBefore || "Not logged"} → {activeTrade.moodAfter || "Not logged"}</strong></div><div><span>RATING</span><RatingDisplay value={activeTrade.rating || 0} /></div></div><p>{activeTrade.context || "No trade note added."}</p></section>
-      <section className="tj-review-reference-card"><header><span>Linked Markup</span><small>{linkedMarkup?.status || (linkedMarkup ? "Planned" : "Not linked")}</small></header>{linkedMarkup ? <><strong className="tj-review-markup-title">{linkedMarkup.date} · {linkedMarkup.instrument || linkedMarkup.market || "Untitled"}</strong><div className="tj-review-markup-meta"><span>{linkedMarkup.market || "—"}</span><span>{linkedMarkup.bias || "—"}</span><span>{linkedMarkup.status || "Planned"}</span></div><div className="tj-review-markup-shots-head"><span>MARKUP SCREENSHOTS</span><small>{markupScreenshots.length} shot{markupScreenshots.length === 1 ? "" : "s"}</small></div>{markupScreenshots.length ? <div className="tj-review-markup-shots">{markupScreenshots.map((shot) => <div key={shot.key}><ImagePreview src={shot.src} alt={`${shot.label} markup screenshot`} /><strong>{shot.label}</strong><small>{shot.label.startsWith("Pre") ? "Pre-session Charts" : "Post-session Charts"}</small></div>)}</div> : <p>No markup screenshots added.</p>}</> : <p>No markup was linked to this trade.</p>}</section>
+      <section className="tj-review-reference-card"><header><span>Linked Markup</span><small>{linkedMarkup?.status || (linkedMarkup ? "Planned" : "Not linked")}</small></header>{linkedMarkup ? <><strong className="tj-review-markup-title">{formatDate(linkedMarkup.date)} · {linkedMarkup.instrument || linkedMarkup.market || "Untitled"}</strong><div className="tj-review-markup-meta"><span>{linkedMarkup.market || "—"}</span><span>{linkedMarkup.bias || "—"}</span><span>{linkedMarkup.status || "Planned"}</span></div><div className="tj-review-markup-shots-head"><span>MARKUP SCREENSHOTS</span><small>{markupScreenshots.length} shot{markupScreenshots.length === 1 ? "" : "s"}</small></div>{markupScreenshots.length ? <div className="tj-review-markup-shots">{markupScreenshots.map((shot) => <div key={shot.key}><ImagePreview src={shot.src} alt={`${shot.label} markup screenshot`} /><strong>{shot.label}</strong><small>{shot.label.startsWith("Pre") ? "Pre-session Charts" : "Post-session Charts"}</small></div>)}</div> : <p>No markup screenshots added.</p>}</> : <p>No markup was linked to this trade.</p>}</section>
       <section className="tj-review-reference-card"><header><span>Execution Snapshot</span><small>{checkedRules}/{totalRules} rules checked</small></header><div className="tj-review-execution-grid"><div><span>NET RETURN</span><strong className={netReturn >= 0 ? "tj-green" : "tj-red"}>{pct(netReturn)}</strong><small>{fmtMoney(activeTrade.pnl)}</small></div><div><span>GROSS RETURN</span><strong className={grossReturn >= 0 ? "tj-green" : "tj-red"}>{pct(grossReturn)}</strong><small>{fmtMoney(grossPnl)}</small></div><div><span>COSTS</span><strong className="tj-red">{pct(costReturn)}</strong><small>{fmtMoney(-costs)}</small></div><div><span>R:R</span><strong>{Number(activeTrade.rr || 0).toFixed(2)}R</strong><small>{dayDate}</small></div></div></section>
       <section className="tj-review-reference-card"><header><span>Journal Detail</span><small>{(activeTrade.confluence || activeTrade.types || []).length} confluence{(activeTrade.confluence || activeTrade.types || []).length === 1 ? "" : "s"}</small></header><div className="tj-review-journal-block"><span>CONFLUENCES</span>{(activeTrade.confluence || activeTrade.types || []).length ? <div className="tj-tagwrap">{(activeTrade.confluence || activeTrade.types || []).map((item) => <em key={item} className="tj-tag tj-tag-purple tj-tag-active">{item}</em>)}</div> : <p>No confluences logged.</p>}</div><div className="tj-review-journal-block"><span>MISTAKES</span>{activeTrade.mistakes?.length ? <div className="tj-tagwrap">{activeTrade.mistakes.map((item) => <em key={item} className="tj-tag tj-tag-red tj-tag-active">{item}</em>)}</div> : <p>No mistakes logged.</p>}</div><div className="tj-review-journal-block"><span>SCREENSHOTS</span>{tradeScreenshotItems(activeTrade.screenshots).length ? <div className="tj-review-trade-shots">{tradeScreenshotItems(activeTrade.screenshots).map(({ screenshot, label, key }) => <ImagePreview key={key} src={screenshotSource(screenshot)} alt={label} />)}</div> : <p>No screenshots added.</p>}</div></section>
     </div>
-    <div className="tj-grid2"><Field label="Trade reference"><select className="tj-input" value={selectedTradeId} onChange={(event) => selectTrade(event.target.value)}>{allTrades.map((item) => <option key={item.id} value={item.id}>{item.date} · {item.asset || "Trade"} · {fmtMoney(item.pnl)}</option>)}</select></Field><Field label="Review date"><input type="date" className="tj-input" value={form.date} onChange={(event) => set("date", event.target.value)} /></Field></div>
+    <div className="tj-grid2"><Field label="Trade reference"><select className="tj-input" value={selectedTradeId} onChange={(event) => selectTrade(event.target.value)}>{allTrades.map((item) => <option key={item.id} value={item.id}>{formatDate(item.date)} · {item.asset || "Trade"} · {fmtMoney(item.pnl)}</option>)}</select></Field><Field label="Review date"><input type="date" className="tj-input" value={form.date} onChange={(event) => set("date", event.target.value)} /></Field></div>
     <div className="tj-grid2"><Field label="What went well"><textarea className="tj-input tj-textarea" value={form.doneWell} onChange={(event) => set("doneWell", event.target.value)} /></Field><Field label="What went wrong"><textarea className="tj-input tj-textarea" value={form.wentWrong} onChange={(event) => set("wentWrong", event.target.value)} /></Field></div>
     <div className="tj-grid3"><Field label="Execution"><textarea className="tj-input tj-textarea" value={form.execution} onChange={(event) => set("execution", event.target.value)} /></Field><Field label="Rule adherence"><textarea className="tj-input tj-textarea" value={form.adherence} onChange={(event) => set("adherence", event.target.value)} /></Field><Field label="Psychology"><textarea className="tj-input tj-textarea" value={form.psychology} onChange={(event) => set("psychology", event.target.value)} /></Field></div>
     <div className="tj-grid2"><Field label="Lessons learned"><textarea className="tj-input tj-textarea" value={form.lessons} onChange={(event) => set("lessons", event.target.value)} /></Field><Field label="Next adjustment"><textarea className="tj-input tj-textarea" value={form.actions} onChange={(event) => set("actions", event.target.value)} /></Field></div>
@@ -1458,7 +1555,7 @@ function PeriodReviewModal({ period, saved, reviews, onClose, onSave, onStartTra
   const requiredAtAGlanceFields = ["overview", "invalid", "missedTrades", "strategyPerformance"];
   const completedFields = requiredAtAGlanceFields.filter((key) => String(content[key] || "").trim()).length;
   const completed = completedFields === requiredAtAGlanceFields.length;
-  const save = async () => { const didSave = await onSave({ type: period.type, key: period.key, content, completed }); if (didSave !== false) onClose(); };
+  const save = () => { void onSave({ type: period.type, key: period.key, content, completed }); onClose(); };
   const periodName = period.type === "monthly" ? "Month" : period.type === "quarterly" ? "Quarter" : "Year";
   const activeDays = new Set(stat.trades.map((trade) => trade.date)).size;
   const section = (id, title) => <section className="tj-period-section" key={id}><button type="button" className="tj-period-section-head" onClick={() => setOpenSections((current) => ({ ...current, [id]: !current[id] }))}><strong>{title}</strong><ChevronDown size={17} style={{ transform: openSections[id] ? "rotate(180deg)" : "none" }} /></button>{openSections[id] && <div className="tj-period-section-body">{PERIOD_REVIEW_FIELDS[id].map(([key, label]) => <Field key={key} label={label}><textarea className="tj-input tj-textarea" placeholder="Write your review…" value={content[key] || ""} onChange={(event) => set(key, event.target.value)} /></Field>)}</div>}</section>;
@@ -1471,7 +1568,7 @@ function PeriodReviewModal({ period, saved, reviews, onClose, onSave, onStartTra
     <section className="tj-period-at-glance"><div className="tj-bold">{periodName} At A Glance</div><div className="tj-muted-txt">Complete all four fields to mark this {periodName.toLowerCase()} review as completed.</div><Field label="My performance"><input className="tj-input" placeholder="Add a short read…" value={content.overview || ""} onChange={(event) => set("overview", event.target.value)} /></Field><Field label="Invalid"><input className="tj-input" placeholder="Add a short read…" value={content.invalid || ""} onChange={(event) => set("invalid", event.target.value)} /></Field><Field label="Missed trades"><input className="tj-input" placeholder="Add a short read…" value={content.missedTrades || ""} onChange={(event) => set("missedTrades", event.target.value)} /></Field><Field label="Strategy performance"><input className="tj-input" placeholder="Add a short read…" value={content.strategyPerformance || ""} onChange={(event) => set("strategyPerformance", event.target.value)} /></Field></section>
     <section className="tj-period-trades"><div className="tj-period-trades-head"><div><div className="tj-bold">Trades Taken</div><div className="tj-muted-txt">The full {periodName.toLowerCase()} tape. Five rows stay in view; the rest scroll below.</div></div><span className="tj-count-badge">{stat.total}</span></div>{stat.trades.length ? <div className={`tj-period-trades-scroll ${stat.trades.length > 5 ? "tj-period-trades-scrollable" : ""}`}>{stat.trades.slice().sort((a, b) => `${b.date} ${b.time || ""}`.localeCompare(`${a.date} ${a.time || ""}`)).map((trade) => { const review = reviewByTrade.get(trade.id); const confluences = trade.confluence || trade.types || []; const tradeResult = classify(trade.pnl, 0); return <button type="button" className="tj-period-trade-reference-row" key={trade.id} onClick={() => onStartTradeReview(trade, review)}><div><span><strong>{trade.asset || "No instrument"}</strong><em className={trade.direction === "BUY" ? "tj-green" : "tj-red"}>{trade.direction}</em><small>{trade.entrySession || trade.session || "—"}</small><small>{trade.entryType || trade.confluenceSession || "—"}</small><b className={review ? "tj-review-status-done" : "tj-review-status-pending"}>{review ? "Reviewed" : "Review"}</b></span><span><small>{new Date(`${trade.date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</small><small>{Number(trade.rr || 0).toFixed(2)}R</small><small>{trade.mistakes?.length || 0} mistake{trade.mistakes?.length === 1 ? "" : "s"}</small>{confluences.slice(0, 3).map((item) => <em key={item}>{item}</em>)}{confluences.length > 3 && <em>+{confluences.length - 3}</em>}</span></div><strong className={tradeResult === "win" ? "tj-period-result-win" : tradeResult === "loss" ? "tj-period-result-loss" : "tj-period-result-flat"}>{tradeResult === "win" ? "WIN" : tradeResult === "loss" ? "LOSS" : "B/E"}</strong></button>; })}</div> : <div className="tj-empty">No trades were logged for this period.</div>}</section>
     <section className="tj-period-review-longform"><div className="tj-bold">Review</div><div className="tj-muted-txt">Long-form {periodName.toLowerCase()} reflection.</div><div className="tj-period-sections">{section("technical", "Technical")}{section("mistakes", "Mistakes")}{section("habits", "Habits")}{section("markups", "Markups")}{section("goals", "Goals")}{section("overall", "Overall Performance")}</div></section>
-    <div className="tj-modal-actions"><button className="tj-btn-outline" onClick={onClose}>Cancel</button><button className="tj-btn-primary" onClick={save}>Save Review</button></div>
+    <div className="tj-modal-actions"><button className="tj-btn-outline tj-modal-cancel" aria-label="Cancel" title="Cancel" onClick={onClose}><X size={15}/></button><button className="tj-btn-primary" onClick={save}>Save Review</button></div>
   </Modal>;
 }
 
@@ -1591,7 +1688,7 @@ function AddAccountModal({ onClose, onCreate }) {
         <label className="tj-settings-switch-row"><button type="button" role="switch" aria-checked={positionSizeEnabled} className={`tj-settings-switch ${positionSizeEnabled ? "tj-settings-switch-on" : ""}`} onClick={() => setPositionSizeEnabled((enabled) => !enabled)}><i /></button><span><strong>Enable Position Size Calculator</strong><small>Show live risk-based lot suggestions in Log Trade.</small></span></label><div className="tj-grid2"><Field label="Default Risk % Per Trade"><input type="number" min="0" step="0.1" className="tj-input" disabled={!positionSizeEnabled} value={defaultRiskPct} onChange={(event) => setDefaultRiskPct(event.target.value)} /></Field><Field label="Default Stop Loss (Pips)"><input type="number" min="0" className="tj-input" disabled={!positionSizeEnabled} value={defaultStopLossPips} placeholder="Optional" onChange={(event) => setDefaultStopLossPips(event.target.value)} /></Field></div>
       </AccountSettingsSection>
       <div className="tj-modal-actions">
-        <button className="tj-btn-outline" onClick={onClose}>Cancel</button>
+        <button className="tj-btn-outline tj-modal-cancel" aria-label="Cancel" title="Cancel" onClick={onClose}><X size={15}/></button>
         <button className="tj-btn-primary" disabled={!name.trim() || !baseCurrency || (platform === "Manual" && !(Number(balance) > 0)) || creating || !!importError} onClick={create}>{creating ? (importingTrades ? <><i className="tj-import-progress" style={{ "--progress": `${importProgress}%` }}>{importProgress}%</i>Importing trades</> : "Creating…") : importPreview.trades?.length ? `Create Account & Import ${importPreview.trades.length} Trades` : "Create Account"}</button>
       </div>
     </Modal>
@@ -1601,12 +1698,11 @@ function AddAccountModal({ onClose, onCreate }) {
 /* ============================ DAY TRADES MODAL =========================== */
 
 function DayTradesModal({ date, trades, reviews = [], movements = [], account, onClose, onEdit, onDelete, locked = false }) {
-  const d = new Date(date + "T00:00:00");
   const dayPnl = trades.reduce((s, t) => s + t.pnl, 0);
   const datedRecords = reviews.map((review) => ({ id: review.id, time: review.time }))
     .sort((a, b) => String(a.time || "99:99").localeCompare(String(b.time || "99:99")));
   return (
-    <Modal title={d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })} onClose={onClose} className="tj-calendar-day-modal" centered>
+    <Modal title={formatDate(date)} onClose={onClose} className="tj-calendar-day-modal" centered>
       <div className="tj-daymodal-summary">
         <span className={dayPnl >= 0 ? "tj-green" : "tj-red"} style={{ fontWeight: 700, fontSize: 19.44 }}>{fmtMoney(dayPnl)}</span>
         <span className="tj-muted-txt"> · {trades.length} trade{trades.length !== 1 ? "s" : ""}{movements.length ? ` · ${movements.length} cash movement${movements.length === 1 ? "" : "s"}` : ""}</span>
@@ -1910,7 +2006,9 @@ function ReferenceDashboardPage({ account, stats, monthCursor, setMonthCursor, o
   const monthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
   const monthTrades = account.trades.filter((trade) => trade.date?.slice(0, 7) === monthKey);
   const monthStats = computeStats(monthTrades, account.breakevenCap);
-  const recentTrades = [...account.trades].sort((a, b) => `${b.date} ${b.time || ""}`.localeCompare(`${a.date} ${a.time || ""}`)).slice(0, 8);
+  // This list is display-only, so it can carry the user's formatted date
+  // without affecting the original ISO dates used for calculations below.
+  const recentTrades = [...account.trades].sort((a, b) => `${b.date} ${b.time || ""}`.localeCompare(`${a.date} ${a.time || ""}`)).slice(0, 8).map((trade) => ({ ...trade, date: formatDate(trade.date) }));
   const monthRecentTrades = [...monthTrades].sort((a, b) => `${b.date} ${b.time || ""}`.localeCompare(`${a.date} ${a.time || ""}`)).slice(0, 8);
   const lastSix = monthRecentTrades.slice(0, 6).reverse();
   // Dashboard headline metrics are all-time. The month-specific cards below
@@ -2178,7 +2276,7 @@ function ImportTradesModal({ account, onClose, onImport }) {
     {fileError && <div className="tj-import-error">{fileError}</div>}
     {preview.trades.length > 0 ? <div className="tj-import-preview"><strong>{preview.trades.length} trades ready to import{cashCount ? ` · ${cashCount} cash movement${cashCount === 1 ? "" : "s"}` : ""}</strong>{preview.trades.slice(0, 5).map(trade => <div key={trade.id}><span>{trade.date} · {trade.asset} · {trade.direction}</span><b className={trade.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(trade.pnl)}</b></div>)}{preview.trades.length > 5 && <small>Plus {preview.trades.length - 5} more trades.</small>}</div> : !fileError && <div className="tj-finance-empty">Choose an exported history file to preview its trades.</div>}
     {busy && <div className="tj-import-live"><i className="tj-import-progress" style={{ "--progress": `${progress}%` }}>{progress}%</i><div><strong>Importing trades…</strong><span>Saving directly to {account.name}</span></div></div>}
-    <div className="tj-modal-actions"><button className="tj-btn-outline" disabled={busy} onClick={onClose}>Cancel</button><button className="tj-btn-primary" disabled={!preview.trades.length || busy} onClick={submit}>{busy ? "Importing…" : `Import ${preview.trades.length || ""} trades`}</button></div>
+    <div className="tj-modal-actions"><button className="tj-btn-outline tj-modal-cancel" aria-label="Cancel" title="Cancel" disabled={busy} onClick={onClose}><X size={15}/></button><button className="tj-btn-primary" disabled={!preview.trades.length || busy} onClick={submit}>{busy ? "Importing…" : `Import ${preview.trades.length || ""} trades`}</button></div>
   </Modal>;
 }
 
@@ -2187,9 +2285,12 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
   const [assetFilter, setAssetFilter] = useState("All");
   const [sessionFilter, setSessionFilter] = useState("All");
   const [resultFilter, setResultFilter] = useState("All");
+  const [monthFilters, setMonthFilters] = useState([]);
   const [sortKey, setSortKey] = useState("date");
   const [sortDir, setSortDir] = useState("desc");
   const [expanded, setExpanded] = useState({});
+  const [closing, setClosing] = useState({});
+  const closeTimers = useRef({});
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
   const [linkDrafts, setLinkDrafts] = useState({});
@@ -2197,6 +2298,21 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
   const [listPage, setListPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
   const toolbarRef = useCloseOnOutside(filtersOpen || sortOpen, () => { setFiltersOpen(false); setSortOpen(false); });
+  const expandedTradeRef = useCloseOnOutside(Object.keys(expanded).length > 0, () => setExpanded({}));
+  useEffect(() => () => Object.values(closeTimers.current).forEach(window.clearTimeout), []);
+  const toggleTrade = (id) => {
+    if (!expanded[id]) {
+      window.clearTimeout(closeTimers.current[id]);
+      setClosing({});
+      setExpanded({ [id]: true });
+      return;
+    }
+    setClosing({ [id]: true });
+    closeTimers.current[id] = window.setTimeout(() => {
+      setExpanded({});
+      setClosing({});
+    }, 180);
+  };
 
   const cap = account.breakevenCap;
   const reviewedTradeIds = useMemo(() => new Set(reviews.map((review) => review.tradeId || review.trade_id).filter(Boolean)), [reviews]);
@@ -2209,6 +2325,7 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
     if (assetFilter !== "All" && t.asset !== assetFilter) return false;
     if (sessionFilter !== "All" && t.session !== sessionFilter) return false;
     if (resultFilter !== "All" && classify(t.pnl, cap) !== resultFilter) return false;
+    if (monthFilters.length && !monthFilters.includes(Number(String(t.date || "").slice(5, 7)))) return false;
     return true;
   });
   filtered = [...filtered].sort((a, b) => {
@@ -2222,15 +2339,32 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
   const activeTradePage = Math.min(listPage, tradePageCount);
   const visibleTrades = showAll ? filtered : filtered.slice((activeTradePage - 1) * 10, activeTradePage * 10);
 
-  useEffect(() => { setListPage(1); }, [search, assetFilter, sessionFilter, resultFilter, sortKey, sortDir]);
+  useEffect(() => { setListPage(1); }, [search, assetFilter, sessionFilter, resultFilter, monthFilters, sortKey, sortDir]);
 
   const stats = computeStats(account.trades, cap);
   const netReturn = account.balance ? (stats.netPnl / account.balance) * 100 : 0;
-  const grossReturn = account.balance ? (stats.grossPnl / account.balance) * 100 : 0;
   const totalCosts = stats.totalCommission + stats.totalSwap;
+  const averageTrade = filtered.length ? filtered.reduce((sum, trade) => sum + (Number(trade.pnl) || 0), 0) / filtered.length : 0;
+  const markupById = new Map(markups.map((markup) => [String(markup.id), markup]));
+  const tradesWithPlanBias = filtered.filter((trade) => {
+    const markup = markupById.get(String(trade.premarketMarkupId || ""));
+    return /bullish|bearish/i.test(markup?.bias || "");
+  });
+  const planAlignedTrades = tradesWithPlanBias.filter((trade) => {
+    const bias = markupById.get(String(trade.premarketMarkupId))?.bias || "";
+    return trade.direction === (/bullish/i.test(bias) ? "BUY" : "SELL");
+  });
+  const planAlignment = tradesWithPlanBias.length ? planAlignedTrades.length / tradesWithPlanBias.length * 100 : null;
+  const bestTrade = filtered.length ? (() => { const trade = filtered.reduce((best, item) => Number(item.pnl) > Number(best.pnl) ? item : best); return { ...trade, date: formatDate(trade.date) }; })() : null;
+  const largestLoss = filtered.length ? (() => { const trade = filtered.reduce((worst, item) => Number(item.pnl) < Number(worst.pnl) ? item : worst); return { ...trade, date: formatDate(trade.date) }; })() : null;
   const toggleSort = (key) => {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setSortKey(key); setSortDir("desc"); }
+  };
+  const restoreTradeLogBoard = () => {
+    setSearch(""); setAssetFilter("All"); setSessionFilter("All"); setResultFilter("All"); setMonthFilters([]);
+    setSortKey("date"); setSortDir("desc"); setListPage(1); setShowAll(false); setExpanded({});
+    setFiltersOpen(false); setSortOpen(false); setSelectedImage("");
   };
 
   return (
@@ -2238,14 +2372,18 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
       <div className="tj-tradelog-reference-summary">
         <div><span>Showing</span><strong>{filtered.length} trades</strong><small>{assetFilter === "All" ? "All instruments" : assetFilter} · {sessionFilter === "All" ? "All sessions" : sessionFilter} · {resultFilter === "All" ? "All results" : resultFilter}</small></div>
         <div><span>Net Return</span><strong className={netReturn >= 0 ? "tj-green" : "tj-red"}>{netReturn >= 0 ? "+" : ""}{netReturn.toFixed(2)}%</strong><small>{fmtMoney(stats.netPnl)}</small></div>
-        <div><span>Gross Return</span><strong className={grossReturn >= 0 ? "tj-green" : "tj-red"}>{grossReturn >= 0 ? "+" : ""}{grossReturn.toFixed(2)}%</strong><small>{fmtMoney(stats.grossPnl)}</small></div>
+        <div><span>Average Trade</span><strong className={averageTrade >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(averageTrade)}</strong><small>Expected result per trade</small></div>
         <div><span>Costs</span><strong className={totalCosts > 0 ? "tj-red" : "tj-muted-txt"}>{account.balance ? `-${((totalCosts / account.balance) * 100).toFixed(2)}%` : "—"}</strong><small>{fmtMoney(-totalCosts)}</small></div>
         <div><span>Win Rate</span><strong className={wrColorClass(stats.winRate)}>{stats.winRate.toFixed(0)}%</strong><small>{stats.wins}W · {stats.losses}L · {stats.be} B/E</small></div>
         <div><span>Avg RR</span><strong>{stats.avgLoss ? stats.avgWinLoss.toFixed(2) : "—"}R</strong><small>All results</small></div>
+        <div><span>Profit Factor</span><strong className={stats.profitFactor >= 1.5 ? "tj-green" : "tj-amber-txt"}>{stats.profitFactor.toFixed(2)}</strong><small>Gross profit vs loss</small></div>
+        <div><span>Best Trade</span><strong className={bestTrade?.pnl >= 0 ? "tj-green" : "tj-red"}>{bestTrade ? fmtMoney(bestTrade.pnl) : "—"}</strong><small>{bestTrade ? `${bestTrade.asset || "No instrument"} · ${bestTrade.date || "No date"}` : "No trades shown"}</small></div>
+        <div><span>Largest Loss</span><strong className={largestLoss?.pnl < 0 ? "tj-red" : "tj-muted-txt"}>{largestLoss ? fmtMoney(largestLoss.pnl) : "—"}</strong><small>{largestLoss ? `${largestLoss.asset || "No instrument"} · ${largestLoss.date || "No date"}` : "No trades shown"}</small></div>
+        <div><span>Plan Alignment</span><strong className={planAlignment == null ? "tj-muted-txt" : planAlignment >= 80 ? "tj-green" : "tj-amber-txt"}>{planAlignment == null ? "—" : `${planAlignment.toFixed(0)}%`}</strong><small>{planAlignment == null ? "Link a bullish/bearish markup" : `${planAlignedTrades.length}/${tradesWithPlanBias.length} followed markup bias`}</small></div>
       </div>
 
       <div className="tj-tradelog-compact-toolbar" ref={toolbarRef}>
-        <div className="tj-markup-toolbar-actions"><button className={`tj-icon-btn tj-markup-toolbar-button ${filtersOpen ? "tj-icon-btn-active" : ""}`} title="Filter trade log" onClick={() => { setFiltersOpen((value) => !value); setSortOpen(false); }}><SlidersHorizontal size={16}/></button><button className={`tj-icon-btn tj-markup-toolbar-button ${sortOpen ? "tj-icon-btn-active" : ""}`} title="Sort trade log" onClick={() => { setSortOpen((value) => !value); setFiltersOpen(false); }}><ArrowDownUp size={16}/></button></div>
+        <div className="tj-markup-toolbar-actions"><button className={`tj-icon-btn tj-markup-toolbar-button ${filtersOpen ? "tj-icon-btn-active" : ""}`} title="Filter trade log" onClick={() => { setFiltersOpen((value) => !value); setSortOpen(false); }}><SlidersHorizontal size={16}/></button><button className={`tj-icon-btn tj-markup-toolbar-button ${sortOpen ? "tj-icon-btn-active" : ""}`} title="Sort trade log" onClick={() => { setSortOpen((value) => !value); setFiltersOpen(false); }}><ArrowDownUp size={16}/></button><button className="tj-icon-btn tj-markup-toolbar-button" title="Restore trade log board" aria-label="Restore trade log board" onClick={restoreTradeLogBoard}><RotateCcw size={15}/></button></div>
         <div className="tj-markup-toolbar-status"><span>{filtered.length} shown</span><b>{showAll ? "All visible" : `Page ${activeTradePage} of ${tradePageCount}`}</b></div>
         {filtersOpen && <div className="tj-markup-filter-popover tj-tradelog-filter-popover">
           <div className="tj-markup-filter-head"><div><strong>Filter trades</strong><span>Focus the trade log on the exact instrument, session, or result you want to review.</span></div><button className="tj-icon-btn" title="Close filters" onClick={() => setFiltersOpen(false)}><X size={14}/></button></div>
@@ -2257,19 +2395,20 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
           </div>
           <div className="tj-markup-filter-summary">{!search && [assetFilter, sessionFilter, resultFilter].every((value) => value === "All") ? "No filters applied." : `${filtered.length} trade${filtered.length === 1 ? "" : "s"} match the selected filters.`}</div>
         </div>}
-        {sortOpen && <div className="tj-tradelog-sort-controls"><span>Sort trades by</span><button className={`tj-toolbar-pill ${sortKey === "date" ? "tj-toolbar-btn-active" : ""}`} onClick={() => toggleSort("date")}>Date {sortKey === "date" ? (sortDir === "asc" ? "↑" : "↓") : ""}</button><button className={`tj-toolbar-pill ${sortKey === "pnl" ? "tj-toolbar-btn-active" : ""}`} onClick={() => toggleSort("pnl")}>P&amp;L</button><button className={`tj-toolbar-pill ${sortKey === "asset" ? "tj-toolbar-btn-active" : ""}`} onClick={() => toggleSort("asset")}>Instrument</button></div>}
+        {sortOpen && <div className="tj-tradelog-sort-controls tj-tradelog-month-controls"><span>Months</span><div>{["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].map((label, index) => { const month = index + 1, count = account.trades.filter((trade) => Number(String(trade.date || "").slice(5, 7)) === month).length, active = monthFilters.includes(month); return <button type="button" key={label} className={`tj-markup-sort-option ${active ? "tj-markup-sort-option-active" : ""}`} onClick={() => setMonthFilters((current) => active ? current.filter((item) => item !== month) : [...current, month])}>{label} <small>{count}</small></button>; })}</div></div>}
       </div>
 
       {filtered.length === 0 ? (
         <Card className="tj-panel"><div className="tj-empty">No trades match these filters.</div></Card>
       ) : (
-        <div className="tj-tlog-list">
+        <div className="tj-tradelog-card-grid">
           {visibleTrades.map((rawTrade) => {
             const t = { ...rawTrade, rr: tradeRiskReward(rawTrade) };
             const cls = classify(t.pnl, cap);
-            const isOpen = !!expanded[t.id];
+            const isOpen = !!expanded[t.id], isClosing = !!closing[t.id], visible = isOpen || isClosing;
             const isReviewed = reviewedTradeIds.has(t.id);
-            const linkedMarkup = markups.find((markup) => markup.id === t.premarketMarkupId);
+            const linkedMarkupRecord = markups.find((markup) => markup.id === t.premarketMarkupId);
+            const linkedMarkup = linkedMarkupRecord ? { ...linkedMarkupRecord, date: formatDate(linkedMarkupRecord.date) } : null;
             const tradeReturn = account.balance ? (t.pnl / account.balance) * 100 : 0;
             const grossTradeReturn = account.balance ? (Number(t.grossPnl ?? t.pnl) / account.balance) * 100 : 0;
             const confluenceCount = (t.confluence || t.types || []).length;
@@ -2278,29 +2417,20 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
             const linkedMarkupScreenshots = linkedMarkup ? Object.entries(linkedMarkup.screenshots || {}).filter(([, images]) => Array.isArray(images)).flatMap(([slot, images]) => images.map((screenshot, index) => ({ source: screenshotSource(screenshot), key: `${slot}-${index}` }))) : [];
             const linkDraft = linkDrafts[t.id] ?? t.premarketMarkupId ?? "";
             return (
-              <Card key={t.id} className={`tj-tlog-card tj-reference-tradelog-row tj-tlog-${cls}`}>
-                <div className="tj-tlog-row" onClick={() => setExpanded((e) => ({ ...e, [t.id]: !e[t.id] }))}>
-                  <div className="tj-reference-trade-left">
-                    <div className="tj-tlog-main">
-                      <div className="tj-tlog-asset">{t.asset || "No instrument"}</div>
-                    </div>
-                    <span className={`tj-dirpill-sm tj-reference-trade-direction ${t.direction === "BUY" ? "tj-green" : "tj-red"}`}>{t.direction}</span>
-                    <div className="tj-reference-trade-meta"><span>Opened: {cTraderOpeningIsUnknown(t) ? "Not included in cTrader report" : `${formatDate(t.date)} · ${formatTime(t.time)}`}</span><span>Closed: {t.closeDate ? `${formatDate(t.closeDate)} · ${t.closeTime ? formatTime(t.closeTime) : "Time not logged"}` : "Not logged"}</span></div>
-                    <span className="tj-reference-trade-session">{t.entrySession || t.session || "No session"}</span>
-                  </div>
+              <div key={t.id} ref={visible ? expandedTradeRef : null} className="tj-tradelog-card-shell"><Card className={`tj-tlog-card tj-reference-tradelog-row tj-tlog-${cls} ${visible ? "tj-reference-tradelog-expanded" : ""}`}>
+                <div className="tj-tlog-row" onClick={() => toggleTrade(t.id)}>
+                  {isOpen ? <div className="tj-reference-trade-left"><div className="tj-tlog-main"><div className="tj-tlog-asset">{t.asset || "No instrument"}</div></div><span className={`tj-dirpill-sm tj-reference-trade-direction ${t.direction === "BUY" ? "tj-green" : "tj-red"}`}>{t.direction}</span><div className="tj-reference-trade-meta"><span>Opened: {cTraderOpeningIsUnknown(t) ? "Not included in cTrader report" : `${formatDate(t.date)} · ${formatTime(t.time)}`}</span><span>Closed: {t.closeDate ? `${formatDate(t.closeDate)} · ${t.closeTime ? formatTime(t.closeTime) : "Time not logged"}` : "Not logged"}</span></div><span className="tj-reference-trade-session">{t.entrySession || t.session || "No session"}</span></div> : <div className="tj-reference-trade-left tj-trade-card-identity"><small className="tj-trade-card-date">{cTraderOpeningIsUnknown(t) ? "Opening time not included" : `${formatDate(t.date)} · ${formatTime(t.time)}`}</small><strong className="tj-trade-card-instrument">{t.asset || "No instrument"}</strong><div className="tj-trade-card-status"><span className={t.direction === "BUY" ? "tj-green" : "tj-red"}>{t.direction}</span><span>{t.entrySession || t.session || "No session"}</span></div><div className="tj-trade-card-metrics"><div><span>SESSION</span><strong>{t.entrySession || t.session || "—"}</strong></div><div><span>RR</span><strong>{t.rr ? `${t.rr.toFixed(2)}R` : "—"}</strong></div><div><span>CONFLUENCE</span><strong>{confluenceCount}</strong></div></div><p>{t.context || "No trade note added."}</p></div>}
                   <div className="tj-reference-trade-right" onClick={(e) => e.stopPropagation()}>
                     <span className={`tj-review-status ${isReviewed ? "tj-review-reviewed" : "tj-review-pending"}`} title={isReviewed ? "This trade has a linked review" : "No trade review has been added yet"}>{isReviewed ? <><CheckCircle2 size={12} /> Reviewed</> : "Review Pending"}</span>
                     <div className="tj-tlog-pnl-block">
                       <div className={cls === "be" ? "tj-blue tj-tlog-pnl" : (t.pnl >= 0 ? "tj-green tj-tlog-pnl" : "tj-red tj-tlog-pnl")}>{cls === "be" ? "B/E" : fmtMoney(t.pnl)}</div>
-                      <div className="tj-reference-trade-return">{tradeReturn >= 0 ? "+" : ""}{tradeReturn.toFixed(2)}% {t.rr ? `· ${t.rr.toFixed(2)}R` : ""}</div>
+                      <div className="tj-reference-trade-return">{tradeReturn >= 0 ? "+" : ""}{tradeReturn.toFixed(2)}%{isOpen && t.rr ? ` · ${t.rr.toFixed(2)}R` : ""}</div>
                     </div>
-                    <button className="tj-markup-round-button" disabled={locked} title={locked ? "Trade changes are locked by the account loss limit" : "Edit trade"} onClick={() => onEdit(t)}><Pencil size={15}/></button>
-                    <ConfirmDeleteButton className="tj-markup-round-button tj-markup-delete-button" disabled={locked} title={locked ? "Trade changes are locked by the account loss limit" : "Delete trade"} onClick={() => onDelete(t.id)}><Trash2 size={14}/></ConfirmDeleteButton>
-                    <button className="tj-markup-round-button" title={isOpen ? "Collapse trade" : "Expand trade"} onClick={() => setExpanded((e) => ({ ...e, [t.id]: !e[t.id] }))}>{isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</button>
+                    {isOpen && <><button className="tj-markup-round-button" disabled={locked} title={locked ? "Trade changes are locked by the account loss limit" : "Edit trade"} onClick={() => onEdit(t)}><Pencil size={15}/></button><ConfirmDeleteButton className="tj-markup-round-button tj-markup-delete-button" disabled={locked} title="Delete trade" onClick={() => onDelete(t.id)}><Trash2 size={14}/></ConfirmDeleteButton></>}<button className="tj-markup-round-button" title={isOpen ? "Collapse trade" : "Expand trade"} onClick={() => toggleTrade(t.id)}>{isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</button>
                   </div>
                 </div>
-                {isOpen && (
-                  <div className="tj-tlog-expand tj-reference-trade-expand">
+                <div className={`tj-reference-trade-detail ${visible ? "tj-reference-trade-detail-open" : ""} ${isClosing ? "tj-reference-detail-closing" : ""}`} aria-hidden={!visible}>
+                  <div className="tj-tlog-expand tj-reference-trade-expand tj-reference-trade-detail-inner">
                     <div className="tj-reference-trade-detail-summary"><div><span>NET RETURN</span><strong className={t.pnl >= 0 ? "tj-green" : "tj-red"}>{tradeReturn >= 0 ? "+" : ""}{tradeReturn.toFixed(2)}% · {fmtMoney(t.pnl)}</strong></div><div><span>GROSS RETURN</span><strong>{account.balance ? `${grossTradeReturn >= 0 ? "+" : ""}${grossTradeReturn.toFixed(2)}%` : "—"} · {fmtMoney(Number(t.grossPnl ?? t.pnl))}</strong></div><div><span>COSTS</span><strong className="tj-red">{fmtMoney(-((Number(t.commission) || 0) + (Number(t.swap) || 0)))}</strong></div><div><span>R:R</span><strong>{t.rr ? `${t.rr.toFixed(2)}R` : "—"}</strong></div><div><span>RULES CHECKED</span><strong>{t.ruleEvaluations?.filter((entry) => entry.checked).length || 0}/{t.ruleEvaluations?.length || 0}</strong></div></div>
                     <div className="tj-reference-trade-main-grid">
                       <section className="tj-reference-trade-brief"><div className="tj-reference-trade-section-head"><span>Trade Brief</span><div><em className={t.direction === "BUY" ? "tj-green" : "tj-red"}>{t.direction}</em><em>{t.entrySession || t.session || "—"}</em>{(t.entryType || t.confluenceSession) && <em>{t.entryType || t.confluenceSession}</em>}<em className={tradeReturn >= 0 ? "tj-green" : "tj-red"}>{tradeReturn >= 0 ? "+" : ""}{tradeReturn.toFixed(2)}%</em></div></div><div className="tj-reference-trade-brief-rows"><div><span>RESULT</span><strong>{cls === "win" ? "Win" : cls === "loss" ? "Loss" : "B/E"} · {fmtMoney(t.pnl)} · {t.rr ? `${t.rr.toFixed(2)}R` : "—"}</strong></div><div><span>ENTRY MODEL</span><strong>{t.entryType || t.confluenceSession || "—"}</strong></div><div><span>ENTRY PRICE</span><strong>{t.entryPrice === "" || t.entryPrice == null ? "—" : Number(t.entryPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</strong></div><div><span>EXIT PRICE</span><strong>{t.exitPrice === "" || t.exitPrice == null ? "—" : Number(t.exitPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</strong></div><div><span>MOOD SHIFT</span><strong>{t.moodBefore || "—"} → {t.moodAfter || "—"}</strong></div><div><span>RATING</span><strong><RatingDisplay value={t.rating} noRules={!t.ruleEvaluations?.length&&!t.rating}/></strong></div></div><div className="tj-reference-trade-note">{t.context || "No trade note added."}</div></section>
@@ -2308,8 +2438,8 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
                     </div>
                     <section className="tj-reference-journal-detail"><div className="tj-reference-trade-section-head"><span>Journal Detail</span><small>{confluenceCount} confluence{confluenceCount === 1 ? "" : "s"}</small></div><div className="tj-reference-journal-grid"><div><div className="tj-mlabel">CONFLUENCES</div><div className="tj-tlog-types">{confluenceCount ? (t.confluence || t.types || []).map((item) => <span key={item} className="tj-tag tj-tag-purple tj-tag-active tj-tag-xs">{item}</span>) : <span className="tj-muted-txt">No confluences logged.</span>}</div></div><div><div className="tj-mlabel">MISTAKES</div><div className="tj-tlog-mistakes">{t.mistakes?.length ? t.mistakes.map((m) => <span key={m} className="tj-tag tj-tag-red tj-tag-active tj-tag-xs">{m}</span>) : <span className="tj-muted-txt">No mistakes logged.</span>}</div></div></div>{screenshotCount > 0 && <div className="tj-reference-trade-screens"><div className="tj-mlabel">SCREENSHOTS</div><div className="tj-tlog-shots">{tradeScreenshots.map(({ screenshot, label, key }) => <div key={key} className="tj-trade-shot-slot"><ImagePreview src={screenshotSource(screenshot)} alt={label} selected={selectedImage === screenshotSource(screenshot)} onSelect={setSelectedImage}/><small>{label}</small></div>)}</div></div>}</section>
                   </div>
-                )}
-              </Card>
+                </div>
+              </Card></div>
             );
           })}
         </div>
@@ -2347,7 +2477,7 @@ function PerformanceMetricsView({ account, trades, cap, stats, tagStats, conflue
     map[key].pnl += trade.pnl; map[key].count += 1;
     if (classify(trade.pnl, cap) === "win") map[key].wins += 1;
     return map;
-  }, {})).map((month) => ({ ...month, label: month.key === "Unknown" ? month.key : new Date(`${month.key}-01T00:00:00`).toLocaleDateString(undefined, { month: "short", year: "numeric" }), winRate: month.count ? month.wins / month.count * 100 : 0 })).sort((a, b) => a.key.localeCompare(b.key));
+  }, {})).map((month) => ({ ...month, label: month.key === "Unknown" ? month.key : formatMonthYear(month.key), winRate: month.count ? month.wins / month.count * 100 : 0 })).sort((a, b) => a.key.localeCompare(b.key));
   const bestMonth = monthlyRows.length ? monthlyRows.reduce((a, b) => b.pnl > a.pnl ? b : a) : null;
   const worstMonth = monthlyRows.length ? monthlyRows.reduce((a, b) => b.pnl < a.pnl ? b : a) : null;
   const bestDay = dayRows.length ? dayRows.reduce((a, b) => b.pnl > a.pnl ? b : a) : null;
@@ -2377,7 +2507,7 @@ function PerformanceMetricsView({ account, trades, cap, stats, tagStats, conflue
 
     {view === "daily" && <Card className="tj-performance-surface"><div className="tj-performance-title"><div><strong>Daily P&amp;L Growth</strong><span>Read how each trading day changed the account, then compare the daily result with the compounded equity curve it created.</span></div><small>{dayRows.length} trading days</small></div><div className="tj-performance-four"><div><small>COMPOUNDED RETURN</small><strong className={stats.netPnl >= 0 ? "tj-green" : "tj-red"}>{account.balance ? (stats.netPnl / account.balance * 100).toFixed(2) : "0.00"}%</strong><span>{fmtMoney(stats.netPnl)} across the selected range</span></div><div><small>BEST DAY</small><strong className="tj-green">{bestDay ? fmtMoney(bestDay.pnl) : "—"}</strong><span>{bestDay?.date || "No data"}</span></div><div><small>WORST DAY</small><strong className="tj-red">{worstDay ? fmtMoney(worstDay.pnl) : "—"}</strong><span>{worstDay?.date || "No data"}</span></div><div><small>GREEN DAYS</small><strong className="tj-green">{stats.dayWinRate.toFixed(0)}%</strong><span>{dayRows.filter((day) => day.cls === "win").length} positive · {dayRows.filter((day) => day.cls === "loss").length} negative · {dayRows.filter((day) => day.cls === "be").length} flat</span></div></div><div className="tj-performance-chart"><div><small>COMPOUNDED EQUITY PATH</small><strong>{fmtMoney(account.balance + stats.netPnl)}</strong></div><ResponsiveContainer width="100%" height={250}><AreaChart data={dailyCurve}><defs><linearGradient id="performanceDaily" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={UI_COLORS.primary} stopOpacity={.28}/><stop offset="100%" stopColor={UI_COLORS.primary} stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="var(--tj-chart-grid)" strokeDasharray="3 3" vertical={false}/><XAxis dataKey="date" tick={CHART_TICK} minTickGap={32} interval="preserveStartEnd" axisLine={false} tickLine={false}/><YAxis tick={CHART_TICK} axisLine={false} tickLine={false} tickFormatter={(value) => `${value >= 0 ? "+" : ""}${value.toFixed(0)}%`}/><Tooltip itemStyle={{color:"var(--tj-text)"}} labelStyle={{color:"var(--tj-text)"}} contentStyle={CHART_TOOLTIP_STYLE} formatter={(value, _name, item) => [`${Number(value).toFixed(2)}% · ${fmtMoney(item.payload.equity)}`, "Compounded"]}/><Area type="monotone" dataKey="pct" stroke={UI_COLORS.primary} fill="url(#performanceDaily)" strokeWidth={2.5}/></AreaChart></ResponsiveContainer></div><div className="tj-performance-recent"><header><strong>RECENT 3 TRADING DAYS</strong><span>{fmtMoney(dayRows.filter((d) => d.cls === "win").reduce((s, d) => s + d.pnl, 0) / Math.max(1, dayRows.filter((d) => d.cls === "win").length))} average green day · {fmtMoney(dayRows.filter((d) => d.cls === "loss").reduce((s, d) => s + d.pnl, 0) / Math.max(1, dayRows.filter((d) => d.cls === "loss").length))} average red day</span></header>{dayRows.slice(-3).reverse().map((day) => { const close = dailyCurve.find((point) => point.date === day.date.slice(5))?.equity; return <div key={day.date}><span><strong>{new Date(`${day.date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</strong><small>{day.count} trade{day.count === 1 ? "" : "s"} · {day.winRate.toFixed(0)}% WR</small></span><i><b className={day.pnl >= 0 ? "tj-bar-green" : "tj-bar-red"} style={{ width: `${Math.max(8, Math.abs(day.pnl) / Math.max(1, Math.abs(bestDay?.pnl || 1), Math.abs(worstDay?.pnl || 1)) * 100)}%` }}/></i><em className={day.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(day.pnl)}<small>{account.balance ? `${day.pnl / account.balance * 100 >= 0 ? "+" : ""}${(day.pnl / account.balance * 100).toFixed(2)}% day` : ""}</small></em><span><small>Close</small><strong>{fmtMoney(close)}</strong></span></div>; })}</div></Card>}
 
-    {view === "monthly" && <Card className="tj-performance-surface"><div className="tj-performance-title"><div><strong>Monthly P&amp;L Evolution</strong><span>A month-by-month view of realised P&amp;L, so the account’s larger rhythm is visible alongside its daily pulse.</span></div><small>{monthlyRows.length} months</small></div><div className="tj-performance-four"><div><small>BEST MONTH</small><strong className="tj-green">{bestMonth ? fmtMoney(bestMonth.pnl) : "—"}</strong><span>{bestMonth?.label || "No data"}</span></div><div><small>WORST MONTH</small><strong className={worstMonth?.pnl >= 0 ? "tj-green" : "tj-red"}>{worstMonth ? fmtMoney(worstMonth.pnl) : "—"}</strong><span>{worstMonth?.label || "No data"}</span></div><div><small>AVERAGE MONTH</small><strong className="tj-green">{fmtMoney(monthlyRows.reduce((sum, month) => sum + month.pnl, 0) / Math.max(1, monthlyRows.length))}</strong><span>Across the active range</span></div><div><small>POSITIVE MONTHS</small><strong className="tj-green">{monthlyRows.filter((month) => month.pnl > 0).length}/{monthlyRows.length}</strong><span>{monthlyRows.filter((month) => month.pnl < 0).length} negative months</span></div></div><div className="tj-performance-chart"><ResponsiveContainer width="100%" height={250}><BarChart data={monthlyRows}><CartesianGrid stroke="var(--tj-chart-grid)" strokeDasharray="3 3" vertical={false}/><XAxis dataKey="label" tick={CHART_TICK} axisLine={false} tickLine={false}/><YAxis tick={CHART_TICK} axisLine={false} tickLine={false} tickFormatter={(value) => fmtMoneyShort(value)}/><Tooltip itemStyle={{color:"var(--tj-text)"}} labelStyle={{color:"var(--tj-text)"}} contentStyle={CHART_TOOLTIP_STYLE} formatter={(value) => [fmtMoney(value), "Monthly P&L"]}/><Bar dataKey="pnl" radius={[6, 6, 2, 2]}>{monthlyRows.map((month) => <Cell key={month.key} fill={month.pnl >= 0 ? UI_COLORS.primary : UI_COLORS.danger}/>)}</Bar></BarChart></ResponsiveContainer></div><div className="tj-performance-month-list">{monthlyRows.slice().reverse().map((month) => <div key={month.key}><strong>{month.label}</strong><i><b className={month.pnl >= 0 ? "tj-bar-green" : "tj-bar-red"} style={{ width: `${Math.abs(month.pnl) / maxMonthPnl * 100}%` }}/></i><span>{month.count} trades · {month.winRate.toFixed(0)}% WR</span><em className={month.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(month.pnl)}</em></div>)}</div></Card>}
+    {view === "monthly" && <Card className="tj-performance-surface"><div className="tj-performance-title"><div><strong>Monthly P&amp;L Evolution</strong><span>A month-by-month view of realised P&amp;L, so the account’s larger rhythm is visible alongside its daily pulse.</span></div><small>{monthlyRows.length} months</small></div><div className="tj-performance-four"><div><small>BEST MONTH</small><strong className="tj-green">{bestMonth ? fmtMoney(bestMonth.pnl) : "—"}</strong><span>{bestMonth?.label || "No data"}</span></div><div><small>WORST MONTH</small><strong className={worstMonth?.pnl >= 0 ? "tj-green" : "tj-red"}>{worstMonth ? fmtMoney(worstMonth.pnl) : "—"}</strong><span>{worstMonth?.label || "No data"}</span></div><div><small>AVERAGE MONTH</small><strong className="tj-green">{fmtMoney(monthlyRows.reduce((sum, month) => sum + month.pnl, 0) / Math.max(1, monthlyRows.length))}</strong><span>Across the active range</span></div><div><small>POSITIVE MONTHS</small><strong className="tj-green">{monthlyRows.filter((month) => month.pnl > 0).length}/{monthlyRows.length}</strong><span>{monthlyRows.filter((month) => month.pnl < 0).length} negative months</span></div></div><div className="tj-performance-chart"><ResponsiveContainer width="100%" height={430}><BarChart data={monthlyRows}><CartesianGrid stroke="var(--tj-chart-grid)" strokeDasharray="3 3" vertical={false}/><XAxis dataKey="label" tick={CHART_TICK} axisLine={false} tickLine={false}/><YAxis tick={CHART_TICK} axisLine={false} tickLine={false} tickFormatter={(value) => fmtMoneyShort(value)}/><Tooltip cursor={{ fill:"var(--tj-chart-hover)" }} itemStyle={{color:"var(--tj-text)"}} labelStyle={{color:"var(--tj-text)"}} contentStyle={CHART_TOOLTIP_STYLE} formatter={(value) => [fmtMoney(value), "Monthly P&L"]}/><Bar dataKey="pnl" barSize={28} radius={[6, 6, 2, 2]}>{monthlyRows.map((month) => <Cell key={month.key} fill={month.pnl >= 0 ? UI_COLORS.primary : UI_COLORS.danger}/>)}</Bar></BarChart></ResponsiveContainer></div><div className="tj-performance-month-list">{monthlyRows.slice().reverse().map((month) => <div key={month.key}><strong>{month.label}</strong><i><b className={month.pnl >= 0 ? "tj-bar-green" : "tj-bar-red"} style={{ width: `${Math.abs(month.pnl) / maxMonthPnl * 100}%` }}/></i><span>{month.count} trades · {month.winRate.toFixed(0)}% WR</span><em className={month.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(month.pnl)}</em></div>)}</div></Card>}
 
     {view === "instruments" && <Card className="tj-performance-surface tj-performance-instruments"><div className="tj-performance-title"><div><small>MARKET PERFORMANCE</small><strong>Instrument Performance</strong><span>See which markets are actually paying you, where volume is concentrating, and which instrument needs the next review pass.</span></div><small>{instrumentStats.length} instruments</small></div><div className="tj-performance-highlights"><div><small>LEADER</small><strong>{instrumentStats[0]?.asset || "—"}</strong><span>{instrumentStats[0] ? `${fmtMoney(instrumentStats[0].netPnl)} · ${instrumentStats[0].winRate.toFixed(0)}% WR` : "No data"}</span></div><div><small>MOST ACTIVE</small><strong>{instrumentStats.slice().sort((a, b) => b.count - a.count)[0]?.asset || "—"}</strong><span>{instrumentStats.length ? `${instrumentStats.slice().sort((a, b) => b.count - a.count)[0].count} trades` : "No data"}</span></div><div><small>NEEDS REVIEW</small><strong>{instrumentStats[instrumentStats.length - 1]?.asset || "—"}</strong><span>{instrumentStats.length ? `${fmtMoney(instrumentStats[instrumentStats.length - 1].netPnl)} · ${instrumentStats[instrumentStats.length - 1].winRate.toFixed(0)}% WR` : "No data"}</span></div></div><div className="tj-performance-instrument-grid">{instrumentStats.map((item) => <div className="tj-performance-instrument-card" key={item.asset}><div><span>INSTRUMENT</span><b className="tj-grade-badge">{item.grade}</b></div><strong>{item.asset}</strong><em className={item.netPnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(item.netPnl)}</em><section><span><small>WIN RATE</small><b className={wrColorClass(item.winRate)}>{item.winRate.toFixed(0)}%</b></span><span><small>TRADES</small><b>{item.count}</b></span><span><small>AVG RR</small><b className="tj-purple-txt">{item.avgRR.toFixed(2)}</b></span><span><small>AVG / TRADE</small><b className={item.netPnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(item.netPnl / item.count)}</b></span></section><div className="tj-performance-bars"><span>IMPACT</span><i><b style={{ width: `${Math.abs(item.netPnl) / maxInstrumentPnl * 100}%` }}/></i><strong>{fmtMoneyShort(item.netPnl)}</strong><span>FLOW</span><i><b className="tj-performance-purple" style={{ width: `${item.winRate}%` }}/></i><strong>{item.winRate.toFixed(0)}%</strong><span>VOLUME</span><i><b className="tj-bar-yellow" style={{ width: `${item.count / Math.max(...instrumentStats.map((row) => row.count)) * 100}%` }}/></i><strong>{item.count} trades</strong></div><footer><span>BEST {fmtMoneyShort(item.best)}</span><span>WORST {fmtMoneyShort(item.worst)}</span></footer></div>)}</div></Card>}
     </div>
@@ -2422,6 +2552,7 @@ function ExecutionRhythmView({ account, trades, cap, stats }) {
   const latestMonth = monthRows[monthRows.length - 1];
   const bestWeekday = weekdayRows[0];
   const bestSession = sessionRows[0];
+  const sessionShareTotal = Math.max(1, sessionRows.reduce((sum, row) => sum + Math.abs(row.pnl), 0));
   const linkedPct = stats.total ? trades.filter((trade) => trade.premarketMarkupId).length / stats.total * 100 : 0;
   const allRuleEntries = trades.flatMap((trade) => trade.ruleEvaluations || []);
   const rulePct = allRuleEntries.length ? allRuleEntries.filter((entry) => entry.checked).length / allRuleEntries.length * 100 : 0;
@@ -2437,11 +2568,11 @@ function ExecutionRhythmView({ account, trades, cap, stats }) {
   const fmtRangeDay = (date) => date.toLocaleDateString(undefined, { month: "short", day: "numeric" }).toUpperCase();
 
   return <div className="tj-execution-workspace">
-    <Card className="tj-execution-rhythm-card"><div className="tj-execution-title"><strong>Execution Rhythm</strong><small>{dayRows.length} trading days</small></div><div className="tj-execution-four"><div><small>BEST WEEKDAY</small><strong className="tj-green">{bestWeekday?.label || "—"}</strong><span>{bestWeekday ? `${fmtMoney(bestWeekday.pnl)} · ${bestWeekday.winRate.toFixed(0)}% win rate` : "No data"}</span></div><div><small>BEST SESSION</small><strong className="tj-green">{bestSession?.label || "—"}</strong><span>{bestSession ? `${fmtMoney(bestSession.pnl)} · ${bestSession.count} trades` : "No data"}</span></div><div><small>LATEST MONTH</small><strong className={latestMonth?.pnl >= 0 ? "tj-green" : "tj-red"}>{latestMonth ? fmtMoney(latestMonth.pnl) : "—"}</strong><span>{latestMonth ? new Date(`${latestMonth.key}-01T00:00:00`).toLocaleDateString(undefined, { month: "short", year: "numeric" }) : "No data"}</span></div><div><small>CURRENT STREAK</small><strong>{currentRun}{currentType === "loss" ? "L" : currentType === "win" ? "W" : " B/E"}</strong><span>{recentSix.length ? `${recentSix[0].date.slice(5)} – ${recentSix[recentSix.length - 1].date.slice(5)}` : "No recent days"}</span></div></div><div className="tj-execution-section-label">WEEKDAY P&amp;L</div><div className="tj-execution-bars">{weekdayRows.map((row) => <div key={row.label}><strong>{row.label}</strong><i><b className={row.pnl >= 0 ? "tj-bar-green" : "tj-bar-red"} style={{ width: `${Math.max(4, Math.abs(row.pnl) / maxWeekdayPnl * 100)}%` }}/></i><em className={row.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoneyShort(row.pnl)}</em><span className={wrColorClass(row.winRate)}>{row.winRate.toFixed(0)}%</span></div>)}</div><div className="tj-execution-section-label">RECENT WEEKS</div><div className="tj-execution-week-grid">{weekRows.slice(-3).map((week) => <div key={week.key}><small>{fmtRangeDay(week.start)} – {fmtRangeDay(week.end)}</small><strong className={week.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(week.pnl)}</strong><span>{week.count} trades · {week.winRate.toFixed(0)}% WR</span></div>)}</div><div className="tj-execution-section-label">MONTHLY PULSE</div><div className="tj-execution-month-grid">{monthRows.slice(-3).map((month) => <div key={month.key}><small>{new Date(`${month.key}-01T00:00:00`).toLocaleDateString(undefined, { month: "short", year: "numeric" }).toUpperCase()}</small><strong className={month.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(month.pnl)}</strong><span>{month.count} trades · {account.balance ? `${month.pnl / account.balance * 100 >= 0 ? "+" : ""}${(month.pnl / account.balance * 100).toFixed(2)}%` : ""}</span></div>)}</div></Card>
+    <div className="tj-execution-rhythm-grid"><Card className="tj-execution-weekly-card"><div className="tj-execution-title"><div><strong>Weekly Cadence</strong><span>Recent realised P&amp;L</span></div><small>${weekRows.length} weeks</small></div><div className="tj-execution-weekly-chart"><ResponsiveContainer width="100%" height={260}><BarChart data={weekRows.slice(-9)}><CartesianGrid stroke="var(--tj-chart-grid)" strokeDasharray="3 3" vertical={false}/><XAxis dataKey="key" tick={CHART_TICK} axisLine={false} tickLine={false} tickFormatter={(key) => { const week = weekRows.find((row) => row.key === key); return week ? `${fmtRangeDay(week.start)} – ${fmtRangeDay(week.end)}` : key; }} interval="preserveStartEnd"/><YAxis tick={CHART_TICK} axisLine={false} tickLine={false} tickFormatter={(value) => fmtMoneyShort(value)}/><Tooltip cursor={{ fill:"var(--tj-chart-hover)" }} itemStyle={{color:"var(--tj-text)"}} labelStyle={{color:"var(--tj-text)"}} contentStyle={CHART_TOOLTIP_STYLE} labelFormatter={(key) => { const week = weekRows.find((row) => row.key === key); return week ? `${fmtRangeDay(week.start)} – ${fmtRangeDay(week.end)}` : key; }} formatter={(value, _name, item) => [`${fmtMoney(value)} · ${item.payload.count} trade${item.payload.count === 1 ? "" : "s"} · ${item.payload.winRate.toFixed(0)}% WR`, "Weekly P&L"]}/><Bar dataKey="pnl" barSize={28} radius={[6, 6, 2, 2]}>{weekRows.slice(-9).map((week) => <Cell key={week.key} fill={week.pnl >= 0 ? UI_COLORS.primary : UI_COLORS.danger}/>)}</Bar></BarChart></ResponsiveContainer></div></Card><Card className="tj-execution-weekday-card"><div className="tj-execution-title"><div><strong>Weekday Edge</strong><span>Where the week pays</span></div><small>${stats.thunderScore}/100 rhythm</small></div><div className="tj-execution-bars tj-execution-weekday-bars">{weekdayRows.map((row) => <div key={row.label}><strong>{row.label}</strong><i><b className={row.pnl >= 0 ? "tj-bar-green" : "tj-bar-red"} style={{ width: `${Math.max(4, Math.abs(row.pnl) / maxWeekdayPnl * 100)}%` }}/></i><em className={row.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoneyShort(row.pnl)}</em><span className={wrColorClass(row.winRate)}>{row.winRate.toFixed(0)}%</span></div>)}</div></Card></div>
 
     <Card className="tj-core-breakdown"><div className="tj-execution-title"><strong>Core Score Breakdown</strong><small>6 contributing factors</small></div><div className="tj-core-breakdown-grid"><section><div><span><small>EXECUTION SCORE</small><strong className="tj-purple-txt">{stats.thunderScore}<i>/100</i></strong></span><p>Results, repeatability, recovery, and discipline are balanced into one practical execution read.</p></div><ResponsiveContainer width="100%" height={225}><RadarChart data={scoreFactors} outerRadius={72}><PolarGrid stroke="var(--tj-chart-grid)"/><PolarAngleAxis dataKey="metric" tick={{ fill: "var(--tj-muted)", fontSize: 12 }}/><Radar dataKey="value" stroke={UI_COLORS.purple} fill={UI_COLORS.purple} fillOpacity={.26}/></RadarChart></ResponsiveContainer><i><b style={{ width: `${stats.thunderScore}%` }}/></i></section><section><div className="tj-discipline-head"><span><small>WHAT DRIVES DISCIPLINE</small><strong className="tj-purple-txt">{discipline}<i>/100</i></strong></span><p>Markup coverage and checked active rules measure preparation; the guardrail signal reflects whether the selected range is currently within its loss limits.</p></div><div className="tj-discipline-grid">{[["WIN RATE", `${stats.winRate.toFixed(0)}%`, stats.winRate, `${stats.wins} wins from ${stats.total} trades`], ["PROFIT FACTOR", stats.profitFactor.toFixed(2), norm(stats.profitFactor, 5), "Gross profits compared with gross losses"], ["AVERAGE RR", avgRR.toFixed(2), norm(avgRR, 3), "Winner-to-loser payoff edge"], ["CONSISTENCY", stats.consistency.toFixed(0), stats.consistency, `${stats.bestWinStreak}W best run · ${stats.bestLossStreak}L loss run`], ["RECOVERY", `${stats.recovery.toFixed(0)}%`, stats.recovery, "How well the account has recovered after a loss"], ["DISCIPLINE", `${discipline}%`, discipline, `${linkedPct.toFixed(0)}% markup coverage · ${rulePct.toFixed(0)}% rules followed`]].map(([label, value, pct, note]) => <div key={label}><span><small>{label}</small><strong>{value}</strong></span><i><b style={{ width: `${pct}%` }}/></i><p>{note}</p></div>)}</div><footer><span>{linkedPct.toFixed(0)}% trades linked to markups</span><span>{rulePct.toFixed(0)}% rule checks passed</span><span>{account.dailyLossLimitPct || account.monthlyLossLimitPct ? "Guardrails configured" : "Guardrails currently open"}</span></footer></section></div></Card>
 
-    <div className="tj-execution-bottom"><Card className="tj-session-time"><div className="tj-execution-title"><div><strong>Session &amp; Time Performance</strong><span>Compare session windows and entry time separately so you know where the cleanest flow is coming from before you add more size.</span></div><small>{bestSession ? `${bestSession.label} leads` : "No lead"}</small></div><div className="tj-session-time-grid">{sessionRows.map((row) => <div key={row.label}><header><strong>{row.label}</strong><span>{row.count} TRADES</span></header><em className={row.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(row.pnl)}</em><section><span className={wrColorClass(row.winRate)}>{row.winRate.toFixed(0)}% WR</span><span>{row.wins}W/{row.count - row.wins}L</span></section><small>{fmtMoney(row.pnl / row.count)} avg</small><i><b className={wrBarClass(row.winRate)} style={{ width: `${row.winRate}%` }}/></i></div>)}</div><div className="tj-entry-time-empty"><span>ENTRY TIME</span><small>{trades.some((trade) => trade.openTime) ? "Entry-time data is available on logged trades." : "Log an open time to unlock this read"}</small><p>{trades.some((trade) => trade.openTime) ? "Entry-time analysis will expand as more open times are recorded." : "Entry-time analysis will begin as soon as you add an open time to new or existing trades."}</p></div></Card>
+    <div className="tj-execution-bottom"><Card className="tj-session-time"><div className="tj-session-time-head"><div><strong>SESSION &amp; TIME PERFORMANCE</strong><span>Compare session windows and entry time separately so you know where the cleanest flow is coming from before you add more size.</span></div><small>{bestSession ? `${bestSession.label} LEADS` : "NO LEAD"}</small></div><div className="tj-session-rank-list">{sessionRows.map((row, index) => <article key={row.label}><span className="tj-session-rank">{String(index + 1).padStart(2, "0")}</span><section className="tj-session-name"><small>SESSION</small><strong>{row.label}</strong><span>{row.count} trades</span></section><section className="tj-session-quality"><small>WIN QUALITY</small><i><b className={wrBarClass(row.winRate)} style={{ width: `${row.winRate}%` }}/></i></section><section className="tj-session-share"><small>JOURNAL SHARE</small><strong className={row.pnl >= 0 ? "tj-green" : "tj-red"}>{(Math.abs(row.pnl) / sessionShareTotal * 100).toFixed(0)}%</strong><span>{fmtMoney(row.pnl / Math.max(1, row.count))} / trade</span></section></article>)}</div><div className="tj-entry-time-empty"><header><span>ENTRY TIME ANALYSIS</span><small>{trades.some((trade) => trade.openTime) ? "Entry-time data is available." : "Log an open time to populate this field"}</small></header><p>{trades.some((trade) => trade.openTime) ? "Entry-time analysis will expand as more open times are recorded." : "Entry-time analysis will begin as soon as you add an open time to new or existing trades."}</p></div></Card>
     <Card className="tj-execution-days"><div className="tj-execution-title"><strong>Day Distribution</strong><small>{dayScore < 50 ? "Needs attention" : dayScore < 75 ? "Building" : "Solid"}</small></div><div className="tj-execution-day-head"><div><strong>{dayScore}</strong><span>/100</span></div><section><strong>{dayScore < 50 ? "Developing" : dayScore < 75 ? "Building" : "Solid"}</strong><span>{dayRows.length} trading days · avg {fmtMoney(dayRows.length ? stats.netPnl / dayRows.length : 0)}/day</span><small><i className="tj-dot-green"/> {dayRows.filter((d) => d.cls === "win").length} green&nbsp;&nbsp; <i className="tj-dot-red"/> {dayRows.filter((d) => d.cls === "loss").length} red&nbsp;&nbsp; <i className="tj-dot-blue"/> {dayRows.filter((d) => d.cls === "be").length} flat</small></section></div><div className="tj-execution-day-dist"><i style={{ width: `${dayRows.length ? dayRows.filter((d) => d.cls === "win").length / dayRows.length * 100 : 0}%` }}/><b style={{ width: `${dayRows.length ? dayRows.filter((d) => d.cls === "loss").length / dayRows.length * 100 : 0}%` }}/></div><div className="tj-execution-day-metrics"><div><small>CURRENT</small><strong>{currentRun}{currentType === "loss" ? "L" : "W"}</strong></div><div><small>BEST RUN</small><strong>{Math.max(0, ...runs.filter((run) => run.cls === "win").map((run) => run.count))}d</strong></div><div><small>WORST RUN</small><strong>{Math.max(0, ...runs.filter((run) => run.cls === "loss").map((run) => run.count))}d</strong></div><div><small>AVG/DAY</small><strong>{fmtMoney(dayRows.length ? stats.netPnl / dayRows.length : 0)}</strong></div></div><div className="tj-execution-best-worst"><div><small>BEST DAY</small><strong className="tj-green">{bestDay ? fmtMoney(bestDay.pnl) : "—"}</strong><span>{bestDay?.date || "No data"}</span></div><div><small>WORST DAY</small><strong className="tj-red">{worstDay ? fmtMoney(worstDay.pnl) : "—"}</strong><span>{worstDay?.date || "No data"}</span></div></div><div className="tj-execution-section-label">LAST {recentSix.length} TRADING DAYS</div><div className="tj-execution-last-days">{recentSix.map((day) => <i key={day.date} className={day.cls === "win" ? "tj-day-win" : day.cls === "loss" ? "tj-day-loss" : "tj-day-flat"} style={{ flex: Math.max(.35, Math.abs(day.pnl) / maxDayPnl) }} title={`${day.date}: ${fmtMoney(day.pnl)}`}/>)}</div></Card></div>
   </div>;
 }
@@ -2489,12 +2620,40 @@ function RiskGuardrailsView({ account, trades, cap, stats, confluenceStats, inst
   const dragInstrument = instrumentStats[instrumentStats.length - 1];
   const costPct = stats.grossProfit ? (stats.totalCommission + stats.totalSwap) / stats.grossProfit * 100 : 0;
   const withinLimits = !latestDay?.breach && !latestMonth?.breach;
+  const lossTrades = sortedTrades.filter((trade) => Number(trade.pnl) < 0);
+  const breachTrades = breaches.map((breach) => breach.trigger).filter(Boolean);
+  const contextTrades = breachTrades.length ? breachTrades : lossTrades;
+  const topContext = (items, get) => Object.values(items.reduce((map, item) => { const key = get(item) || "Not logged"; if (!map[key]) map[key] = { label:key, count:0, pnl:0 }; map[key].count++; map[key].pnl += Math.abs(Number(item.pnl) || 0); return map; }, {})).sort((a, b) => b.pnl - a.pnl)[0];
+  const commonSession = topContext(contextTrades, (trade) => trade.entrySession || trade.session);
+  const commonInstrument = topContext(contextTrades, (trade) => trade.asset);
+  const commonModel = topContext(contextTrades, (trade) => trade.entryType || trade.confluenceSession);
+  const totalRealisedLoss = lossTrades.reduce((sum, trade) => sum + Math.abs(Number(trade.pnl) || 0), 0);
+  const instrumentLoss = topContext(lossTrades, (trade) => trade.asset);
+  const sessionLoss = topContext(lossTrades, (trade) => trade.entrySession || trade.session);
+  const modelLoss = topContext(lossTrades, (trade) => trade.entryType || trade.confluenceSession);
+  const ruleEntries = trades.flatMap((trade) => (trade.ruleEvaluations || []).map((rule) => ({ ...rule, trade })));
+  const ruleChecks = ruleEntries.filter((rule) => rule.checked).length;
+  const weakestRule = topContext(ruleEntries.filter((rule) => !rule.checked), (rule) => rule.name || "Unnamed rule");
+  const activeRules = (account.rules || []).filter((rule) => rule.active).length;
+  const recentRuleTrades = sortedTrades.slice(-6);
+  const recentRuleChecks = recentRuleTrades.map((trade) => (trade.ruleEvaluations || []).length ? (trade.ruleEvaluations || []).every((rule) => rule.checked) : null);
+  const activeCap = dailyCapPct ? dailyCapacity : monthlyLimit;
+  const averageLoss = lossTrades.length ? totalRealisedLoss / lossTrades.length : 0;
+  const riskSlices = activeCap && averageLoss ? Math.max(0, Math.ceil(activeCap / averageLoss)) : 0;
+  const capLabel = dailyCapPct ? "Daily cap" : monthlyCapPct ? "Monthly cap" : "No active loss cap";
 
   return <div className="tj-risk-workspace">
-    <Card className="tj-risk-audit"><div className="tj-risk-title"><div><strong>Guardrail Audit</strong><span>Historical checks use each period’s live starting balance, then trace the losses that consumed or crossed the configured daily and monthly caps.</span></div><small className={breaches.length ? "tj-pill tj-pill-red" : "tj-pill tj-pill-green"}>{breaches.length} breach{breaches.length === 1 ? "" : "es"}</small></div><div className="tj-risk-four"><div><small>DAILY CAP</small><strong>{dailyCapPct ? `${dailyCapPct.toFixed(2)}%` : "Not set"}</strong><span>{dayAudit.length} checked trading days</span></div><div><small>MONTHLY CAP</small><strong>{monthlyCapPct ? `${monthlyCapPct.toFixed(2)}%` : "Not set"}</strong><span>{monthAudit.length} checked months</span></div><div><small>PRE-LIMIT DAYS</small><strong className="tj-green">{dayAudit.filter((day) => day.used >= 75 && day.used < 100).length}</strong><span>Reached 75% of a daily cap</span></div><div><small>BREACH-FREE</small><strong>{breachFreeDays}</strong><span>Trading days since last breach</span></div></div><div className="tj-risk-audit-grid"><section><header><strong>DAILY CAP UTILISATION</strong><span>Recent trading days</span></header><div className="tj-risk-utilisation">{dayAudit.slice(-8).reverse().map((day) => <div key={day.date}><strong>{new Date(`${day.date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</strong><i><b className={day.used >= 100 ? "tj-bar-red" : day.used >= 75 ? "tj-bar-yellow" : "tj-bar-green"} style={{ width: `${Math.min(100, day.used)}%` }}/></i><span className={day.used >= 100 ? "tj-red" : day.used >= 75 ? "tj-wr-yellow" : "tj-green"}>{day.used.toFixed(0)}%</span></div>)}</div><footer><span><i className="tj-dot-green"/> Under 75%</span><span><i className="tj-dot-amber"/> 75% warning</span><span><i className="tj-dot-red"/> 100% breach</span></footer></section><section><header><strong>BREACH CONTRIBUTIONS</strong><span>Most recent first</span></header><div className="tj-risk-breaches">{breaches.length ? breaches.map((breach, index) => <div key={`${breach.type}-${breach.label}-${index}`}><header><span><small>{breach.type}</small><strong>{breach.label}</strong></span><b>{breach.used.toFixed(0)}% used</b></header><p>{fmtMoney(breach.pnl)} against a {fmtMoney(-breach.limit)} cap.{breach.trigger ? ` ${breach.trigger.asset} was the trade that crossed the threshold.` : ""}</p>{breach.trigger && <em>Trigger · {breach.trigger.asset} · {fmtMoney(breach.trigger.pnl)}</em>}</div>) : <div className="tj-risk-empty">No configured guardrail was breached in this trading history.</div>}</div></section></div></Card>
+    <Card className="tj-risk-audit"><div className="tj-risk-title"><div><strong>Guardrail Audit</strong><span>Historical checks use each period’s live starting balance, then trace the losses that consumed or crossed the configured daily and monthly caps.</span></div><small className={breaches.length ? "tj-pill tj-pill-red" : "tj-pill tj-pill-green"}>{breaches.length} breach{breaches.length === 1 ? "" : "es"}</small></div><div className="tj-risk-four"><div><small>DAILY CAP</small><strong>{dailyCapPct ? `${dailyCapPct.toFixed(2)}%` : "Not set"}</strong><span>{dayAudit.length} checked trading days</span></div><div><small>MONTHLY CAP</small><strong>{monthlyCapPct ? `${monthlyCapPct.toFixed(2)}%` : "Not set"}</strong><span>{monthAudit.length} checked months</span></div><div><small>PRE-LIMIT DAYS</small><strong className="tj-green">{dayAudit.filter((day) => day.used >= 75 && day.used < 100).length}</strong><span>Reached 75% of a daily cap</span></div><div><small>BREACH-FREE</small><strong>{breachFreeDays}</strong><span>Trading days since last breach</span></div></div><div className="tj-risk-audit-grid"><section><header><strong>DAILY CAP UTILISATION</strong><span>Recent trading days</span></header><div className="tj-risk-utilisation">{dayAudit.slice(-8).reverse().map((day) => <div key={day.date}><strong>{new Date(`${day.date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</strong><i><b className={day.used >= 100 ? "tj-bar-red" : day.used >= 75 ? "tj-bar-yellow" : "tj-bar-green"} style={{ width: `${Math.min(100, day.used)}%` }}/></i><span className={day.used >= 100 ? "tj-red" : day.used >= 75 ? "tj-wr-yellow" : "tj-green"}>{day.used.toFixed(0)}%</span></div>)}</div><footer><span><i className="tj-dot-green"/> Under 75%</span><span><i className="tj-dot-amber"/> 75% warning</span><span><i className="tj-dot-red"/> 100% breach</span></footer></section><section><header><strong>BREACH CONTRIBUTIONS</strong><span>Most recent first</span></header><div className="tj-risk-breaches">{breaches.length ? breaches.map((breach, index) => <div key={`${breach.type}-${breach.label}-${index}`}><header><span><small>BREACH EVENT {String(index + 1).padStart(2, "0")}</small><strong>{breach.label}</strong></span><b>GUARD BREACH</b></header><div className="tj-risk-breach-metrics"><section><small>BREACHED LIMIT</small><strong>{breach.type === "DAILY CAP" ? "Daily cap" : "Monthly cap"}</strong><span>{fmtMoney(breach.pnl)} maximum loss</span></section><section><small>CAP UTILISATION</small><strong className="tj-red">{breach.used.toFixed(0)}%</strong><span>{fmtMoney(breach.pnl)} realised loss</span></section></div><div className="tj-risk-breach-trigger"><section><small>THRESHOLD CROSSING TRADE</small><strong className="tj-red">{breach.trigger ? fmtMoney(breach.trigger.pnl) : fmtMoney(breach.pnl)}</strong><span>{breach.trigger ? "This trade moved the period beyond the active loss cap." : "This period moved beyond the active loss cap."}</span></section><b>{breach.trigger?.asset || "—"}</b></div></div>) : <div className="tj-risk-empty">No configured guardrail was breached in this trading history.</div>}</div></section></div></Card>
+
+    <div className="tj-risk-diagnostics">
+      <Card className="tj-risk-diagnostic"><header><span>BREACH PATTERN</span><strong>Where guardrails are being tested</strong><small>{breaches.length} recorded event{breaches.length === 1 ? "" : "s"}</small></header><div><section><small>REPEAT CONTEXT</small><b>{breaches.length ? `${breaches.length} breach${breaches.length === 1 ? "" : "es"}` : "No breach"}</b><span>Selected journal data</span></section><section className="tj-risk-session-danger"><small>COMMON SESSION</small><b className="tj-red">{commonSession?.label || "—"}</b><span>Threshold-crossing trade context</span></section><section><small>COMMON INSTRUMENT</small><b>{commonInstrument?.label || "—"}</b><span>Instrument behind the trigger</span></section><section><small>ENTRY MODEL</small><b>{commonModel?.label || "—"}</b><span>Model attached to the trigger</span></section></div></Card>
+      <Card className="tj-risk-diagnostic"><header><span>RISK CONCENTRATION</span><strong>Where realised loss is accumulating</strong><small className="tj-red">-{fmtMoney(totalRealisedLoss).replace(/^[-+]/, "")} realised loss</small></header><div><section><small>INSTRUMENT WEIGHT</small><b>{instrumentLoss?.label || "—"}</b><span>{instrumentLoss && totalRealisedLoss ? `${(instrumentLoss.pnl / totalRealisedLoss * 100).toFixed(0)}% of realised loss · ${instrumentLoss.count} trades` : "No loss sample"}</span></section><section className="tj-risk-session-danger"><small>SESSION WEIGHT</small><b className="tj-red">{sessionLoss?.label || "—"}</b><span>{sessionLoss && totalRealisedLoss ? `${(sessionLoss.pnl / totalRealisedLoss * 100).toFixed(0)}% of realised loss · ${sessionLoss.count} trades` : "No loss sample"}</span></section><section><small>ENTRY MODEL WEIGHT</small><b>{modelLoss?.label || "—"}</b><span>{modelLoss && totalRealisedLoss ? `${(modelLoss.pnl / totalRealisedLoss * 100).toFixed(0)}% of realised loss · ${modelLoss.count} trades` : "No loss sample"}</span></section><section><small>LARGEST CLUSTER</small><b>{totalRealisedLoss ? `${Math.max(instrumentLoss?.pnl || 0, sessionLoss?.pnl || 0, modelLoss?.pnl || 0) / totalRealisedLoss * 100 | 0}%` : "—"}</b><span>Single-context share of realised loss</span></section></div></Card>
+      <Card className="tj-risk-diagnostic"><header><span>RULE ADHERENCE</span><strong>How consistently the process is being followed</strong><small>{ruleEntries.length ? `${(ruleChecks / ruleEntries.length * 100).toFixed(0)}% checks complete` : "No rule checks"}</small></header><div><section><small>ACTIVE RULES</small><b>{activeRules}</b><span>Rules expected on every evaluated trade</span></section><section><small>TRADES EVALUATED</small><b>{trades.filter((trade) => (trade.ruleEvaluations || []).length).length}</b><span>Trades with a saved rule check</span></section><section><small>WEAKEST RULE</small><b>{weakestRule?.label || "No missed rule"}</b><span>{weakestRule ? `${weakestRule.count} incomplete check${weakestRule.count === 1 ? "" : "s"}` : "All logged checks completed"}</span></section><section><small>CLEAN RUN</small><b>{recentRuleChecks.filter((checked) => checked).length} / {recentRuleTrades.length}</b><span>Recent trades with every saved rule checked</span></section></div></Card>
+    </div>
 
     <div className="tj-risk-bottom"><Card className="tj-risk-control"><div className="tj-risk-title"><strong>Risk Control Surface</strong><small className={`tj-pill ${withinLimits ? "tj-pill-green" : "tj-pill-red"}`}>{withinLimits ? "Within limits" : "Limit reached"}</small></div><div className="tj-risk-control-grid"><section><small>LIVE RISK POSTURE</small><strong className={withinLimits ? "tj-green" : "tj-red"}>{withinLimits ? "Room to operate" : "Pause and review"}</strong><p>Loss caps are monitoring each new result against the current compounded balance.</p><hr/><small>LIVE BALANCE</small><strong className="tj-green">{fmtMoney(currentEquity)}</strong><span>{account.balance ? `${stats.netPnl / account.balance * 100 >= 0 ? "+" : ""}${(stats.netPnl / account.balance * 100).toFixed(2)}% from the journal base` : ""}</span></section><section><div><header><span>Daily loss capacity</span><strong className="tj-green">{dailyCapPct ? fmtMoney(dailyCapacity) : "Not set"}</strong></header><i><b style={{ width: `${Math.min(100, latestDay?.used || 0)}%` }}/></i><small>{latestDay?.used.toFixed(0) || 0}% of {dailyCapPct ? fmtMoney(-dailyCapacity) : fmtMoneyShort(0)} cap used on latest day</small></div><div><header><span>Monthly loss capacity</span><strong className="tj-green">{monthlyCapPct ? fmtMoney(monthlyCapacity) : "Not set"}</strong></header><i><b style={{ width: `${Math.min(100, latestMonth?.used || 0)}%` }}/></i><small>{latestMonth?.used.toFixed(0) || 0}% of {monthlyCapPct ? fmtMoney(-monthlyLimit) : fmtMoneyShort(0)} cap used in latest month</small></div><div className="tj-risk-target"><small>MONTHLY TARGET</small><strong className="tj-purple-txt">{monthlyTarget ? fmtMoney(monthlyTarget) : "Optional"}</strong><span>{monthlyTarget ? `${fmtMoney(Math.max(0, monthlyTarget - Math.max(0, latestMonth?.pnl || 0)))} left to target` : "Set a target in Account Settings"}</span></div></section><section className="tj-risk-bases"><div><small>JOURNAL BASE</small><strong>{fmtMoney(account.balance)}</strong><span>Original balance</span></div><div><small>MONTH BASE</small><strong>{fmtMoney(latestMonth?.start || account.balance)}</strong><span>{latestMonth?.pnl >= 0 ? "+" : ""}{latestMonth?.start ? (latestMonth.pnl / latestMonth.start * 100).toFixed(2) : "0.00"}% this month</span></div><div><small>YEAR BASE</small><strong>{fmtMoney(account.balance)}</strong><span>{account.balance ? `${stats.netPnl / account.balance * 100 >= 0 ? "+" : ""}${(stats.netPnl / account.balance * 100).toFixed(2)}% this year` : ""}</span></div><div><small>PEAK DRAWDOWN</small><strong className="tj-red">-{drawdownPct.toFixed(2)}%</strong><span>{fmtMoney(-peakDrawdown)} peak-to-floor</span></div></section></div></Card>
     <Card className="tj-risk-coach"><div className="tj-risk-title"><strong>Coach Notes</strong><small className="tj-pill tj-pill-green">Live</small></div><div className="tj-risk-note tj-risk-note-good"><small>LEAN IN</small><strong>{bestConfluence ? `${bestConfluence.name} is the cleanest added edge right now` : "Build a confluence sample"}</strong><span>{bestConfluence ? `${fmtMoney(bestConfluence.netPnl)} across ${bestConfluence.count} trades with ${bestConfluence.winRate.toFixed(0)}% win rate.` : "Add confluences to unlock this note."}</span></div><div className="tj-risk-note tj-risk-note-good"><small>BEST WINDOW</small><strong>{bestInstrument ? `${bestInstrument.asset} is producing the cleanest flow` : "No leading market yet"}</strong><span>{bestInstrument ? `${fmtMoney(bestInstrument.netPnl)} over ${bestInstrument.count} trades with ${bestInstrument.wins} wins.` : "Log more trades to establish a lead."}</span></div><div className="tj-risk-note tj-risk-note-warn"><small>TRIM FIRST</small><strong>{trimConfluence ? `${trimConfluence.name} needs the next review pass` : "No weak confluence identified"}</strong><span>{trimConfluence ? `${fmtMoney(trimConfluence.netPnl)} with ${trimConfluence.winRate.toFixed(0)}% win rate. Check whether the condition is genuinely helping.` : "Keep reviewing the setup sample."}</span></div><div className="tj-risk-note tj-risk-note-context"><small>RISK CONTEXT</small><strong>{monthlyCapPct ? `${fmtMoney(monthlyCapacity)} monthly buffer still available` : "Set a monthly guardrail"}</strong><span>Trade logging stays live while configured limits remain intact.</span></div><div className="tj-risk-coach-metrics"><div><small>BEST INSTRUMENT P&amp;L</small><strong className="tj-green">{bestInstrument ? fmtMoney(bestInstrument.netPnl) : "—"}</strong><span>{bestInstrument ? `${bestInstrument.asset} · ${bestInstrument.count} trades` : "No data"}</span></div><div><small>COMMISSION + SWAP</small><strong className="tj-red">{fmtMoney(-(stats.totalCommission + stats.totalSwap))}</strong><span>{costPct.toFixed(1)}% of gross profit</span></div><div><small>BEST INSTRUMENT</small><strong className="tj-green">{bestInstrument?.asset || "—"}</strong><span>{bestInstrument ? `${bestInstrument.winRate.toFixed(0)}% WR · ${bestInstrument.avgRR.toFixed(2)} RR` : "No data"}</span></div></div><footer>{bestInstrument?.asset || "The leader"} is leading with {bestInstrument ? fmtMoney(bestInstrument.netPnl) : fmtMoneyShort(0)}. {dragInstrument?.asset || "No instrument"} is the current drag at {dragInstrument ? fmtMoney(dragInstrument.netPnl) : fmtMoneyShort(0)}.</footer></Card></div>
+    <Card className="tj-risk-next"><header><div><span>NEXT-TRADE RISK</span><strong>A clear ceiling before the next lock</strong></div><small>{capLabel} is the active constraint</small></header><div><section><small>RISK SLICES</small><b>{riskSlices || "—"}</b><span>{riskSlices ? "average-loss blocks left" : "Set a loss cap to calculate"}</span></section><section><small>NEXT-TRADE RISK CEILING</small><b className="tj-green">{activeCap ? fmtMoney(activeCap) : "Not set"}</b><span>{activeCap && averageLoss ? `${(averageLoss / activeCap * 100).toFixed(0)}% of the active cap per average loss` : "No active cap"}</span></section><section><small>AVERAGE LOSSES TO LOCK</small><b>{riskSlices ? `${riskSlices} avg losses` : "—"}</b><span>{averageLoss ? `${fmtMoney(-averageLoss)} average realised loss` : "No loss sample"}</span></section></div></Card>
   </div>;
 }
 
@@ -2508,7 +2667,7 @@ function RiskManagementInsightsView({ account, trades, stats }) {
   const drawdownPct = peak ? maxDrawdown / peak * 100 : 0;
   const months = Object.values(sortedTrades.reduce((map, trade) => { const key = trade.date.slice(0, 7); if (!map[key]) map[key] = { key, pnl: 0 }; map[key].pnl += trade.pnl; return map; }, {})).sort((a, b) => a.key.localeCompare(b.key));
   let actual = account.balance; let target = account.balance;
-  const growthData = months.map((month) => { actual += month.pnl; if (monthlyGoalPct) target *= 1 + monthlyGoalPct / 100; return { label: new Date(`${month.key}-01T00:00:00`).toLocaleDateString(undefined, { month: "short", year: "numeric" }), actual, target }; });
+  const growthData = months.map((month) => { actual += month.pnl; if (monthlyGoalPct) target *= 1 + monthlyGoalPct / 100; return { label: formatMonthYear(month.key), actual, target }; });
   const winningHolds = trades.filter((trade) => trade.pnl > 0 && trade.time && trade.closeTime && trade.closeDate);
   const losingHolds = trades.filter((trade) => trade.pnl < 0 && trade.time && trade.closeTime && trade.closeDate);
   const averageHold = (rows) => rows.length ? rows.reduce((sum, trade) => {
@@ -2553,7 +2712,9 @@ function FinancePage({ account, onRecord, onDelete }) {
   const totals = financeTotals(account);
   const profitCycle = financeProfitCycle(account);
   const savingsAccounts = account.savingsAccounts || [];
-  const cashMovements = [...(account.financeMovements || [])].sort((a,b) => String(b.date).localeCompare(String(a.date)));
+  const cashMovements = [...(account.financeMovements || [])]
+    .sort((a,b) => String(b.date).localeCompare(String(a.date)))
+    .map((movement) => ({ ...movement, date: formatDate(movement.date) }));
   const requiresSavings = type === "transfer" || (type === "withdrawal" && source === "savings");
   const record = async () => {
     if (!(Number(amount) > 0) || (requiresSavings && !savingsAccountId)) return;
@@ -2896,7 +3057,7 @@ function computeMonthlyPerformance(trades, cap, balance) {
   });
   return Object.values(map).sort((a, b) => (a.key < b.key ? -1 : 1)).map((m) => ({
     ...m,
-    label: new Date(m.key + "-01T00:00:00").toLocaleDateString(undefined, { month: "short", year: "numeric" }),
+    label: formatMonthYear(m.key),
     winRate: m.count ? (m.wins / m.count) * 100 : 0,
     pctGain: balance ? (m.pnl / balance) * 100 : 0,
   }));
@@ -2905,18 +3066,20 @@ function computeMonthlyPerformance(trades, cap, balance) {
 function computeWeeklyPerformanceAll(trades, cap, balance) {
   const map = {};
   trades.forEach((t) => {
-    const d = new Date(t.date + "T00:00:00");
-    const sunday = new Date(d); sunday.setDate(d.getDate() - d.getDay());
-    const key = sunday.toISOString().slice(0, 10);
+    const d = calendarDateFromISO(t.date);
+    if (!d) return;
+    const monday = new Date(d);
+    monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    const key = calendarDateISO(monday);
     if (!map[key]) map[key] = { key, pnl: 0, wins: 0, count: 0 };
     map[key].pnl += t.pnl; map[key].count++;
     if (classify(t.pnl, cap) === "win") map[key].wins++;
   });
   return Object.values(map).sort((a, b) => (a.key < b.key ? -1 : 1)).map((m) => {
-    const sunday = new Date(m.key + "T00:00:00");
-    const saturday = new Date(sunday); saturday.setDate(sunday.getDate() + 6);
+    const monday = calendarDateFromISO(m.key);
+    const friday = new Date(monday); friday.setDate(monday.getDate() + 4);
     return {
-      ...m, label: `${fmtShortDate(sunday)} – ${fmtShortDate(saturday)}`,
+      ...m, label: `${formatDate(m.key)} – ${formatDate(calendarDateISO(friday))}`,
       winRate: m.count ? (m.wins / m.count) * 100 : 0,
       pctGain: balance ? (m.pnl / balance) * 100 : 0,
     };
@@ -2932,7 +3095,10 @@ function computeDayOfWeekPerformance(trades, cap) {
     if (classify(t.pnl, cap) === "win") map[dow].wins++;
   });
   return Object.values(map)
-    .map((m) => ({ ...m, label: DOW[m.dow], winRate: m.count ? (m.wins / m.count) * 100 : 0 }))
+    // Date#getDay() starts with Sunday, while the calendar header starts with
+    // Monday. Convert the index before reading the Monday-first label list so
+    // Friday trades cannot be displayed as Saturday trades.
+    .map((m) => ({ ...m, label: DOW[(m.dow + 6) % 7], winRate: m.count ? (m.wins / m.count) * 100 : 0 }))
     .sort((a, b) => b.pnl - a.pnl);
 }
 
@@ -2943,7 +3109,7 @@ function PerformanceTable({ title, rows, unitLabel }) {
   const avg = rows.reduce((s, r) => s + r.pnl, 0) / rows.length;
   return (
     <>
-      <Card className="tj-panel">
+      <Card className="tj-panel tj-calendar-period-panel">
         <div className="tj-panel-head"><span>{title}</span><span className="tj-muted-txt" style={{ fontSize: 13 }}>{rows.length} {unitLabel}{rows.length !== 1 ? "s" : ""}</span></div>
         <div className="tj-table-wrap">
           <table className="tj-simple-table tj-perf-table">
@@ -2992,7 +3158,7 @@ function DailyPerformanceView({ trades, cap }) {
   const least = rows[rows.length - 1];
   return (
     <>
-      <Card className="tj-panel">
+      <Card className="tj-panel tj-calendar-daily-panel">
         <div className="tj-panel-head"><span>Performance by Day of Week</span></div>
         <div className="tj-dow-list">
           {rows.map((r, i) => (
@@ -3023,31 +3189,92 @@ function DailyPerformanceView({ trades, cap }) {
   );
 }
 
-function CalendarPage({ account, monthCursor, setMonthCursor, onDayClick }) {
-  const [calTab, setCalTab] = useState("calendar");
+function CalendarPerformanceNarrative({ view, trades, cap, balance }) {
+  const rows = view === "daily"
+    ? computeDayOfWeekPerformance(trades, cap)
+    : view === "weekly"
+      ? computeWeeklyPerformanceAll(trades, cap, balance)
+      : computeMonthlyPerformance(trades, cap, balance);
+  if (!trades.length || !rows.length) return null;
+
+  const totalPnl = trades.reduce((sum, trade) => sum + trade.pnl, 0);
+  const wins = trades.filter((trade) => classify(trade.pnl, cap) === "win").length;
+  const losses = trades.filter((trade) => classify(trade.pnl, cap) === "loss").length;
+  const winRate = trades.length ? (wins / trades.length) * 100 : 0;
+  const best = rows.reduce((a, b) => b.pnl > a.pnl ? b : a);
+  const worst = rows.reduce((a, b) => b.pnl < a.pnl ? b : a);
+  const average = rows.reduce((sum, row) => sum + row.pnl, 0) / rows.length;
+  const profitablePeriods = rows.filter((row) => row.pnl > cap).length;
+  const contribution = totalPnl > 0 && best.pnl > 0 ? (best.pnl / totalPnl) * 100 : 0;
+  const instrumentMap = trades.reduce((map, trade) => {
+    const asset = trade.asset || "Unspecified instrument";
+    if (!map[asset]) map[asset] = { asset, pnl: 0, count: 0 };
+    map[asset].pnl += trade.pnl; map[asset].count += 1;
+    return map;
+  }, {});
+  const bestInstrument = Object.values(instrumentMap).sort((a, b) => b.pnl - a.pnl)[0];
+  const outcomes = [...trades].sort((a, b) => `${a.date}${a.time || ""}`.localeCompare(`${b.date}${b.time || ""}`))
+    .map((trade) => classify(trade.pnl, cap)).filter((outcome) => outcome !== "be");
+  let currentRun = 0; let longestLossRun = 0; let longestWinRun = 0; let lastOutcome = "";
+  outcomes.forEach((outcome) => {
+    currentRun = outcome === lastOutcome ? currentRun + 1 : 1;
+    if (outcome === "loss") longestLossRun = Math.max(longestLossRun, currentRun);
+    if (outcome === "win") longestWinRun = Math.max(longestWinRun, currentRun);
+    lastOutcome = outcome;
+  });
+  const periodName = view === "daily" ? "trading days" : view === "weekly" ? "weeks" : "months";
+  const current = view === "daily" ? null : rows[rows.length - 1];
+  const previous = view === "daily" ? null : rows[rows.length - 2];
+  const change = current && previous ? current.pnl - previous.pnl : 0;
+  const trendText = !current || !previous
+    ? `Your ${best.label} result is the strongest point in this view.`
+    : change >= 0
+      ? `${current.label} improved by ${fmtMoney(change)} versus the prior ${view === "weekly" ? "week" : "month"}.`
+      : `${current.label} is ${fmtMoney(Math.abs(change))} below the prior ${view === "weekly" ? "week" : "month"}.`;
+  const concentrationText = contribution >= 50
+    ? `${contribution.toFixed(0)}% of net profit comes from ${best.label}, so results are concentrated rather than evenly distributed.`
+    : `Results are spread more evenly: ${best.label} contributes ${Math.max(0, contribution).toFixed(0)}% of net profit.`;
+  const focusText = longestLossRun >= 2
+    ? `Protect the next ${periodName === "trading days" ? "session" : "period"} after a loss: the journal has reached a ${longestLossRun}-trade losing run.`
+    : `Keep the current risk process: no losing sequence has extended beyond one trade in this sample.`;
 
   return (
-    <div>
-      <div className="tj-cal-tabs">
-        <button className={`tj-newstab ${calTab === "calendar" ? "tj-newstab-active" : ""}`} onClick={() => setCalTab("calendar")}>📅 Calendar</button>
-        <button className={`tj-newstab ${calTab === "monthly" ? "tj-newstab-active" : ""}`} onClick={() => setCalTab("monthly")}>Monthly</button>
-        <button className={`tj-newstab ${calTab === "weekly" ? "tj-newstab-active" : ""}`} onClick={() => setCalTab("weekly")}>Weekly</button>
-        <button className={`tj-newstab ${calTab === "daily" ? "tj-newstab-active" : ""}`} onClick={() => setCalTab("daily")}>Daily</button>
+    <Card className="tj-calendar-narrative" aria-live="polite">
+      <div className="tj-calendar-narrative-head">
+        <div><h2>{view[0].toUpperCase() + view.slice(1)} performance readout</h2></div>
+        <div className={`tj-calendar-narrative-result ${totalPnl >= 0 ? "tj-green" : "tj-red"}`}><span>NET RESULT</span><strong>{fmtMoney(totalPnl)}</strong><small>{winRate.toFixed(0)}% win rate</small></div>
       </div>
-
-      <div className="tj-view-transition" key={calTab}>
-      {calTab === "calendar" && <AttachedPnlCalendar account={account} monthCursor={monthCursor} setMonthCursor={setMonthCursor} onDayClick={onDayClick} className="tj-main-attached-calendar"/>}
-
-      {calTab === "monthly" && (
-        <PerformanceTable title="Monthly Performance" unitLabel="month" rows={computeMonthlyPerformance(account.trades, account.breakevenCap, account.balance)} />
-      )}
-      {calTab === "weekly" && (
-        <PerformanceTable title="Weekly Performance" unitLabel="week" rows={computeWeeklyPerformanceAll(account.trades, account.breakevenCap, account.balance)} />
-      )}
-      {calTab === "daily" && (
-        <DailyPerformanceView trades={account.trades} cap={account.breakevenCap} />
-      )}
+      <div className="tj-calendar-narrative-metrics">
+        <span><small>ACTIVE {periodName.toUpperCase()}</small><b>{profitablePeriods} / {rows.length}</b></span>
+        <span><small>AVERAGE {view.toUpperCase()}</small><b className={average >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(average)}</b></span>
+        <span><small>TRADE MIX</small><b>{wins}W <i>/</i> {losses}L</b></span>
+        <span><small>BEST RUN</small><b>{longestWinRun} wins</b></span>
       </div>
+      <div className="tj-calendar-narrative-grid">
+        <section><span>WHAT THE DATA SAYS</span><p><b className={totalPnl >= 0 ? "tj-green" : "tj-red"}>{totalPnl >= 0 ? "The journal is positive." : "The journal is negative."}</b> Across {rows.length} {periodName}, the average result is <b className={average >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(average)}</b>. {trendText}</p></section>
+        <section><span>EDGE &amp; CONSISTENCY</span><p><b>{best.label}</b> is the strongest {view === "daily" ? "day" : view === "weekly" ? "week" : "month"} at <b className="tj-green">{fmtMoney(best.pnl)}</b>, while <b>{worst.label}</b> is weakest at <b className="tj-red">{fmtMoney(worst.pnl)}</b>. {concentrationText}</p></section>
+        <section><span>NEXT FOCUS</span><p>{bestInstrument?.asset ? <><b>{bestInstrument.asset}</b> is the leading instrument with <b className={bestInstrument.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(bestInstrument.pnl)}</b> across {bestInstrument.count} trade{bestInstrument.count === 1 ? "" : "s"}. </> : null}{focusText}</p></section>
+      </div>
+    </Card>
+  );
+}
+
+function CalendarPage({ account, monthCursor, setMonthCursor, onDayClick }) {
+  const [insightView, setInsightView] = useState("daily");
+  return (
+    <div className="tj-calendar-page">
+      <div className="tj-calendar-workspace">
+        <AttachedPnlCalendar account={account} monthCursor={monthCursor} setMonthCursor={setMonthCursor} onDayClick={onDayClick} className="tj-main-attached-calendar"/>
+        <aside className="tj-calendar-insights" aria-label="Calendar performance insights">
+          <div className="tj-calendar-insights-head"><div><strong>Performance insights</strong></div><nav aria-label="Performance period"><button type="button" className={insightView === "daily" ? "tj-calendar-insight-active" : ""} onClick={() => setInsightView("daily")}>Daily</button><button type="button" className={insightView === "weekly" ? "tj-calendar-insight-active" : ""} onClick={() => setInsightView("weekly")}>Weekly</button><button type="button" className={insightView === "monthly" ? "tj-calendar-insight-active" : ""} onClick={() => setInsightView("monthly")}>Monthly</button></nav></div>
+          <section className="tj-calendar-insight-section tj-view-transition" key={insightView}>
+            {insightView === "monthly" && <PerformanceTable title="Monthly Performance" unitLabel="month" rows={computeMonthlyPerformance(account.trades, account.breakevenCap, account.balance)} />}
+            {insightView === "weekly" && <PerformanceTable title="Weekly Performance" unitLabel="week" rows={computeWeeklyPerformanceAll(account.trades, account.breakevenCap, account.balance)} />}
+            {insightView === "daily" && <DailyPerformanceView trades={account.trades} cap={account.breakevenCap} />}
+          </section>
+        </aside>
+      </div>
+      <CalendarPerformanceNarrative view={insightView} trades={account.trades} cap={account.breakevenCap} balance={account.balance} />
     </div>
   );
 }
@@ -3123,31 +3350,46 @@ function PsychologyPage({ account }) {
 
 /* ================================ INSIGHTS =============================== */
 
-function AICoachPanel({ account, stats }) {
-  const [status, setStatus] = useState("idle");
-  const [report, setReport] = useState("");
-  const [message, setMessage] = useState("");
-  const generate = async () => {
-    setStatus("loading");
-    setMessage("");
-    try {
-      const { data, error } = await supabase.functions.invoke("ai-coach", { body: { accountId: account.id } });
-      if (error || !data?.report) throw error || new Error(data?.error || "AI Coach is not connected yet.");
-      setReport(data.report);
-      setStatus("ready");
-    } catch (error) {
-      setStatus("unavailable");
-      setMessage("AI Coach is ready in the journal, but it needs your OpenAI API key in the secure Supabase function before it can generate an analysis.");
-    }
-  };
-  return <Card className="tj-ai-coach-card">
-    <div className="tj-ai-coach-head"><div><span>AI COACH</span><strong>Your evidence-based trading review</strong><p>Generate a private coaching report from this account’s trades, markups, reviews, risk settings, and recurring mistakes. It looks for patterns; it does not provide trade signals or financial advice.</p></div><i className={status === "ready" ? "tj-ai-coach-ready" : ""}>{status === "ready" ? "Report ready" : "Secure connection"}</i></div>
-    {report ? <div className="tj-ai-coach-report"><div className="tj-ai-coach-report-head"><strong>Latest AI coaching report</strong><button type="button" className="tj-btn-outline tj-btn-small" onClick={generate}>Refresh analysis</button></div><p>{report}</p></div> : <div className="tj-ai-coach-empty"><div><strong>What it will examine</strong><span>{stats.total} trades · setup and session results · risk consistency · loss streaks · mistakes · plan adherence</span></div><button type="button" className="tj-btn-primary" disabled={status === "loading"} onClick={generate}>{status === "loading" ? "Analyzing journal…" : "Generate AI analysis"}</button></div>}
-    {message && <div className="tj-ai-coach-message">{message}</div>}
+function JournalPerformanceBriefing({ account, trades, stats, bestTag, bestSession, challenge }) {
+  if (!trades.length) return <Card className="tj-local-briefing"><div className="tj-empty">Log trades to build your detailed performance briefing.</div></Card>;
+  const guardrails = accountGuardrails(account, trades);
+  const averageRR = trades.reduce((sum, trade) => sum + (Number(trade.rr) || 0), 0) / trades.length;
+  const sortedTrades = [...trades].sort((a, b) => `${a.date}${a.time || ""}`.localeCompare(`${b.date}${b.time || ""}`));
+  let peak = Number(account.balance) || 0; let equity = peak; let maxDrawdown = 0;
+  sortedTrades.forEach((trade) => { equity += Number(trade.pnl) || 0; peak = Math.max(peak, equity); maxDrawdown = Math.max(maxDrawdown, peak - equity); });
+  const drawdownPct = peak ? maxDrawdown / peak * 100 : 0;
+  const dailyPnl = Object.values(trades.reduce((map, trade) => { map[trade.date] = (map[trade.date] || 0) + Number(trade.pnl || 0); return map; }, {}));
+  const bestDay = Math.max(...dailyPnl); const worstDay = Math.min(...dailyPnl);
+  const financeOn = !!account.finance?.enabled;
+  const finance = financeOn ? financeTotals(account) : null;
+  const challengeOn = isChallengeEnabled(account);
+  const passedLevels = challengeOn && !challenge?.loading ? Object.values(challenge?.state?.statuses || {}).filter((status) => status === "Pass").length : 0;
+  const activeLevel = challengeOn && !challenge?.loading ? clamp(Number(challenge?.state?.activeLevel) || 1, 1, 30) : 1;
+  const goalProgress = guardrails.monthlyGoal ? Math.max(0, guardrails.monthlyPnl) / guardrails.monthlyGoal * 100 : 0;
+  const yearProgress = guardrails.yearlyGoal ? Math.max(0, guardrails.yearlyPnl) / guardrails.yearlyGoal * 100 : 0;
+  const nextFocus = guardrails.tradeEntryLocked
+    ? "A loss guardrail is currently reached. Pause new risk until the reset window opens and review the trades that consumed the limit."
+    : stats.bestLossStreak >= 3
+      ? `The main execution risk is the ${stats.bestLossStreak}-trade losing run. Reduce frequency after consecutive losses instead of trying to recover the result immediately.`
+      : averageRR < 1
+        ? `Average reward is ${averageRR.toFixed(2)}R. Improve exits or reduce invalidation distance before increasing position size.`
+        : `Risk posture is stable. Keep position sizing consistent and prioritize the conditions behind ${bestSession?.session || "your strongest session"}.`;
+
+  return <Card className="tj-local-briefing">
+    <div className="tj-local-briefing-head"><div><h2>Your journal, risk plan, and capital in one read</h2></div><div className={`tj-local-briefing-result ${stats.netPnl >= 0 ? "tj-green" : "tj-red"}`}><small>NET JOURNAL RESULT</small><strong>{fmtMoney(stats.netPnl)}</strong><span>{stats.total} trades · {stats.winRate.toFixed(0)}% win rate</span></div></div>
+    <div className="tj-local-briefing-metrics"><section className="tj-insight-metric-profit"><small>PROFIT FACTOR</small><strong>{stats.profitFactor.toFixed(2)}</strong><span>{stats.avgWinLoss.toFixed(2)} average win/loss</span></section><section className="tj-insight-metric-expectancy"><small>EXPECTANCY</small><strong className={stats.netPnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(stats.netPnl / stats.total)}</strong><span>Expected result per trade</span></section><section className="tj-insight-metric-rr"><small>AVERAGE RISK / REWARD</small><strong className="tj-purple-txt">{averageRR.toFixed(2)}R</strong><span>Across the full journal</span></section><section className="tj-insight-metric-drawdown"><small>MAX DRAWDOWN</small><strong className="tj-red">-{drawdownPct.toFixed(2)}%</strong><span>{fmtMoney(-maxDrawdown)} peak to floor</span></section></div>
+    <div className="tj-local-briefing-grid">
+      <section className="tj-insight-card-performance"><span>PERFORMANCE QUALITY</span><h3>{stats.netPnl >= 0 ? "The journal is profitable, but quality matters more than the total." : "The journal is under pressure and needs selective recovery."}</h3><p>{stats.wins} wins, {stats.losses} losses and {stats.be} breakeven trade{stats.be === 1 ? "" : "s"} produced <b className={stats.netPnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(stats.netPnl)}</b>. Best day: <b className="tj-green">{fmtMoney(bestDay)}</b>; worst day: <b className="tj-red">{fmtMoney(worstDay)}</b>. The current recovery rate after a loss is {stats.recovery.toFixed(0)}%.</p></section>
+      <section className="tj-insight-card-edge"><span>EXECUTION EDGE</span><h3>{bestSession ? `${bestSession.session} is the strongest execution window.` : "Session data needs a larger sample."}</h3><p>{bestSession ? <><b>{bestSession.session}</b> has returned <b className="tj-green">{fmtMoney(bestSession.netPnl)}</b> from {bestSession.count} trades at {bestSession.winRate.toFixed(0)}% win rate. </> : null}{bestTag ? <><b>{bestTag.tag}</b> is the strongest tagged setup at <b className="tj-green">{fmtMoney(bestTag.netPnl)}</b> across {bestTag.count} trades. </> : "Tag setups and sessions to isolate the repeatable edge. "}Best winning run: {stats.bestWinStreak} trades; maximum losing run: {stats.bestLossStreak} trades.</p></section>
+      <section className="tj-insight-card-goals"><span>RISK &amp; GOALS</span><h3>{guardrails.tradeEntryLocked ? "Risk limit reached — trading is paused." : guardrails.enabled ? "Goals and guardrails are actively monitoring the account." : "No account goals or loss caps are enabled."}</h3><p>{guardrails.monthlyGoal ? <>Monthly goal: <b>{fmtMoney(guardrails.monthlyGoal)}</b>; current month: <b className={guardrails.monthlyPnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(guardrails.monthlyPnl)}</b> ({goalProgress.toFixed(0)}% complete). </> : "No monthly profit target is set. "}{guardrails.yearlyGoal ? <>Yearly goal progress is {yearProgress.toFixed(0)}%. </> : null}{guardrails.dailyLossCap ? <>Daily loss buffer: <b>{fmtMoney(Math.max(0, guardrails.dailyLossCap + Math.min(0, guardrails.dailyPnl)))}</b> remaining. </> : "No daily loss cap is set. "}{guardrails.monthlyLossCap ? <>Monthly buffer: <b>{fmtMoney(Math.max(0, guardrails.monthlyLossCap + Math.min(0, guardrails.monthlyPnl)))}</b> remaining.</> : null}</p></section>
+      {challengeOn && <section className="tj-insight-card-challenge"><span>CHALLENGE STATUS</span><h3>{challenge?.loading ? "Challenge progress is loading." : `Level ${activeLevel} is the current challenge focus.`}</h3><p>Challenge mode is enabled from a starting balance of <b>{fmtMoney(account.challengeStartingBalance)}</b>. {challenge?.loading ? "Progress will appear when the challenge record is ready." : <>{passedLevels} of 30 levels have passed. Keep trade risk aligned with the current level rather than using the journal’s strongest historic result as a sizing signal.</>}</p></section>}
+      {financeOn && <section className="tj-insight-card-finance"><span>CAPITAL &amp; FINANCE</span><h3>{finance.savings > 0 ? "Trading capital and savings are being tracked separately." : "Finance tracking is active for this account."}</h3><p>Live trading capital is <b>{fmtMoney(finance.tradingBalance)}</b>; savings total <b>{fmtMoney(finance.savings)}</b>; combined capital is <b className="tj-green">{fmtMoney(finance.totalCapital)}</b>. Deposits total {fmtMoney(finance.deposits)} and withdrawals total {fmtMoney(finance.withdrawals)}. Trading P&amp;L remains separate from cash movements.</p></section>}
+      <section className="tj-local-briefing-focus"><span>NEXT FOCUS</span><h3>Use the evidence before the next trade.</h3><p>{nextFocus}</p></section>
+    </div>
   </Card>;
 }
 
-function InsightsPage({ account }) {
+function InsightsPage({ account, challenge }) {
   const trades = account.trades || [];
   const cap = account.breakevenCap;
   const stats = computeStats(trades, cap);
@@ -3180,10 +3422,10 @@ function InsightsPage({ account }) {
   return (
     <div className="tj-insights-workspace">
       <Card className="tj-insights-hero">
-        <div className="tj-insights-hero-copy"><span>INSIGHTS &amp; AI COACH</span><h2>Edge Optimization</h2><p>Turn real execution history into clearer decisions on risk, growth, and where discipline needs tightening.</p><div className="tj-insights-pills"><i>{bestSession ? `${bestSession.session} is the strongest session` : "Build a session sample"}</i><i>{bestTag ? `${bestTag.tag} is the strongest tagged setup` : "Tag entry models to find the edge"}</i><i>{fmtMoney(expectancy)} expectancy per trade</i></div></div>
+        <div className="tj-insights-hero-copy"><span>INSIGHT</span><h2>Edge Optimization</h2><p>Turn real execution history into clearer decisions on risk, growth, and where discipline needs tightening.</p><div className="tj-insights-pills"><i>{bestSession ? `${bestSession.session} is the strongest session` : "Build a session sample"}</i><i>{bestTag ? `${bestTag.tag} is the strongest tagged setup` : "Tag entry models to find the edge"}</i><i>{fmtMoney(expectancy)} expectancy per trade</i></div></div>
         <div className="tj-insights-return"><small>COMPOUNDED RETURN</small><strong className={compoundedReturn >= 0 ? "tj-green" : "tj-red"}>{compoundedReturn >= 0 ? "+" : ""}{compoundedReturn.toFixed(2)}%</strong><span>{fmtMoney(currentEquity)} live balance</span></div>
       </Card>
-      <AICoachPanel account={account} stats={stats} />
+      <JournalPerformanceBriefing account={account} trades={trades} stats={stats} bestTag={bestTag} bestSession={bestSession} challenge={challenge} />
       <RiskManagementInsightsView account={account} trades={trades} stats={stats} />
     </div>
   );
@@ -3261,10 +3503,10 @@ function NewsPage() {
     getCalendarWeek(weekOffset).then((result) => {
       if (cancelled) return;
       if (!result.events) {
-        // Live feed truly unavailable (e.g. blocked in this preview sandbox,
-        // offline, or rate-limited with no prior cache) — fall back to a
-        // small bundled sample so the page still demonstrates the feature.
-        setFeed({ events: sampleWeekEvents(weekOffset), source: "sample", fetchedAt: null });
+        // Never present sample events as current market news. If neither the
+        // live feed nor a real cached result is available, keep that state
+        // explicit and let the empty state explain it.
+        setFeed({ events: [], source: "unavailable", fetchedAt: null });
       } else {
         setFeed(result);
       }
@@ -3282,6 +3524,20 @@ function NewsPage() {
   const highCount = filtered.filter((e) => e.impact === "high").length;
   const medCount = filtered.filter((e) => e.impact === "medium").length;
   const currencyCount = new Set(filtered.map((e) => e.currency)).size;
+  const pairWatchlist = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "USD/CHF", "NZD/USD", "GBP/JPY", "EUR/GBP", "AUD/JPY"];
+  const pairRisk = pairWatchlist.map((pair) => {
+    if (feed.source === "unavailable") return { pair, level: "unavailable", events: 0, detail: "Calendar data is unavailable" };
+    const currenciesInPair = pair.split("/");
+    const related = events.filter((event) => currenciesInPair.includes(event.currency) && event.impact !== "holiday");
+    const high = related.filter((event) => event.impact === "high");
+    const medium = related.filter((event) => event.impact === "medium");
+    return {
+      pair,
+      level: high.length ? "high" : medium.length ? "medium" : "low",
+      events: high.length || medium.length,
+      detail: high.length ? `${high.length} high-impact event${high.length === 1 ? "" : "s"}` : medium.length ? `${medium.length} medium-impact event${medium.length === 1 ? "" : "s"}` : "No major events",
+    };
+  });
 
   const rangeFallback = getWeekRangeFromEvents(weekOffset);
   const rangeStart = dayKeysSorted.length ? new Date(dayKeysSorted[0]) : rangeFallback.sunday;
@@ -3295,7 +3551,7 @@ function NewsPage() {
     ? <span className="tj-pill" style={{ background: "rgba(96,165,250,0.15)", color: "#60A5FA" }}>CACHED (offline)</span>
     : feed.source === "loading"
     ? <span className="tj-pill tj-pill-neutral">LOADING…</span>
-    : <span className="tj-pill" style={{ background: "rgba(251,191,36,0.15)", color: "#FBBF24" }}>SAMPLE DATA</span>;
+    : <span className="tj-pill" style={{ background: "rgba(188,89,103,0.15)", color: "var(--tj-red)" }}>UNAVAILABLE</span>;
 
   return (
     <Card className="tj-panel">
@@ -3333,6 +3589,25 @@ function NewsPage() {
               <button key={c} className={`tj-chip ${currency === c ? "tj-chip-active" : ""}`} onClick={() => setCurrency(c)}>{c}</button>
             ))}
           </div>
+
+          <section className="tj-pair-risk-card" aria-label="Weekly pair risk assessment">
+            <div className="tj-pair-risk-head">
+              <div>
+                <div className="tj-pair-risk-title">📊 Weekly Pair Risk Assessment</div>
+                <p>Pairs affected by high- or medium-impact events this week. Reduce size or wait through the release window.</p>
+              </div>
+              <span className="tj-pair-risk-week">{WEEK_LABELS[String(weekOffset)] || "This Week"}</span>
+            </div>
+            <div className="tj-pair-risk-grid">
+              {pairRisk.map((item) => (
+                <div key={item.pair} className={`tj-pair-risk-item tj-pair-risk-${item.level}`} title={item.detail}>
+                  <strong>{item.pair}</strong>
+                  <span>{item.level === "high" ? "HIGH RISK" : item.level === "medium" ? "WATCH" : item.level === "unavailable" ? "NO DATA" : "LOW RISK"}</span>
+                  <small>{item.events ? `${item.events} event${item.events === 1 ? "" : "s"}` : item.level === "unavailable" ? "Check feed" : "Clear calendar"}</small>
+                </div>
+              ))}
+            </div>
+          </section>
 
           <div className="tj-news-infobar">
             <span>⚡ All times shown in: <span className="tj-purple-txt">{tz} {gmtLabel}</span></span>
@@ -3509,12 +3784,11 @@ function TradingJournalApp({ user, onLogout }) {
       // Keep a single stable hover target across the row and its nested controls.
       const journalRow = target?.closest('.tj-tlog-row, .tj-reference-markup-row');
       if (journalRow) target = journalRow;
-      while (target && !target.classList.contains('tj-root')) {
-        if (target === journalRow) break;
-        if (getComputedStyle(target).cursor === 'pointer' &&
-            (target.matches('button, a, [role="button"], [role="tab"], tr, [tabindex]') || target.onclick)) break;
-        target = target.parentElement;
-      }
+      // Do not read computed styles while the pointer moves. On the dashboard
+      // that forces repeated style/layout work across a large chart tree and
+      // makes an otherwise composited sidebar transition hitch. The journal
+      // rows above cover the only non-semantic clickable surfaces we need.
+      if (!journalRow) target = target?.closest('button, a, [role="button"], [role="tab"], tr, [tabindex]') || null;
       if (!target || target.classList.contains('tj-root') || !target.closest('.tj-root') || target.closest(':disabled, [aria-disabled="true"]')) return clear();
       if (target !== active) { clear(); active = target; }
       cancelAnimationFrame(frame);
@@ -3658,7 +3932,7 @@ function TradingJournalApp({ user, onLogout }) {
     setLoaded(false);
     // Existing accounts should render immediately. Demo setup is only needed once
     // and used to block Safari behind several extra network requests on every load.
-    if (user.user_metadata?.demo_history_version !== 3) {
+    if (user.user_metadata?.demo_history_version !== 4) {
       try { await ensureDemoAccount(user); }
       catch (error) { setLoadError(error.message || "Journal setup could not finish. Please retry."); setLoaded(true); return false; }
     }
@@ -3977,13 +4251,17 @@ function TradingJournalApp({ user, onLogout }) {
       return;
     }
     if (exists) {
+      setAccounts((accs) => accs.map((a) => (a.id !== account.id ? a : { ...a, trades: a.trades.map((t) => (t.id === trade.id ? trade : t)) })));
+      setModal(null); setEditingTrade(null); setNewTradeDraft(null);
       const res = await updateTrade(trade.id, { ...trade, userId: user.id, accountId: account.id });
       if (res.error) { showError(res.error); return; }
-      setAccounts((accs) => accs.map((a) => (a.id !== account.id ? a : { ...a, trades: a.trades.map((t) => (t.id === trade.id ? trade : t)) })));
+      setAccounts((accs) => accs.map((a) => (a.id !== account.id ? a : { ...a, trades: a.trades.map((t) => (t.id === trade.id ? (res.data || trade) : t)) })));
     } else {
+      setAccounts((accs) => accs.map((a) => (a.id !== account.id ? a : { ...a, trades: [...a.trades, trade] })));
+      setModal(null); setEditingTrade(null); setNewTradeDraft(null);
       const res = await createTrade(user.id, account.id, trade);
-      if (res.error) { showError(res.error); return; }
-      setAccounts((accs) => accs.map((a) => (a.id !== account.id ? a : { ...a, trades: [...a.trades, res.data] })));
+      if (res.error) { setAccounts((accs) => accs.map((a) => (a.id !== account.id ? a : { ...a, trades: a.trades.filter((item) => item.id !== trade.id) }))); showError(res.error); return; }
+      setAccounts((accs) => accs.map((a) => (a.id !== account.id ? a : { ...a, trades: a.trades.map((item) => item.id === trade.id ? (res.data || trade) : item) })));
     }
     const rewardPreset = Number(trade.rr);
     if (Number.isFinite(rewardPreset) && rewardPreset > 0) {
@@ -4000,7 +4278,6 @@ function TradingJournalApp({ user, onLogout }) {
     }
     await markMarkupExecuted(trade.premarketMarkupId);
     await persistCustomInstrument(trade.asset);
-    setModal(null); setEditingTrade(null); setNewTradeDraft(null);
   };
 
   const importTradesToAccount = async (targetAccount, plan, onProgress) => {
@@ -4161,11 +4438,12 @@ function TradingJournalApp({ user, onLogout }) {
   };
   const handleSaveMarkup = async (markup) => {
     const exists = markups.some((item) => item.id === markup.id);
-    const res = exists ? await updateMarkup(markup.id, markup) : await createMarkup(user.id, account.id, markup);
-    if (res.error) return showError(res.error);
-    setMarkups((items) => exists ? items.map((item) => item.id === markup.id ? res.data : item) : [res.data, ...items]);
-    await persistCustomInstrument(markup.instrument);
+    setMarkups((items) => exists ? items.map((item) => item.id === markup.id ? markup : item) : [markup, ...items]);
     setModal(null); setEditingMarkup(null);
+    const res = exists ? await updateMarkup(markup.id, markup) : await createMarkup(user.id, account.id, markup);
+    if (res.error) { if (!exists) setMarkups((items) => items.filter((item) => item.id !== markup.id)); return showError(res.error); }
+    setMarkups((items) => items.map((item) => item.id === markup.id ? res.data : item));
+    await persistCustomInstrument(markup.instrument);
   };
   const handleDeleteMarkup = async (id) => {  const res=await deleteMarkup(id); if(res.error)return showError(res.error); setMarkups(x=>x.filter(m=>m.id!==id)); };
   const handleSaveReview = async (r) => { const res=await saveTradeReview(user.id,account.id,r); if(res.error){showError(res.error);return false;}setReviews(x=>{const i=x.findIndex(v=>v.id===res.data.id);return i<0?[res.data,...x]:x.map(v=>v.id===res.data.id?res.data:v);}); return true; };
@@ -4232,18 +4510,22 @@ function TradingJournalApp({ user, onLogout }) {
   };
 
   const handleSaveProfileSettings = async ({ fullName, displayName: nextName, avatarUrl, themePreference, accentColor, timezone, dateFormat, timeFormat, sessionTimeoutMinutes: nextTimeout }) => {
-    const profileResult = await updateProfile({ fullName, displayName: nextName, avatarUrl, sessionTimeoutMinutes: nextTimeout, theme: profileTheme, themePreference, accentColor, timezone, dateFormat, timeFormat });
-    if (profileResult.error) { showError(profileResult.error); return false; }
+    const previous = { profileTheme, profileAccent, profileDetails };
     setProfileTheme(themePreference); setProfileAccent(accentColor);
     setProfileDetails({ fullName, displayName: nextName || fullName, avatarUrl, timezone, dateFormat, timeFormat });
     window.localStorage.setItem(`tj:profile-theme:${user.id}`, themePreference);
     setModal(null);
+    const profileResult = await updateProfile({ fullName, displayName: nextName, avatarUrl, sessionTimeoutMinutes: nextTimeout, theme: profileTheme, themePreference, accentColor, timezone, dateFormat, timeFormat });
+    if (profileResult.error) { setProfileTheme(previous.profileTheme); setProfileAccent(previous.profileAccent); setProfileDetails(previous.profileDetails); window.localStorage.setItem(`tj:profile-theme:${user.id}`, previous.profileTheme); showError(profileResult.error); return false; }
     return true;
   };
   const handleQuickThemeToggle = async () => {
     const previous = profileTheme;
     const next = previous === "dark" ? "light" : "dark";
-    setProfileTheme(next);
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const applyTheme = () => flushSync(() => setProfileTheme(next));
+    if (!reduceMotion && typeof document.startViewTransition === "function") document.startViewTransition(applyTheme);
+    else applyTheme();
     window.localStorage.setItem(`tj:profile-theme:${user.id}`, next);
     const result = await updateProfile({ fullName: profileDetails.fullName || displayName, displayName, avatarUrl: personalProfileImage, sessionTimeoutMinutes, theme: next, themePreference: next, accentColor: profileAccent, timezone: profileDetails.timezone, dateFormat: profileDetails.dateFormat, timeFormat: profileDetails.timeFormat });
     if (result.error) {
@@ -4307,27 +4589,28 @@ function TradingJournalApp({ user, onLogout }) {
       
       {toast && <div className={`tj-toast tj-toast-${toast.type}`}>{toast.text}</div>}
       <div className={`tj-sidebar ${sidebarOpen ? "tj-sidebar-shown" : "tj-sidebar-collapsed"}`}>
-        <div className="tj-sidebar-scroll">
-          <button type="button" className="tj-sidebar-profile" aria-label="Open profile settings" title="Profile settings" onClick={() => setModal("profile")}>
+        <div className="tj-sidebar-header">
+          <button type="button" className="tj-sidebar-profile" aria-label="Open profile settings" onClick={() => setModal("profile")}>
             <span className="tj-sidebar-profile-avatar">{personalProfileImage ? <img src={personalProfileImage} alt={`${displayName} profile`} /> : personalInitials}</span>
           </button>
-          <div className="tj-nav-label">NAVIGATION</div>
+        </div>
+        <div className="tj-sidebar-scroll">
           <div className="tj-nav">{NAV.filter(n => (n.id !== 'challenge' || isChallengeEnabled(account)) && (n.id !== 'finance' || account.finance?.enabled)).map((n) => <button key={n.id} className={`tj-nav-item ${page === n.id ? "tj-nav-active" : ""}`} onClick={() => { setPage(n.id); setShowAccountMenu(false); if (window.innerWidth <= 900) setSidebarOpen(false); }}>{n.symbol ? <NavSymbol src={n.symbol} /> : <n.icon size={16} />} <span>{n.label}</span></button>)}</div>
           <div className="tj-nav-label">SETTINGS</div>
           <div className="tj-nav">
             <button className="tj-nav-item" disabled={guardrails.tradeEntryLocked} title={guardrails.tradeEntryLocked ? "Account settings are locked by the account loss limit" : "Account settings"} onClick={() => setModal("account")}><WalletCards size={16} /> <span>{guardrails.tradeEntryLocked ? "Account Locked" : "Account"}</span></button>
             <button className="tj-nav-item" onClick={() => setModal("profile")}><UserRound size={16} /> <span>Profile</span></button>
             <button className="tj-nav-item tj-nav-danger" onClick={onLogout}><LogOut size={16} /> <span>Log Out</span></button>
-            <button className="tj-nav-item tj-theme-nav" onClick={handleQuickThemeToggle} aria-label={profileTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"} title={profileTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>{profileTheme === "dark" ? <Sun size={17}/> : <Moon size={17}/>}</button>
+            <button className="tj-nav-item tj-theme-nav" onClick={handleQuickThemeToggle} aria-label={profileTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"} title={profileTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}><span className="tj-theme-toggle-icons" aria-hidden="true"><Sun className="tj-theme-toggle-sun" size={17}/><Moon className="tj-theme-toggle-moon" size={17}/></span><span>Theme</span></button>
             <button className="tj-nav-item tj-sync-nav" disabled={syncing} onClick={syncJournal} title={lastSyncedAt ? `Sync journal · last synced ${new Date(lastSyncedAt).toLocaleString()}` : "Sync journal"}><RefreshCw className={syncing ? "tj-syncing-icon" : ""} size={16}/><span>{syncing ? "Syncing…" : "Sync"}</span></button>
           </div>
         </div>
-        <div className="tj-sidebar-import">
-          <button className="tj-nav-item tj-import-nav" title="Import trades" aria-label="Import trades" onClick={() => { if (guardrails.tradeEntryLocked) return showInfo("Trade imports are paused by this account's loss limit."); setModal("import"); setShowAccountMenu(false); }}>
-            <FileUp size={16} /> <span>Import trades</span>
-          </button>
-        </div>
         <div className="tj-sidebar-footer" ref={accountMenuRef}>
+          <div className="tj-sidebar-import">
+            <button className="tj-nav-item tj-import-nav" title="Import trades" aria-label="Import trades" onClick={() => { if (guardrails.tradeEntryLocked) return showInfo("Trade imports are paused by this account's loss limit."); setModal("import"); setShowAccountMenu(false); }}>
+              <FileUp size={16} /> <span>Import trades</span>
+            </button>
+          </div>
           {showAccountMenu && (
             <div className="tj-account-menu">
               <div className="tj-account-center-head">
@@ -4363,7 +4646,7 @@ function TradingJournalApp({ user, onLogout }) {
         <div className="tj-topbar">
           <div className="tj-topbar-left">
             <button className="tj-icon-btn tj-sidebar-toggle" title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"} aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"} aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((v) => !v)}>{sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button>
-            <div><div className="tj-page-title">{NAV.find((n) => n.id === page)?.label || "Settings"}</div><div className="tj-page-sub">{formatDate(new Date())}</div></div>
+            <div className="tj-page-heading"><div className="tj-page-title">{NAV.find((n) => n.id === page)?.label || "Settings"}</div></div>
           </div>
           {page === "dashboard" ? <button className="tj-btn-primary" onClick={() => { setEditingMarkup(null); setModal("markup"); }}><Plus size={16} /> Start Day</button> : <button className={`tj-btn-primary ${guardrails.tradeEntryLocked ? "tj-btn-disabled" : ""}`} disabled={guardrails.tradeEntryLocked} title={guardrails.tradeEntryLocked ? "Trade entry is paused by your account loss cap" : "Log a new trade"} onClick={() => openNewTrade()}><Plus size={16} /> {guardrails.tradeEntryLocked ? "Trade Locked" : "Log Trade"}</button>}
         </div>
@@ -4378,7 +4661,7 @@ function TradingJournalApp({ user, onLogout }) {
           {page === "challenge" && isChallengeEnabled(account) && <ChallengePage key={account.id} account={account} challenge={challenge} loginQuote={loginQuote}/>}
           {page === "calendar" && <CalendarPage account={account} markups={markups.filter((markup)=>markup.accountId===account.id)} reviews={reviews.filter((review)=>review.accountId===account.id)} monthCursor={monthCursor} setMonthCursor={setMonthCursor} onDayClick={openDayDetails} />}
           {page === "psychology" && <PsychologyPage account={account} />}
-          {page === "insights" && <InsightsPage account={account} />}
+          {page === "insights" && <InsightsPage account={account} challenge={challenge} />}
           {page === "news" && <NewsPage />}
           {page === "management" && <ManagementPage account={account} typeTags={typeTags} mistakeTags={mistakeTags} confluenceSessions={confluenceSessions} instruments={customInstruments} onTypeTags={(x)=>saveList("types",x)} onMistakes={(x)=>saveList("mistakes",x)} onConfluence={(x)=>saveList("confluence",x)} onInstruments={(x)=>saveList("instruments",x)} onAddRule={handleAddRule} onUpdateRule={handleUpdateRule} onRemoveRule={handleRemoveRule} />}
           {page === "markups" && <ReferenceMarkupsPage markups={markups.filter((markup)=>markup.accountId===account.id)} trades={account.trades} onNew={()=>{setEditingMarkup(null);setModal("markup");}} onEdit={(markup)=>{setEditingMarkup(markup);setModal("markup");}} onDelete={handleDeleteMarkup} onTrade={(markup)=>openNewTrade({ premarketMarkupId: markup.id, asset: markup.instrument || "", entrySession: markup.market || SESSIONS[2], session: markup.market || SESSIONS[2] })} />}
@@ -4430,7 +4713,7 @@ html:has(.tj-root) { font-size: 93.75%; }
   --tj-text: #F4F7FA; --tj-muted: #95A1B1; --tj-green: #50C6A0; --tj-red: #BC5967;
   --tj-purple: #8B7CF6; --tj-blue: #60A5FA; --tj-amber: #FBBF24; --tj-winrate-amber: #D9A441;
   --tj-input-bg: #141B26; --tj-chart-bg: #141B26; --tj-chart-grid: #27313D; --tj-chart-text: #95A1B1;
-  --tj-tooltip-bg: #1C232B; --tj-primary-hover: #44A188; --tj-primary-muted: rgba(80,198,160,0.18); --tj-accent: #6EE7B7; --tj-accent-muted: rgba(110,231,183,.16); --tj-accent-border: rgba(110,231,183,.48);
+  --tj-tooltip-bg: #1C232B; --tj-chart-hover: rgba(149,161,177,.12); --tj-primary-hover: #44A188; --tj-primary-muted: rgba(80,198,160,0.18); --tj-accent: #6EE7B7; --tj-accent-muted: rgba(110,231,183,.16); --tj-accent-border: rgba(110,231,183,.48);
   --tj-shadow: 0 16px 36px rgba(0,0,0,0.32); --tj-primary-contrast: #0B241E; --tj-grid-line: rgba(149,161,177,0.045);
   --tj-bg-glow-left: rgba(18,96,72,.17); --tj-bg-glow-right: rgba(62,78,124,.15);
   --tj-scroll-track: #111A23; --tj-scroll-thumb: #2E7669; --tj-scroll-thumb-hover: #50C6A0;
@@ -4440,7 +4723,7 @@ html:has(.tj-root) { font-size: 93.75%; }
   --tj-text: #17221A; --tj-muted: #65746A; --tj-green: #44A188; --tj-red: #B95664;
   --tj-purple: #6D5FD8; --tj-blue: #2563EB; --tj-amber: #B45309; --tj-winrate-amber: #9A6700;
   --tj-input-bg: #FFFFFF; --tj-chart-bg: #FFFFFF; --tj-chart-grid: #D7E1D9; --tj-chart-text: #536258;
-  --tj-tooltip-bg: #FFFFFF; --tj-primary-hover: #357F6D; --tj-primary-muted: rgba(80,198,160,0.14); --tj-accent: #059669; --tj-accent-muted: rgba(5,150,105,.14); --tj-accent-border: rgba(5,150,105,.48);
+  --tj-tooltip-bg: #FFFFFF; --tj-chart-hover: rgba(23,34,26,.08); --tj-primary-hover: #357F6D; --tj-primary-muted: rgba(80,198,160,0.14); --tj-accent: #059669; --tj-accent-muted: rgba(5,150,105,.14); --tj-accent-border: rgba(5,150,105,.48);
   --tj-shadow: 0 14px 30px rgba(19,35,26,0.10); --tj-primary-contrast: #FFFFFF; --tj-grid-line: rgba(52, 86, 113, .075);
   --tj-bg-glow-left: rgba(58, 170, 132, .11); --tj-bg-glow-right: rgba(86, 125, 188, .13);
   --tj-scroll-track: #E7EEF2; --tj-scroll-thumb: #83B7A9; --tj-scroll-thumb-hover: #44A188;
@@ -4498,8 +4781,9 @@ html:has(.tj-root) { font-size: 93.75%; }
 .tj-green { color: var(--tj-green); } .tj-red { color: var(--tj-red); } .tj-blue { color: var(--tj-blue); }
 .tj-muted-txt { color: var(--tj-muted); } .tj-purple-txt { color: var(--tj-purple); }
 
-.tj-sidebar { width:220px; min-width:0; height:100vh; overflow:visible; background:var(--tj-chrome); border-right:1px solid var(--tj-border); display:flex; flex-direction:column; padding:18px 14px; position:relative; flex:0 0 auto; will-change:width,padding; transition:width .3s cubic-bezier(.4,0,.2,1), padding .3s cubic-bezier(.4,0,.2,1); box-shadow:12px 0 28px rgba(0,0,0,0.08); }
-.tj-sidebar-toggle { background: var(--tj-panel-alt); border: 1px solid var(--tj-border); border-radius: 9px; width: 32px; height: 32px; }
+.tj-sidebar { width:220px; min-width:0; height:100vh; overflow:visible; background:var(--tj-chrome); border-right:1px solid var(--tj-border); display:flex; flex-direction:column; padding:18px 14px; position:relative; flex:0 0 auto; box-shadow:12px 0 28px rgba(0,0,0,0.08); }
+.tj-sidebar-toggle { width:32px; height:32px; min-width:32px; min-height:32px; flex:0 0 32px; display:grid; place-items:center; padding:0; line-height:0; background:var(--tj-panel-alt); border:1px solid var(--tj-border); border-radius:9px; }
+.tj-sidebar-toggle svg { display:block; }
 @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
   .tj-root :is(button, a, [role="button"], [role="tab"], tr) { transition: background-color .25s ease, box-shadow .3s ease, border-color .25s ease, translate .3s cubic-bezier(.22,1,.36,1); }
   .tj-root .tj-pointer-lit {
@@ -4510,16 +4794,17 @@ html:has(.tj-root) { font-size: 93.75%; }
 }
 .tj-root :is(button, a, [role="button"], [role="tab"]):focus-visible { outline: 2px solid var(--tj-accent); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { .tj-sidebar { transition: none; } }
-.tj-sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width:none; -ms-overflow-style:none; }.tj-sidebar-scroll::-webkit-scrollbar { display:none; }
+.tj-sidebar-header { flex:0 0 auto; }.tj-sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width:none; -ms-overflow-style:none; }.tj-sidebar-scroll::-webkit-scrollbar { display:none; }
 .tj-sidebar-collapsed { width:64px; padding:14px 8px; }
 .tj-backdrop { display: none; }
-.tj-sidebar-profile { width: 100%; min-height: 80px; display: grid; place-items: center; margin: 0 0 18px; padding: 4px; border: 0; background: transparent; color: var(--tj-text); cursor: pointer; }
+.tj-sidebar-profile { width: 100%; min-height: 80px; display: grid; place-items: center; margin: 0 0 14px; padding: 4px 4px 14px; border: 0; border-bottom: 1px solid var(--tj-border); background: transparent; color: var(--tj-text); cursor: pointer; }
+.tj-sidebar-profile.tj-pointer-lit { background-image: none !important; box-shadow: none !important; translate: none !important; }
 .tj-sidebar-profile:hover .tj-sidebar-profile-avatar { border-color: var(--tj-green); box-shadow: 0 8px 24px color-mix(in srgb, var(--tj-green) 24%, transparent); }
 .tj-sidebar-profile-avatar { width: 64px; height: 64px; display: grid; place-items: center; overflow: hidden; border: 2px solid color-mix(in srgb, var(--tj-green) 40%, var(--tj-border)); border-radius: 50%; background: var(--tj-panel-alt); color: var(--tj-green); font-size: 1.485rem; font-weight: 900; box-shadow: 0 8px 20px rgba(0,0,0,.2); }
 .tj-sidebar-profile-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .tj-nav-label { font-size: 0.75rem; letter-spacing: 1.2px; color: var(--tj-muted); margin: 14px 4px 8px; font-weight: 600; }
 .tj-nav { display: flex; flex-direction: column; gap: 2px; }
-.tj-nav-item { display: flex; align-items: center; gap: 10px; background: none; border: 1px solid transparent; color: var(--tj-muted); padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 0.96875rem; text-align: left; font-family: inherit; transition: background .16s ease, color .16s ease, border-color .16s ease; }
+.tj-nav-item { display: flex; align-items: center; gap: 10px; background: none; border: 1px solid transparent; color: var(--tj-muted); padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 0.875rem; text-align: left; font-family: inherit; transition: background .16s ease, color .16s ease, border-color .16s ease; }
 .tj-nav-symbol { width: 16px; height: 16px; display: inline-block; flex: 0 0 16px; object-fit: contain; opacity: .82; filter: brightness(0) saturate(100%) invert(73%) sepia(11%) saturate(504%) hue-rotate(174deg) brightness(91%) contrast(86%); transition: filter .16s ease, opacity .16s ease; }
 .tj-theme-light .tj-nav-symbol { opacity: .76; filter: brightness(0) saturate(100%) invert(22%) sepia(14%) saturate(731%) hue-rotate(169deg) brightness(88%) contrast(89%); }
 .tj-nav-item:hover .tj-nav-symbol { opacity: 1; filter: brightness(0) saturate(100%) invert(98%) sepia(3%) saturate(587%) hue-rotate(173deg) brightness(95%) contrast(91%); }
@@ -4538,8 +4823,8 @@ html:has(.tj-root) { font-size: 93.75%; }
 .tj-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--tj-panel); display: flex; align-items: center; justify-content: center; font-size: 1.08rem; flex-shrink: 0; }
 .tj-avatar-sm { width: 22px; height: 22px; border-radius: 50%; background: var(--tj-panel); display: flex; align-items: center; justify-content: center; font-size: 0.875rem; flex-shrink: 0; }
 .tj-account-name { font-size: 0.9375rem; font-weight: 600; } .tj-account-sub { font-size: 0.8125rem; color: var(--tj-muted); }
-.tj-account-menu { position: absolute; bottom: 58px; left: 0; width: 320px; background: var(--tj-panel-alt); border: 1px solid var(--tj-border); border-radius: 16px; padding: 14px; box-shadow: 0 18px 42px rgba(0,0,0,0.5); z-index: 30; }
-.tj-account-menu { transform-origin: bottom left; animation: tj-modal-panel-in .42s cubic-bezier(.22,1,.36,1) both; }
+.tj-account-menu { position: absolute; bottom: 58px; left: 0; width: 300px; background: var(--tj-panel-alt); border: 1px solid var(--tj-border); border-radius: 16px; padding: 12px; box-shadow: 0 18px 42px rgba(0,0,0,0.5); z-index: 30; }
+.tj-account-menu { transform-origin: bottom left; animation: tj-modal-panel-in .42s cubic-bezier(.22,1,.36,1) both; will-change: transform, opacity; }
 @media (prefers-reduced-motion: reduce) { .tj-account-menu { animation: none; } }
 .tj-account-center-head, .tj-account-center-section-head, .tj-account-center-active-head, .tj-account-center-result { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .tj-account-center-head { margin-bottom: 12px; }
@@ -4581,7 +4866,11 @@ html:has(.tj-root) { font-size: 93.75%; }
 .tj-add-account:hover { background: color-mix(in srgb, var(--tj-green) 11%, transparent); }
 .tj-sidebar-user-chevron { margin-left: auto; color: var(--tj-muted); transition: transform .16s ease; }
 .tj-sidebar-collapsed .tj-sidebar-scroll { overflow: hidden; }
-.tj-sidebar-collapsed .tj-sidebar-profile { min-height: 52px; margin-bottom: 10px; padding: 5px 0 12px; border-width: 0 0 1px; border-radius: 0; background: transparent; box-shadow: none; }
+.tj-sidebar-collapsed .tj-sidebar-scroll { display: flex; flex-direction: column; align-items: center; }
+.tj-sidebar-collapsed .tj-nav, .tj-sidebar-collapsed .tj-sidebar-footer { width: 46px; align-self: center; }
+.tj-sidebar-collapsed .tj-nav { align-items: center; }
+.tj-sidebar-collapsed .tj-nav-item, .tj-sidebar-collapsed .tj-import-nav, .tj-sidebar-collapsed .tj-theme-nav, .tj-sidebar-collapsed .tj-sidebar-user { margin-inline: auto; }
+.tj-sidebar-collapsed .tj-sidebar-profile { min-height: 52px; margin-bottom: 10px; padding: 5px 0 12px; border-bottom: 1px solid var(--tj-border); border-radius: 0; background: transparent; box-shadow: none; }
 .tj-sidebar-collapsed .tj-sidebar-profile-avatar { width: 40px; height: 40px; font-size: 1rem; }
 .tj-nav-label, .tj-nav-item > span, .tj-sidebar-user > div:nth-child(2), .tj-sidebar-user-chevron { transition:opacity .14s ease; }.tj-nav-item { overflow:hidden; }.tj-nav-item > span { white-space:nowrap; }
 .tj-sidebar-collapsed .tj-nav-label, .tj-sidebar-collapsed .tj-nav-item > span, .tj-sidebar-collapsed .tj-sidebar-user > div:nth-child(2), .tj-sidebar-collapsed .tj-sidebar-user-chevron { opacity:0; pointer-events:none; }
@@ -4600,8 +4889,9 @@ html:has(.tj-root) { font-size: 93.75%; }
 
 .tj-main { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100vh; overflow: hidden; }
 .tj-topbar { display: flex; align-items: center; justify-content: space-between; padding: 15px 24px; border-bottom: 1px solid var(--tj-border); background: color-mix(in srgb, var(--tj-chrome) 92%, transparent); backdrop-filter: blur(14px); gap: 12px; }
-.tj-topbar-left { display: flex; align-items: center; gap: 10px; }
-.tj-page-title { font-weight: 700; font-size: 1.08rem; } .tj-page-sub { font-size: 0.8125rem; color: var(--tj-muted); }
+.tj-topbar-left { display: flex; align-items: center; gap: 12px; }
+.tj-page-heading { min-height:32px; min-width:0; display:flex; align-items:center; }
+.tj-page-title { font-weight: 700; font-size: 1.08rem; line-height:1; } .tj-page-sub { font-size: 0.8125rem; color: var(--tj-muted); }
 .tj-topbar-account { color: var(--tj-green); font-weight: 700; flex: 1; text-align: center; font-size: 0.875rem; letter-spacing: .02em; }
 .tj-content { padding: 24px 32px 36px; overflow-y: auto; flex: 1; min-height: 0; }
 .tj-content-inner { width: calc(100% - clamp(0px, 10vw, 192px)); max-width: none; min-height: 100%; margin: 0 auto; }
@@ -4773,7 +5063,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-day-record > span:first-child { color: var(--tj-green); font-weight: 700; min-width: 74px; }
 
 /* modals & forms */
-.tj-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; animation: tj-modal-backdrop-in .26s ease-out both; }
+.tj-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; animation: tj-modal-backdrop-in .26s ease-out both; will-change: opacity; }
 .tj-modal { background: var(--tj-panel); border: 1px solid var(--tj-border); border-radius: 14px; width: 560px; max-width: 100%; max-height: 92vh; overflow-x: hidden; overflow-y: auto; font-size: 1rem; transform-origin: 50% 0; animation: tj-modal-panel-in .42s cubic-bezier(.22,1,.36,1) both; will-change: transform, opacity; }
 .tj-modal-closing { pointer-events: none; animation: tj-modal-backdrop-out .23s ease-in both; }
 .tj-modal-closing .tj-modal { animation: tj-modal-panel-out .23s cubic-bezier(.55,0,1,.45) both; }
@@ -4781,7 +5071,10 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-modal-head { display: flex; justify-content: space-between; align-items: center; padding: 17px 20px; border-bottom: 1px solid var(--tj-border); position: sticky; top: 0; background: var(--tj-panel); z-index: 2;}
 .tj-modal-title { font-weight: 700; font-size: 1.08rem; }
 .tj-modal-body { min-width: 0; padding: 18px 20px; }
-.tj-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.tj-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }.tj-modal-actions .tj-btn-outline, .tj-modal-actions .tj-btn-primary { min-height: 34px; border-radius: 999px; padding: 7px 14px; font-size: .8125rem; box-shadow: none; }.tj-modal-actions .tj-btn-outline { border-color: color-mix(in srgb, var(--tj-muted) 54%, var(--tj-border)); background: color-mix(in srgb, var(--tj-panel-alt) 75%, transparent); }.tj-modal-actions .tj-btn-outline:hover { border-color: var(--tj-green); color: var(--tj-green); background: color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel-alt)); }.tj-modal-actions .tj-btn-primary:disabled { border-color: color-mix(in srgb, var(--tj-muted) 28%, var(--tj-border)); background: color-mix(in srgb, var(--tj-muted) 55%, var(--tj-panel-alt)); color: color-mix(in srgb, var(--tj-text) 56%, var(--tj-muted)); opacity: 1; cursor: not-allowed; }
+.tj-modal-cancel { width:34px; padding:0 !important; display:inline-grid !important; place-items:center; }.tj-modal-cancel svg { display:block; }.tj-profile-danger-confirm .tj-danger-button { min-height:34px; border-radius:999px; padding:7px 14px; }
+.tj-modal, .tj-modal *, .tj-account-menu, .tj-account-menu * { scrollbar-width:none; }.tj-modal::-webkit-scrollbar, .tj-modal *::-webkit-scrollbar, .tj-account-menu::-webkit-scrollbar, .tj-account-menu *::-webkit-scrollbar { display:none; }
+.tj-management-grid .tj-rule-list, .tj-management-list { scrollbar-width:none !important; }.tj-management-grid .tj-rule-list::-webkit-scrollbar, .tj-management-list::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }
 @media (prefers-reduced-motion: reduce) {
   .tj-modal-overlay, .tj-modal, .tj-modal-closing, .tj-modal-closing .tj-modal, .tj-page-transition, .tj-view-transition, .tj-subview-transition { animation: none !important; }
   .tj-page-transition, .tj-view-transition, .tj-subview-transition { transform: none !important; clip-path: none !important; }
@@ -4832,6 +5125,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-theme-choice-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .tj-accent-head { display:flex; justify-content:space-between; gap:12px; align-items:baseline; margin:14px 0 8px; }.tj-accent-head strong { font-size:.875rem; }.tj-accent-head span { color:var(--tj-muted); font-size:.75rem; }
 .tj-accent-row { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:7px; }.tj-accent-option { display:grid; justify-items:center; gap:5px; min-width:0; padding:8px 3px; border:1px solid var(--tj-border); border-radius:9px; background:var(--tj-panel); color:var(--tj-muted); font:inherit; font-size:.68rem; cursor:pointer; }.tj-accent-option i { width:22px; height:22px; border-radius:50%; box-shadow:inset 0 0 0 1px #fff5; }.tj-accent-option.tj-accent-selected { color:var(--tj-text); border-color:var(--tj-accent); background:var(--tj-accent-muted); box-shadow:0 0 0 1px color-mix(in srgb,var(--tj-accent) 24%,transparent); }
+.tj-theme-studio-heading { display:flex; align-items:end; justify-content:space-between; gap:12px; margin:18px 0 9px; }.tj-theme-studio-heading > div { display:grid; gap:3px; }.tj-theme-studio-heading strong { font-size:.875rem; }.tj-theme-studio-heading span { color:var(--tj-muted); font-size:.75rem; }.tj-theme-studio-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }.tj-theme-studio-card { display:grid; gap:7px; min-width:0; padding:8px; border:1px solid var(--tj-border); border-radius:10px; background:var(--tj-panel); color:var(--tj-text); font:inherit; font-size:.7rem; font-weight:750; text-align:left; cursor:pointer; transition:border-color .16s ease, background .16s ease, transform .16s ease; }.tj-theme-studio-card:hover { transform:translateY(-1px); border-color:color-mix(in srgb,var(--tj-studio-color, var(--tj-accent)) 68%,var(--tj-border)); }.tj-theme-studio-card.tj-theme-studio-selected { border-color:var(--tj-studio-color, var(--tj-accent)); box-shadow:0 0 0 1px color-mix(in srgb,var(--tj-studio-color, var(--tj-accent)) 38%,transparent); }.tj-theme-studio-preview { position:relative; display:grid; gap:3px; min-height:49px; overflow:hidden; padding:7px; border:1px solid color-mix(in srgb,var(--tj-studio-color, var(--tj-accent)) 28%,var(--tj-border)); border-radius:7px; background:linear-gradient(145deg,color-mix(in srgb,var(--tj-studio-color, var(--tj-accent)) 10%,var(--tj-panel-alt)),var(--tj-panel)); }.tj-theme-studio-preview small { color:var(--tj-muted); font-size:.58rem; }.tj-theme-studio-preview strong { color:var(--tj-studio-color, var(--tj-accent)); font-size:.72rem; }.tj-theme-studio-preview i { position:absolute; right:7px; bottom:8px; left:7px; height:10px; border-bottom:2px solid var(--tj-studio-color, var(--tj-accent)); border-radius:50%; opacity:.9; transform:skewX(-24deg); }.tj-theme-studio-custom { --tj-studio-color: var(--tj-accent); }.tj-theme-studio-custom .tj-theme-studio-preview { background:linear-gradient(135deg,color-mix(in srgb,var(--tj-accent) 20%,var(--tj-panel-alt)),var(--tj-panel) 65%); }
 .tj-theme-choice { transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease; }
 .tj-theme-choice.tj-chip-active { background: var(--tj-primary-muted); color: var(--tj-green); border-color: var(--tj-green); box-shadow: inset 3px 0 0 var(--tj-green), 0 0 0 1px rgba(80,198,160,0.22); }
 .tj-theme-choice:hover { border-color: var(--tj-green); color: var(--tj-text); }
@@ -4872,9 +5166,11 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-markup-image-section { min-width: 0; background: var(--tj-panel); border: 1px solid var(--tj-border); border-radius: 10px; padding: 10px; }
 .tj-markup-image-section .tj-tlog-shots { margin-top: 8px; }
 .tj-markup-image-section .tj-image-preview { width: 100%; height: 220px; }
-.tj-image-viewer { position: fixed; inset: 0; z-index: 200100; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,0.78); backdrop-filter: blur(5px); cursor: zoom-out; }
-.tj-image-viewer-stage { max-width: 96vw; max-height: 90vh; overflow: auto; cursor: default; }
-.tj-image-viewer img { display: block; max-width: min(1400px, 96vw); max-height: 90vh; width: auto; height: auto; object-fit: contain; border-radius: 10px; box-shadow: var(--tj-shadow); cursor: default; transform-origin: center; transition: transform 120ms ease; }
+.tj-image-viewer { position: fixed; inset: 0; z-index: 200100; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,0.78); backdrop-filter: blur(5px); cursor: zoom-out; will-change: opacity; }
+.tj-image-viewer-stage { width:min(1400px,96vw); height:90vh; display:grid; place-items:center; overflow:hidden; cursor:zoom-in; touch-action:none; }
+.tj-image-viewer-stage-pannable { cursor:grab; }
+.tj-image-viewer-stage-pannable:active { cursor:grabbing; }
+.tj-image-viewer img { display:block; max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; border-radius:10px; box-shadow:var(--tj-shadow); cursor:inherit; transform-origin:center; transition:transform 120ms ease; user-select:none; will-change:transform; }
 .tj-image-viewer-close { position: fixed; top: 18px; right: 18px; width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,0.42); background: rgba(0,0,0,0.55); color: #FFF; border-radius: 50%; cursor: pointer; }
 .tj-image-viewer-controls { position: fixed; z-index: 1; bottom: 22px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; overflow: hidden; border: 1px solid rgba(255,255,255,0.35); border-radius: 9px; background: rgba(8,13,19,0.86); box-shadow: var(--tj-shadow); }
 .tj-image-viewer-controls button { width: 38px; height: 36px; display: grid; place-items: center; border: 0; border-right: 1px solid rgba(255,255,255,0.16); background: transparent; color: #FFF; cursor: pointer; }
@@ -4954,9 +5250,17 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-insights-return span { color: var(--tj-muted); font-size: 0.75rem; }
 .tj-insights-workspace .tj-risk-insights-workspace { gap: 12px; }
 .tj-insights-workspace .tj-risk-insights-summary, .tj-insights-workspace .tj-risk-growth, .tj-insights-workspace .tj-risk-recommendations { border-radius: 16px; }
-.tj-ai-coach-card { display: grid; gap: 14px; padding: 17px; border-color: color-mix(in srgb, var(--tj-purple) 42%, var(--tj-border)); background: linear-gradient(112deg, color-mix(in srgb, var(--tj-purple) 9%, var(--tj-panel)), var(--tj-panel) 58%, color-mix(in srgb, var(--tj-green) 6%, var(--tj-panel))); }
-.tj-ai-coach-head { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }.tj-ai-coach-head > div { display: grid; gap: 5px; }.tj-ai-coach-head span { color: var(--tj-purple); font-size: .75rem; font-weight: 850; letter-spacing: 1.2px; }.tj-ai-coach-head strong { font-size: 1.125rem; }.tj-ai-coach-head p { max-width: 750px; margin: 0; color: var(--tj-muted); font-size: .8125rem; line-height: 1.5; }.tj-ai-coach-head > i { flex: 0 0 auto; padding: 5px 8px; border: 1px solid var(--tj-border); border-radius: 99px; color: var(--tj-muted); font-size: .7rem; font-style: normal; font-weight: 800; }.tj-ai-coach-head > i.tj-ai-coach-ready { border-color: color-mix(in srgb, var(--tj-green) 45%, var(--tj-border)); color: var(--tj-green); }
-.tj-ai-coach-empty { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px; border: 1px solid var(--tj-border); border-radius: 11px; background: var(--tj-panel-alt); }.tj-ai-coach-empty > div { display: grid; gap: 4px; }.tj-ai-coach-empty strong { font-size: .8125rem; }.tj-ai-coach-empty span, .tj-ai-coach-message { color: var(--tj-muted); font-size: .75rem; line-height: 1.45; }.tj-ai-coach-empty .tj-btn-primary { flex: 0 0 auto; }.tj-ai-coach-message { padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--tj-amber) 38%, var(--tj-border)); border-radius: 9px; background: color-mix(in srgb, var(--tj-amber) 7%, var(--tj-panel-alt)); }.tj-ai-coach-report { display: grid; gap: 9px; padding: 13px; border: 1px solid color-mix(in srgb, var(--tj-green) 35%, var(--tj-border)); border-radius: 11px; background: var(--tj-panel-alt); }.tj-ai-coach-report-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }.tj-ai-coach-report p { margin: 0; white-space: pre-wrap; color: var(--tj-text); font-size: .8125rem; line-height: 1.55; }
+.tj-local-briefing { display:grid; gap:12px; padding:16px 20px 20px; border-color:color-mix(in srgb, var(--tj-accent) 34%, var(--tj-border)); background:linear-gradient(118deg, color-mix(in srgb, var(--tj-purple) 7%, var(--tj-panel)), var(--tj-panel) 52%, color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel))); }
+.tj-local-briefing-head { display:flex; align-items:center; justify-content:space-between; gap:20px; }.tj-local-briefing-head > div:first-child { min-width:0; }.tj-local-briefing-head > div:first-child > span { color:var(--tj-accent); font-size:.68rem; font-weight:900; letter-spacing:1.1px; }.tj-local-briefing-head h2 { margin:0; font-size:1.25rem; line-height:1.15; }.tj-local-briefing-head p { max-width:760px; margin:6px 0 0; color:var(--tj-muted); font-size:.8rem; line-height:1.45; }
+.tj-local-briefing-result { flex:0 0 auto; display:grid; justify-items:end; gap:3px; padding:8px 0 8px 18px; border-left:1px solid var(--tj-border); text-align:right; }.tj-local-briefing-result small, .tj-local-briefing-metrics small, .tj-local-briefing-grid section > span { color:var(--tj-muted); font-size:.64rem; font-weight:900; letter-spacing:.8px; }.tj-local-briefing-result strong { font-size:1.45rem; line-height:1; }.tj-local-briefing-result span { color:var(--tj-muted); font-size:.72rem; }
+.tj-local-briefing-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); overflow:hidden; border:1px solid var(--tj-border); border-radius:14px; background:color-mix(in srgb, var(--tj-panel-alt) 86%, transparent); }.tj-local-briefing-metrics section { min-width:0; display:grid; gap:4px; padding:12px 14px; border-right:1px solid var(--tj-border); }.tj-local-briefing-metrics section:last-child { border-right:0; }.tj-local-briefing-metrics strong { overflow:hidden; font-size:1.1rem; font-variant-numeric:tabular-nums; text-overflow:ellipsis; white-space:nowrap; }.tj-local-briefing-metrics span { color:var(--tj-muted); font-size:.72rem; line-height:1.25; }
+.tj-local-briefing-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }.tj-local-briefing-grid section { min-width:0; padding:14px; border:1px solid var(--tj-border); border-radius:14px; background:color-mix(in srgb, var(--tj-panel-alt) 77%, transparent); }.tj-local-briefing-grid h3 { margin:6px 0 0; font-size:.9rem; line-height:1.3; }.tj-local-briefing-grid p { margin:7px 0 0; color:var(--tj-muted); font-size:.79rem; line-height:1.55; }.tj-local-briefing-grid p b { color:var(--tj-text); font-weight:850; }.tj-local-briefing-grid p b.tj-green { color:var(--tj-green); }.tj-local-briefing-grid p b.tj-red { color:var(--tj-red); }.tj-local-briefing-focus { border-color:color-mix(in srgb, var(--tj-amber) 35%, var(--tj-border)) !important; background:color-mix(in srgb, var(--tj-amber) 7%, var(--tj-panel-alt)) !important; }
+.tj-local-briefing-metrics .tj-insight-metric-profit { background:color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel-alt)); }.tj-local-briefing-metrics .tj-insight-metric-expectancy { background:color-mix(in srgb, var(--tj-accent) 8%, var(--tj-panel-alt)); }.tj-local-briefing-metrics .tj-insight-metric-rr { background:color-mix(in srgb, var(--tj-purple) 9%, var(--tj-panel-alt)); }.tj-local-briefing-metrics .tj-insight-metric-drawdown { background:color-mix(in srgb, var(--tj-red) 8%, var(--tj-panel-alt)); }
+.tj-local-briefing-grid .tj-insight-card-performance { border-color:color-mix(in srgb, var(--tj-green) 36%, var(--tj-border)); background:linear-gradient(135deg, color-mix(in srgb, var(--tj-green) 9%, var(--tj-panel-alt)), var(--tj-panel-alt) 66%); }.tj-local-briefing-grid .tj-insight-card-performance > span { color:var(--tj-green); }
+.tj-local-briefing-grid .tj-insight-card-edge { border-color:color-mix(in srgb, var(--tj-purple) 38%, var(--tj-border)); background:linear-gradient(135deg, color-mix(in srgb, var(--tj-purple) 10%, var(--tj-panel-alt)), var(--tj-panel-alt) 66%); }.tj-local-briefing-grid .tj-insight-card-edge > span { color:var(--tj-purple); }
+.tj-local-briefing-grid .tj-insight-card-goals { border-color:color-mix(in srgb, var(--tj-accent) 38%, var(--tj-border)); background:linear-gradient(135deg, color-mix(in srgb, var(--tj-accent) 9%, var(--tj-panel-alt)), var(--tj-panel-alt) 66%); }.tj-local-briefing-grid .tj-insight-card-goals > span { color:var(--tj-accent); }
+.tj-local-briefing-grid .tj-insight-card-challenge { border-color:color-mix(in srgb, var(--tj-amber) 38%, var(--tj-border)); background:linear-gradient(135deg, color-mix(in srgb, var(--tj-amber) 10%, var(--tj-panel-alt)), var(--tj-panel-alt) 66%); }.tj-local-briefing-grid .tj-insight-card-challenge > span { color:var(--tj-amber); }
+.tj-local-briefing-grid .tj-insight-card-finance { border-color:color-mix(in srgb, var(--tj-green) 38%, var(--tj-border)); background:linear-gradient(135deg, color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel-alt)), color-mix(in srgb, var(--tj-purple) 5%, var(--tj-panel-alt))); }.tj-local-briefing-grid .tj-insight-card-finance > span { color:var(--tj-green); }
 
 /* analytics */
 .tj-perf-list { display: flex; flex-direction: column; gap: 10px; }
@@ -5041,6 +5345,26 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-holiday-list { display: flex; flex-direction: column; gap: 10px; }
 .tj-holiday-row { display: flex; align-items: center; gap: 10px; font-size: 0.9375rem; padding: 8px 0; border-bottom: 1px solid var(--tj-border); }
 .tj-news-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.tj-pair-risk-card { margin: 4px 0 14px; overflow: hidden; background: var(--tj-panel-alt); border: 1px solid var(--tj-border); border-radius: 16px; }
+.tj-pair-risk-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px 12px; border-bottom: 1px solid var(--tj-border); }
+.tj-pair-risk-title { color: var(--tj-text); font-size: 0.9375rem; font-weight: 800; }
+.tj-pair-risk-head p { max-width: 720px; margin: 6px 0 0; color: var(--tj-muted); font-size: 0.8125rem; line-height: 1.45; }
+.tj-pair-risk-week { flex: 0 0 auto; color: var(--tj-muted); font-size: 0.6875rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.tj-pair-risk-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; padding: 12px 14px 14px; }
+.tj-pair-risk-item { min-height: 66px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 8px; border: 1px solid var(--tj-border); border-radius: 12px; text-align: center; background: var(--tj-panel); }
+.tj-pair-risk-item strong { color: var(--tj-text); font-size: 0.8125rem; }
+.tj-pair-risk-item span { font-size: 0.625rem; font-weight: 800; letter-spacing: .08em; }
+.tj-pair-risk-item small { color: var(--tj-muted); font-size: 0.6875rem; }
+.tj-pair-risk-low { border-color: color-mix(in srgb, var(--tj-green) 34%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel)); }
+.tj-pair-risk-low span { color: var(--tj-green); }
+.tj-pair-risk-medium { border-color: color-mix(in srgb, var(--tj-amber) 50%, var(--tj-border)); background: color-mix(in srgb, var(--tj-amber) 9%, var(--tj-panel)); }
+.tj-pair-risk-medium span { color: var(--tj-amber); }
+.tj-pair-risk-high { border-color: color-mix(in srgb, var(--tj-red) 55%, var(--tj-border)); background: color-mix(in srgb, var(--tj-red) 10%, var(--tj-panel)); }
+.tj-pair-risk-high span { color: var(--tj-red); }
+.tj-pair-risk-unavailable { border-style: dashed; background: var(--tj-panel); }
+.tj-pair-risk-unavailable span { color: var(--tj-muted); }
+@media (max-width: 900px) { .tj-pair-risk-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .tj-pair-risk-head { flex-direction: column; gap: 7px; }.tj-pair-risk-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 10px; }.tj-pair-risk-item { min-height: 62px; } }
 .tj-news-day-block { margin-bottom: 16px; }
 .tj-news-day-label { font-weight: 700; font-size: 0.90625rem; color: var(--tj-purple); margin-bottom: 6px; }
 .tj-impact-chip { border: 1px solid var(--tj-border); background: var(--tj-panel-alt); color: var(--tj-muted); border-radius: 6px; padding: 4px 10px; font-size: 0.8125rem; cursor: pointer; }
@@ -5085,7 +5409,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-panel { background: linear-gradient(150deg, color-mix(in srgb, var(--tj-panel) 98%, transparent), color-mix(in srgb, var(--tj-panel-alt) 46%, var(--tj-panel) 54%)); }
 .tj-page-intro { display: flex; align-items: end; justify-content: space-between; gap: 18px; padding: 4px 2px 15px; margin-bottom: 2px; border-bottom: 1px solid var(--tj-border); }
 .tj-management-workspace { display: grid; gap: 14px; }.tj-management-workspace .tj-page-intro { margin: 0; padding: 1px 0 14px; }.tj-management-rules-note { padding: 4px 8px; border: 1px solid var(--tj-border); border-radius: 999px; color: var(--tj-muted); font-size: 0.75rem; font-weight: 700; white-space: nowrap; }
-.tj-management-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; gap: 14px; }
+.tj-management-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: stretch; gap: 14px; }
 .tj-management-grid > .tj-panel { min-width: 0; min-height: 410px; position: relative; overflow: hidden; }
 .tj-management-grid > .tj-panel::before { content: ""; display: block; width: 30px; height: 3px; border-radius: 99px; background: var(--tj-green); margin-bottom: 12px; }
 .tj-management-grid .tj-inline-add { margin-top: 0; }.tj-management-grid .tj-inline-add .tj-btn-primary { padding-inline: 13px; }.tj-management-grid .tj-rule-list, .tj-management-list { display: grid; gap: 7px; max-height: 430px; margin-top: 12px; overflow-x: hidden; overflow-y: auto; padding-right: 3px; }.tj-management-grid .tj-rule-row { min-height: 42px; align-items: flex-start; padding: 10px 11px; font-size: 0.875rem; }.tj-management-grid .tj-rule-row > span:first-child { min-width: 0; overflow: visible; line-height: 1.38; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }.tj-management-grid .tj-rule-row > span:last-child { align-self: center; }.tj-management-row-actions { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }.tj-management-default { padding: 3px 6px; border: 1px solid var(--tj-border); border-radius: 999px; color: var(--tj-muted); font-size: 0.75rem; font-style: normal; font-weight: 800; letter-spacing: .35px; }
@@ -5135,21 +5459,46 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-cal-cell { transition: border-color .16s ease, background .16s ease, transform .16s cubic-bezier(.2,.8,.2,1); }
 .tj-cal-cell:hover { border-color: color-mix(in srgb, var(--tj-border) 55%, var(--tj-green) 45%); }
 .tj-markup-status { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 7px; border: 1px solid var(--tj-border); font-size: 0.75rem; font-weight: 800; letter-spacing: .35px; text-transform: uppercase; vertical-align: 1px; }.tj-markup-status-planned { color: var(--tj-blue); background: color-mix(in srgb, var(--tj-blue) 12%, transparent); border-color: color-mix(in srgb, var(--tj-blue) 42%, var(--tj-border)); }.tj-markup-status-watching { color: var(--tj-amber); background: color-mix(in srgb, var(--tj-amber) 12%, transparent); border-color: color-mix(in srgb, var(--tj-amber) 42%, var(--tj-border)); }.tj-markup-status-executed { color: var(--tj-green); background: var(--tj-primary-muted); border-color: color-mix(in srgb, var(--tj-green) 45%, var(--tj-border)); }.tj-markup-status-passed { color: var(--tj-muted); background: var(--tj-panel-alt); }
-.tj-reference-markups { display: grid; gap: 14px; }.tj-markup-overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }.tj-markup-overview-card { min-height: 136px; padding: 14px; display: grid; align-content: start; gap: 5px; }.tj-markup-overview-card strong { font-size: 1.485rem; font-variant-numeric: tabular-nums; }.tj-markup-overview-card span { color: var(--tj-muted); font-size: 0.8125rem; line-height: 1.35; }.tj-markup-overview-card > small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 700; letter-spacing: .45px; text-transform: uppercase; }.tj-markup-progress, .tj-markup-split { height: 6px; overflow: hidden; display: flex; border-radius: 99px; background: var(--tj-panel-alt); margin-top: 4px; }.tj-markup-progress i, .tj-markup-split i, .tj-markup-split b { display: block; height: 100%; transition: width .2s ease; }.tj-markup-progress i, .tj-markup-split i { background: var(--tj-green); }.tj-markup-split b { background: var(--tj-red); opacity: .82; }.tj-markup-bestworst { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 2px; }.tj-markup-bestworst > div { min-width: 0; padding: 7px 8px; border: 1px solid var(--tj-border); background: var(--tj-panel-alt); border-radius: 7px; display: grid; gap: 2px; }.tj-markup-bestworst small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .35px; }.tj-markup-bestworst b { font-size: 0.875rem; font-variant-numeric: tabular-nums; white-space: nowrap; }.tj-markup-coverage { display: grid; gap: 5px; margin-top: 3px; }.tj-markup-coverage > div { display: grid; grid-template-columns: 30px minmax(0, 1fr) 27px; gap: 6px; align-items: center; }.tj-markup-coverage small, .tj-markup-coverage em { color: var(--tj-muted); font-size: 0.75rem; font-weight: 700; font-style: normal; text-transform: uppercase; }.tj-markup-coverage em { text-align: right; font-variant-numeric: tabular-nums; }.tj-markup-coverage i { display: block; height: 5px; overflow: hidden; border-radius: 99px; background: var(--tj-panel-alt); }.tj-markup-coverage b { display: block; height: 100%; border-radius: inherit; background: var(--tj-green); }.tj-markup-coverage > div:nth-child(2) b { opacity: .78; }.tj-markup-coverage > div:nth-child(3) b { opacity: .58; }.tj-markup-toolbar { display: grid; grid-template-columns: 1fr auto; gap: 9px; align-items: center; min-height: 32px; }.tj-markup-toolbar-actions { display: flex; gap: 8px; }.tj-markup-toolbar-button { width: 32px; height: 32px; border-radius: 50%; }.tj-icon-btn-active { color: var(--tj-green); border-color: color-mix(in srgb, var(--tj-green) 55%, var(--tj-border)); background: var(--tj-primary-muted); }.tj-markup-toolbar-status { display: flex; gap: 10px; align-items: center; color: var(--tj-muted); font-size: 0.75rem; }.tj-markup-toolbar-status b { color: var(--tj-green); font-size: 0.75rem; }.tj-markup-filter-controls, .tj-markup-sort-controls { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--tj-border); border-radius: 9px; background: color-mix(in srgb, var(--tj-panel-alt) 84%, transparent); }.tj-markup-filter-controls .tj-toolbar-search { flex: 1; }.tj-markup-sort-controls { justify-content: flex-start; }.tj-markup-sort-controls > span { color: var(--tj-muted); font-size: 0.8125rem; }.tj-reference-markup-card .tj-tlog-row { min-height: 62px; cursor: pointer; }.tj-reference-markup-card .tj-tlog-main { min-width: 270px; }.tj-markup-pnl { display: grid; gap: 2px; min-width: 105px; text-align: right; }.tj-markup-pnl strong { font-variant-numeric: tabular-nums; }.tj-markup-pnl span { color: var(--tj-muted); font-size: 0.75rem; }.tj-markup-detail-top { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-bottom: 16px; }.tj-markup-detail-top > div { padding: 10px; border: 1px solid var(--tj-border); border-radius: 8px; background: var(--tj-panel-alt); display: grid; gap: 4px; }.tj-linked-markup-trades { display: grid; gap: 7px; }.tj-linked-markup-trade { display: flex; justify-content: space-between; gap: 12px; padding: 10px; border: 1px solid var(--tj-border); border-radius: 8px; background: var(--tj-panel-alt); }.tj-linked-markup-trade > div { display: grid; gap: 3px; }.tj-linked-markup-trade span { font-size: 0.8125rem; color: var(--tj-muted); }.tj-linked-markup-trade > div:last-child { text-align: right; justify-items: end; }
+.tj-reference-markups { display: grid; gap: 14px; }.tj-markup-overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }.tj-markup-overview-card { min-height: 136px; padding: 14px; display: grid; align-content: start; gap: 5px; }.tj-markup-overview-card strong { font-size: 1.485rem; font-variant-numeric: tabular-nums; }.tj-markup-overview-card span { color: var(--tj-muted); font-size: 0.8125rem; line-height: 1.35; }.tj-markup-overview-card > small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 700; letter-spacing: .45px; text-transform: uppercase; }.tj-markup-progress, .tj-markup-split { position:relative; height: 6px; overflow: hidden; display: flex; border-radius: 99px; background: var(--tj-panel-alt); margin-top: 4px; }.tj-markup-progress i, .tj-markup-split i, .tj-markup-split b { display: block; width: 100%; height: 100%; transform-origin: left center; transition: transform .2s ease; will-change: transform; }.tj-markup-split i, .tj-markup-split b { position:absolute; inset:0; }.tj-markup-progress i, .tj-markup-split i { background: var(--tj-green); }.tj-markup-split b { background: var(--tj-red); opacity: .82; transform-origin: right center; }.tj-markup-bestworst { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 2px; }.tj-markup-bestworst > div { min-width: 0; padding: 7px 8px; border: 1px solid var(--tj-border); background: var(--tj-panel-alt); border-radius: 7px; display: grid; gap: 2px; }.tj-markup-bestworst small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .35px; }.tj-markup-bestworst b { font-size: 0.875rem; font-variant-numeric: tabular-nums; white-space: nowrap; }.tj-markup-coverage { display: grid; gap: 5px; margin-top: 3px; }.tj-markup-coverage > div { display: grid; grid-template-columns: 30px minmax(0, 1fr) 27px; gap: 6px; align-items: center; }.tj-markup-coverage small, .tj-markup-coverage em { color: var(--tj-muted); font-size: 0.75rem; font-weight: 700; font-style: normal; text-transform: uppercase; }.tj-markup-coverage em { text-align: right; font-variant-numeric: tabular-nums; }.tj-markup-coverage i { display: block; height: 5px; overflow: hidden; border-radius: 99px; background: var(--tj-panel-alt); }.tj-markup-coverage b { display: block; height: 100%; border-radius: inherit; background: var(--tj-green); }.tj-markup-coverage > div:nth-child(2) b { opacity: .78; }.tj-markup-coverage > div:nth-child(3) b { opacity: .58; }.tj-markup-toolbar { display: grid; grid-template-columns: 1fr auto; gap: 9px; align-items: center; min-height: 32px; }.tj-markup-toolbar-actions { display: flex; gap: 8px; }.tj-markup-toolbar-button { width: 32px; height: 32px; border-radius: 50%; }.tj-icon-btn-active { color: var(--tj-green); border-color: color-mix(in srgb, var(--tj-green) 55%, var(--tj-border)); background: var(--tj-primary-muted); }.tj-markup-toolbar-status { display: flex; gap: 10px; align-items: center; color: var(--tj-muted); font-size: 0.75rem; }.tj-markup-toolbar-status b { color: var(--tj-green); font-size: 0.75rem; }.tj-markup-filter-controls, .tj-markup-sort-controls { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--tj-border); border-radius: 9px; background: color-mix(in srgb, var(--tj-panel-alt) 84%, transparent); }.tj-markup-filter-controls .tj-toolbar-search { flex: 1; }.tj-markup-sort-controls { justify-content: flex-start; }.tj-markup-sort-controls > span { color: var(--tj-muted); font-size: 0.8125rem; }.tj-reference-markup-card .tj-tlog-row { min-height: 62px; cursor: pointer; }.tj-reference-markup-card .tj-tlog-main { min-width: 270px; }.tj-markup-pnl { display: grid; gap: 2px; min-width: 105px; text-align: right; }.tj-markup-pnl strong { font-variant-numeric: tabular-nums; }.tj-markup-pnl span { color: var(--tj-muted); font-size: 0.75rem; }.tj-markup-detail-top { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-bottom: 16px; }.tj-markup-detail-top > div { padding: 10px; border: 1px solid var(--tj-border); border-radius: 8px; background: var(--tj-panel-alt); display: grid; gap: 4px; }.tj-linked-markup-trades { display: grid; gap: 7px; }.tj-linked-markup-trade { display: flex; justify-content: space-between; gap: 12px; padding: 10px; border: 1px solid var(--tj-border); border-radius: 8px; background: var(--tj-panel-alt); }.tj-linked-markup-trade > div { display: grid; gap: 3px; }.tj-linked-markup-trade span { font-size: 0.8125rem; color: var(--tj-muted); }.tj-linked-markup-trade > div:last-child { text-align: right; justify-items: end; }
 
 /* Reference Markups list and expanded workspace. */
+.tj-reference-markups .tj-markup-toolbar { grid-template-columns: 1fr auto 1fr; }
+.tj-reference-markups .tj-markup-toolbar-actions { grid-column: 2; }
+.tj-reference-markups .tj-markup-toolbar-status { grid-column: 3; justify-self: end; }
 .tj-markup-toolbar { position: relative; z-index: 8; }
-.tj-markup-filter-popover { position: absolute; top: 42px; left: 0; z-index: 20; width: min(390px, calc(100vw - 32px)); padding: 13px; border: 1px solid var(--tj-border); border-radius: 12px; background: color-mix(in srgb, var(--tj-panel) 96%, transparent); box-shadow: 0 18px 44px rgba(0,0,0,.32); }
+.tj-markup-filter-popover { position: static; grid-column: 1 / -1; z-index: 20; width: auto; padding: 13px; border: 1px solid var(--tj-border); border-radius: 12px; background: color-mix(in srgb, var(--tj-panel) 96%, transparent); box-shadow: none; }
 .tj-markup-filter-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .tj-markup-filter-head > div { display: grid; gap: 3px; }
 .tj-markup-filter-head strong { font-size: 0.9375rem; }
 .tj-markup-filter-head span, .tj-markup-filter-summary { color: var(--tj-muted); font-size: 0.75rem; line-height: 1.4; }
-.tj-markup-filter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 9px; }
+.tj-markup-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0 9px; }
 .tj-markup-filter-grid .tj-field { margin-bottom: 8px; }
-.tj-markup-filter-grid .tj-field:last-child { grid-column: 1 / -1; }
 .tj-markup-filter-grid .tj-toolbar-dd { width: 100%; min-width: 0; height: 30px; }
 .tj-markup-filter-grid select:disabled { opacity: .6; cursor: not-allowed; }
 .tj-markup-filter-summary { padding-top: 9px; border-top: 1px solid var(--tj-border); }
+.tj-markup-sort-options { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); flex: 1; gap: 7px; }
+.tj-markup-sort-option { min-height: 30px; border: 1px solid var(--tj-border); border-radius: 7px; background: var(--tj-panel); color: var(--tj-text); cursor: pointer; font: inherit; font-size: .75rem; font-weight: 750; }
+.tj-markup-sort-option:hover { border-color: var(--tj-green); background: var(--tj-primary-muted); color: var(--tj-green); }
+.tj-markup-sort-option-active { border-color: var(--tj-green); background: var(--tj-primary-muted); color: var(--tj-green); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tj-green) 22%, transparent); }
+.tj-markup-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; }
+.tj-markup-card-shell { min-width: 0; }
+.tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-reference-markup-row { min-height: 174px; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "identity actions"; align-items: stretch; padding: 14px; }
+.tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-reference-markup-identity { grid-area: identity; align-content: start; gap: 7px; }
+.tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-reference-markup-identity > div > strong { font-size: 1.2rem; letter-spacing: -.35px; }
+.tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-reference-markup-identity small { max-width: 310px; line-height: 1.45; }
+.tj-markup-card-grid .tj-markup-card-identity { grid-template-rows: auto auto auto auto minmax(0, 1fr); }
+.tj-markup-card-date { color: var(--tj-muted); font-size: .6875rem; font-weight: 800; letter-spacing: .7px; }
+.tj-markup-card-instrument { font-size: 1.2rem; letter-spacing: -.35px; line-height: 1.1; }
+.tj-markup-card-status { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tj-markup-card-status > span:first-child { color: var(--tj-muted); font-size: .75rem; font-weight: 700; }
+.tj-markup-card-identity .tj-markup-card-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; padding-top: 5px; }
+.tj-markup-card-identity .tj-markup-card-metrics > div { display: grid; gap: 2px; }
+.tj-markup-card-identity .tj-markup-card-metrics span { color: var(--tj-muted); font-size: .625rem; font-weight: 800; letter-spacing: .7px; }
+.tj-markup-card-identity .tj-markup-card-metrics strong { font-size: .8125rem; }
+.tj-markup-card-structure { display: -webkit-box; margin: 2px 0 0; overflow: hidden; color: var(--tj-muted); font-size: .75rem; line-height: 1.42; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-reference-markup-actions { grid-area: actions; display: grid; grid-template-columns: 30px; grid-template-rows: auto 30px; align-content: space-between; justify-content: end; gap: 7px; }
+.tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-markup-pnl { grid-column: 1 / -1; justify-self: end; }
+.tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-markup-trade-button { grid-column: 1 / 3; }
 .tj-reference-markup-card { overflow: hidden; border-radius: 14px; }
 .tj-reference-markup-expanded { border-color: color-mix(in srgb, var(--tj-green) 67%, var(--tj-border)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tj-green) 13%, transparent); }
 .tj-reference-markup-row { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 13px; cursor: pointer; }
@@ -5165,7 +5514,24 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-markup-round-button:hover { border-color: var(--tj-green); color: var(--tj-text); }
 .tj-markup-delete-button, .tj-icon-btn[title^="Delete"], .tj-icon-btn[title^="Remove"] { border: 1px solid color-mix(in srgb, var(--tj-red) 45%, var(--tj-border)); background: color-mix(in srgb, var(--tj-red) 10%, var(--tj-panel-alt)); color: var(--tj-red); }
 .tj-markup-delete-button:hover, .tj-icon-btn[title^="Delete"]:hover, .tj-icon-btn[title^="Remove"]:hover { border-color: var(--tj-red); background: color-mix(in srgb, var(--tj-red) 17%, var(--tj-panel-alt)); color: var(--tj-red); }
-.tj-reference-markup-detail { padding: 12px; border-top: 1px solid var(--tj-border); background: color-mix(in srgb, var(--tj-panel-alt) 48%, var(--tj-panel)); }
+.tj-reference-markup-detail, .tj-reference-trade-detail { display: grid; grid-template-rows: 0fr; overflow: hidden; border-top: 0 solid transparent; background: color-mix(in srgb, var(--tj-panel-alt) 48%, var(--tj-panel)); }
+.tj-reference-markup-detail-open, .tj-reference-trade-detail-open { grid-template-rows: 1fr; border-top-width: 1px; border-top-color: var(--tj-border); }
+.tj-reference-markup-detail-inner, .tj-reference-trade-detail-inner { min-height: 0; overflow: hidden; padding: 0 12px; opacity: 0; transform: translateY(-6px); transition: transform .2s cubic-bezier(.22,1,.36,1), opacity .16s ease; will-change: transform, opacity; }
+.tj-reference-markup-detail-open .tj-reference-markup-detail-inner, .tj-reference-trade-detail-open .tj-reference-trade-detail-inner { padding: 12px; opacity: 1; transform: translateY(0); }
+.tj-reference-detail-closing { pointer-events:none; }
+.tj-reference-detail-closing .tj-reference-markup-detail-inner, .tj-reference-detail-closing .tj-reference-trade-detail-inner { opacity:0; transform:translateY(-6px); }
+/* Dynamic-island disclosure motion: the card's space changes once, then all
+   perceived motion stays on the compositor. This keeps the page and side rail
+   free from per-frame layout work while the expanded details feel intentional. */
+.tj-reference-markup-expanded, .tj-reference-tradelog-expanded { isolation:isolate; }
+.tj-reference-markup-detail-open .tj-reference-markup-detail-inner, .tj-reference-trade-detail-open .tj-reference-trade-detail-inner { animation:tj-reference-island-in .28s cubic-bezier(.16,1,.3,1) both; }
+.tj-reference-markup-detail-open .tj-reference-markup-detail-inner > *, .tj-reference-trade-detail-open .tj-reference-trade-detail-inner > * { animation:tj-reference-island-content-in .26s cubic-bezier(.16,1,.3,1) backwards; }
+.tj-reference-markup-detail-open .tj-reference-markup-detail-inner > *:nth-child(2), .tj-reference-trade-detail-open .tj-reference-trade-detail-inner > *:nth-child(2) { animation-delay:.035s; }
+.tj-reference-markup-detail-open .tj-reference-markup-detail-inner > *:nth-child(3), .tj-reference-trade-detail-open .tj-reference-trade-detail-inner > *:nth-child(3) { animation-delay:.07s; }
+.tj-reference-detail-closing .tj-reference-markup-detail-inner, .tj-reference-detail-closing .tj-reference-trade-detail-inner { animation:tj-reference-island-out .18s cubic-bezier(.4,0,1,1) both; }
+@keyframes tj-reference-island-in { from { opacity:.7; transform:translate3d(0,-7px,0) scale(.985); } 65% { opacity:1; transform:translate3d(0,0,0) scale(1.006); } to { opacity:1; transform:translate3d(0,0,0) scale(1); } }
+@keyframes tj-reference-island-content-in { from { opacity:0; transform:translate3d(0,7px,0); } to { opacity:1; transform:translate3d(0,0,0); } }
+@keyframes tj-reference-island-out { from { opacity:1; transform:translate3d(0,0,0) scale(1); } to { opacity:0; transform:translate3d(0,-6px,0) scale(.985); } }
 .tj-markup-detail-top { margin-bottom: 10px; }
 .tj-markup-detail-top > div { min-height: 58px; align-content: center; border-radius: 10px; }
 .tj-markup-detail-top strong { font-size: 1.08rem; }
@@ -5183,7 +5549,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-markup-panel-empty, .tj-markup-chart-empty { color: var(--tj-muted); font-size: 0.8125rem; }
 .tj-markup-panel-empty { display: grid; place-items: center; min-height: 130px; }
 .tj-linked-markup-trades { margin-top: 5px; padding-right: 2px; }
-.tj-linked-markup-trades-scroll { max-height: 236px; overflow-y: auto; scrollbar-gutter: stable; }
+.tj-linked-markup-trades-scroll { max-height: 164px; overflow-y: auto; scrollbar-gutter: stable; }
 .tj-linked-markup-trade { min-height: 50px; padding: 8px; }
 .tj-linked-markup-trade strong { font-size: 0.8125rem; }
 .tj-linked-markup-trade span { font-size: 0.75rem; }
@@ -5231,19 +5597,27 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-page-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tj-stats-grid > *, .tj-tradelog-stats > *, .tj-markup-overview-grid > *, .tj-review-month-grid > *, .tj-review-quarter-grid > *, .tj-period-metric-grid > *, .tj-period-meter-grid > *, .tj-performance-stat-grid > *, .tj-live-analytics-grid > *, .tj-management-grid > * { min-width: 0; align-self: stretch; }
 .tj-settings-hero-metrics > div, .tj-markup-overview-grid > *, .tj-review-library-card, .tj-performance-stat-card { height: 100%; }
-.tj-theme-nav { width: 38px; min-height: 38px; justify-content: center; margin: 7px 0 0 4px; padding: 0; border: none; border-radius: 10px; background: transparent; box-shadow: none; }.tj-theme-nav svg { flex: 0 0 auto; color: var(--tj-green); }.tj-theme-nav:hover { background: transparent; color: var(--tj-green); box-shadow: none; }.tj-theme-nav:hover svg { filter: brightness(1.15); }
+.tj-theme-nav { width: 38px; min-height: 38px; justify-content: center; margin: 7px 0 0 4px; padding: 0; border: none; border-radius: 10px; background: transparent; box-shadow: none; }.tj-theme-toggle-icons { position: relative; width: 18px; height: 18px; display: grid; place-items: center; }.tj-theme-toggle-icons svg { position: absolute; flex: 0 0 auto; color: var(--tj-muted); transition: transform .48s cubic-bezier(.34,1.56,.64,1), opacity .22s ease, filter .32s ease; }.tj-theme-toggle-sun { transform: rotate(-92deg) scale(.18); opacity: 0; }.tj-theme-toggle-moon { transform: rotate(0deg) scale(1); opacity: 1; }.tj-theme-light .tj-theme-toggle-sun { transform: rotate(0deg) scale(1); opacity: 1; }.tj-theme-light .tj-theme-toggle-moon { transform: rotate(92deg) scale(.18); opacity: 0; }.tj-theme-nav:hover { background: transparent; color: var(--tj-text); box-shadow: none; }.tj-theme-nav:hover svg { filter: brightness(1.15); }
+::view-transition-group(root) { animation-duration: .54s; }
+::view-transition-old(root) { z-index: 1; animation: none; mix-blend-mode: normal; }
+::view-transition-new(root) { z-index: 2; animation: tj-theme-reveal-from-center .54s cubic-bezier(.65,0,.35,1) both; mix-blend-mode: normal; }
+@keyframes tj-theme-reveal-from-center { from { clip-path: circle(0 at 50vw 50vh); } to { clip-path: circle(150vmax at 50vw 50vh); } }
+@media (prefers-reduced-motion: reduce) { ::view-transition-group(root), ::view-transition-old(root), ::view-transition-new(root) { animation-duration: .01ms !important; } }
 .tj-sidebar-collapsed .tj-theme-nav { width:46px; min-height:42px; margin:0; padding:9px; }.tj-sidebar-collapsed .tj-sync-nav { margin-top:0; }
-.tj-sync-nav { margin-top: 3px; color: var(--tj-green); }.tj-sync-nav svg { color: var(--tj-green); }.tj-sync-nav:disabled { opacity: .62; cursor: wait; }.tj-syncing-icon { animation: tj-sync-spin .8s linear infinite; }@keyframes tj-sync-spin { to { transform: rotate(360deg); } }
+.tj-sync-nav { margin-top: 3px; color: var(--tj-muted); }.tj-sync-nav svg { color: var(--tj-muted); }.tj-sync-nav:disabled { opacity: .62; cursor: wait; }.tj-syncing-icon { animation: tj-sync-spin .8s linear infinite; }@keyframes tj-sync-spin { to { transform: rotate(360deg); } }
 .tj-profile-row { display: flex; align-items: center; gap: 12px; padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--tj-border); }.tj-profile-preview { width: 58px; height: 58px; padding: 0; flex: 0 0 58px; overflow: hidden; border: 1px solid var(--tj-border); border-radius: 50%; background: var(--tj-panel); color: var(--tj-text); font-size: 1.5525rem; cursor: pointer; }.tj-profile-preview img { width: 100%; height: 100%; display: block; object-fit: cover; }.tj-profile-actions { display: grid; gap: 8px; }.tj-btn-small { font-size: 0.8125rem; min-height: 28px; padding: 5px 9px; }
 .tj-theme-choice { min-height: 62px; display: grid; align-content: center; gap: 3px; text-align: left; }.tj-theme-choice span { font-size: 0.9375rem; }.tj-theme-choice small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 500; }.tj-theme-choice.tj-chip-active small { color: color-mix(in srgb, var(--tj-green) 76%, var(--tj-muted)); }
-.tj-personal-profile-card, .tj-personal-appearance-card { overflow: hidden; margin-bottom: 12px; padding: 16px; border: 1px solid var(--tj-border); border-radius: 14px; background: linear-gradient(145deg, color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel-alt)), var(--tj-panel-alt) 72%); }
+.tj-personal-profile-card, .tj-personal-appearance-card { overflow: hidden; margin-bottom: 12px; padding: 16px; border: 1px solid var(--tj-border); border-radius: 14px; background: linear-gradient(145deg, color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel-alt)), var(--tj-panel-alt) 72%); }.tj-personal-profile-card { overflow: visible; }
+.tj-profile-account-security { position: relative; z-index: 3; overflow: visible; }.tj-profile-account-security-options { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 15px; isolation: isolate; }.tj-profile-account-email, .tj-profile-account-security-options .tj-profile-danger { position: relative; min-width: 0; height: 38px; padding: 0; border: 0; background: transparent; }.tj-profile-account-email .tj-btn-outline, .tj-profile-account-security-options .tj-profile-danger > .tj-danger-button { width: 100%; min-height: 38px; margin: 0; justify-content: flex-start; padding: 8px 12px; border-radius: 8px; }.tj-profile-account-email .tj-password-editor, .tj-profile-account-security-options .tj-profile-danger-confirm { position: absolute; top: calc(100% + 8px); left: 0; z-index: 8; width: 100%; margin: 0; box-shadow: 0 14px 28px color-mix(in srgb, var(--tj-panel) 65%, transparent); }.tj-profile-account-security-options .tj-profile-danger-confirm { padding: 10px; border: 1px solid color-mix(in srgb, var(--tj-red) 52%, var(--tj-border)); border-radius: 10px; background: var(--tj-panel); }
+.tj-profile-reference-head { display: flex; align-items: center; gap: 14px; min-height: 70px; }.tj-profile-reference-identity { min-width: 0; display: grid; gap: 5px; }.tj-profile-reference-identity > div { display: flex; align-items: center; gap: 8px; }.tj-profile-reference-identity strong { overflow: hidden; font-size: 1rem; text-overflow: ellipsis; white-space: nowrap; }.tj-profile-name-input { width: min(190px, 38vw); min-height: 30px; padding: 4px 8px; border: 1px solid color-mix(in srgb, var(--tj-green) 60%, var(--tj-border)); border-radius: 7px; outline: none; background: var(--tj-input-bg); color: var(--tj-text); font: inherit; font-size: 1rem; font-weight: 750; }.tj-profile-reference-identity em { padding: 3px 7px; border-radius: 999px; background: color-mix(in srgb, var(--tj-green) 13%, transparent); color: var(--tj-green); font-size: .625rem; font-style: normal; font-weight: 800; }.tj-profile-reference-identity > span { overflow: hidden; color: var(--tj-muted); font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }.tj-profile-reference-stats { display: flex; align-items: center; gap: 18px; margin-left: auto; }.tj-profile-reference-stats > div { min-width: 84px; display: grid; gap: 4px; padding-left: 18px; border-left: 1px solid var(--tj-border); }.tj-profile-reference-stats small { color: var(--tj-muted); font-size: .625rem; font-weight: 800; letter-spacing: .65px; }.tj-profile-reference-stats strong { font-size: .75rem; white-space: nowrap; }.tj-profile-reference-edit { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border: 0; background: transparent; color: var(--tj-muted); font: inherit; font-size: .75rem; cursor: pointer; }.tj-profile-reference-edit:hover { color: var(--tj-accent); }.tj-profile-modal:not(.tj-profile-modal-editing) .tj-personal-profile-summary-head, .tj-profile-modal:not(.tj-profile-modal-editing) .tj-profile-summary-grid, .tj-profile-modal:not(.tj-profile-modal-editing) .tj-personal-appearance-card, .tj-profile-modal:not(.tj-profile-modal-editing) .tj-modal-actions { display: none; }
 .tj-personal-profile-heading, .tj-personal-section-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }.tj-personal-profile-heading > div, .tj-personal-section-title > div { display: grid; gap: 4px; }.tj-personal-profile-heading > div > span { color: var(--tj-green); font-size: 0.75rem; font-weight: 850; letter-spacing: 1px; }.tj-personal-profile-heading strong { font-size: 1.35rem; }.tj-personal-profile-heading p, .tj-personal-section-title span { margin: 0; color: var(--tj-muted); font-size: 0.8125rem; line-height: 1.4; }.tj-personal-profile-heading > em, .tj-personal-section-title > em { max-width: 250px; overflow: hidden; padding: 4px 9px; border: 1px solid var(--tj-border); border-radius: 999px; color: var(--tj-muted); font-size: 0.75rem; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
-.tj-personal-profile-photo-row { display: flex; align-items: center; gap: 14px; margin: 18px 0; padding: 15px; border: 1px dashed color-mix(in srgb, var(--tj-green) 38%, var(--tj-border)); border-radius: 12px; background: color-mix(in srgb, var(--tj-green) 6%, var(--tj-panel)); }.tj-personal-profile-avatar { position: relative; width: 78px; height: 78px; flex: 0 0 78px; padding: 0; border: 1px solid color-mix(in srgb, var(--tj-green) 50%, var(--tj-border)); border-radius: 50%; background: var(--tj-green); color: white; font: inherit; font-size: 1.5525rem; font-weight: 800; cursor: pointer; }.tj-personal-profile-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; border-radius: inherit; }.tj-personal-profile-avatar i { position: absolute; right: -2px; bottom: 0; display: grid; place-items: center; width: 25px; height: 25px; border: 2px solid var(--tj-panel-alt); border-radius: 50%; background: var(--tj-green); color: white; }.tj-personal-profile-photo-row > div { display: grid; gap: 4px; min-width: 0; }.tj-personal-profile-photo-row > div > strong { font-size: 1.08rem; }.tj-personal-profile-photo-row > div > span { overflow: hidden; color: var(--tj-muted); font-size: 0.8125rem; text-overflow: ellipsis; }.tj-personal-profile-photo-row .tj-chip-row { margin-top: 5px; }
+.tj-personal-profile-summary-head { display: none; }.tj-profile-summary-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; margin-top: 15px; }.tj-profile-summary-grid > section { position: relative; min-width: 0; display: grid; align-content: start; gap: 7px; min-height: 112px; padding: 11px; border: 1px solid color-mix(in srgb, var(--tj-border) 88%, transparent); background: color-mix(in srgb, var(--tj-panel) 46%, transparent); }.tj-profile-summary-grid > section:first-child { display: none; }.tj-profile-summary-grid > section:nth-child(2) { border-color: color-mix(in srgb, var(--tj-blue) 34%, var(--tj-border)); }.tj-profile-summary-grid > section > small { color: var(--tj-muted); font-size: .67rem; font-weight: 850; letter-spacing: .9px; }.tj-profile-summary-grid > section > strong { overflow: hidden; font-size: .9375rem; text-overflow: ellipsis; white-space: nowrap; }.tj-profile-summary-grid .tj-input { margin-top: 1px; padding: 8px 9px; font-size: .8125rem; }.tj-profile-summary-grid .tj-btn-outline { width: fit-content; margin-top: auto; }.tj-profile-summary-grid .tj-password-editor, .tj-profile-summary-grid .tj-profile-danger-confirm { position: absolute; top: calc(100% + 8px); left: 0; z-index: 8; width: 100%; box-shadow: 0 14px 28px color-mix(in srgb, var(--tj-panel) 65%, transparent); }.tj-profile-summary-grid .tj-profile-danger-confirm { padding: 10px; border: 1px solid color-mix(in srgb, var(--tj-red) 52%, var(--tj-border)); border-radius: 10px; background: var(--tj-panel); }
+.tj-personal-profile-photo-row { display: flex; align-items: center; gap: 14px; margin: 18px 0; padding: 15px; border: 1px dashed color-mix(in srgb, var(--tj-green) 38%, var(--tj-border)); border-radius: 12px; background: color-mix(in srgb, var(--tj-green) 6%, var(--tj-panel)); }.tj-profile-avatar-tools { position: relative; width: 78px; height: 78px; flex: 0 0 78px; }.tj-personal-profile-avatar { position: relative; width: 78px; height: 78px; padding: 0; border: 1px solid color-mix(in srgb, var(--tj-green) 50%, var(--tj-border)); border-radius: 50%; background: var(--tj-green); color: white; font: inherit; font-size: 1.5525rem; font-weight: 800; cursor: pointer; }.tj-personal-profile-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; border-radius: inherit; }.tj-profile-avatar-tool { position: absolute; right: -5px; bottom: -5px; display: grid; place-items: center; width: 27px; height: 27px; padding: 0; border: 2px solid var(--tj-panel-alt); border-radius: 50%; background: var(--tj-green); color: var(--tj-primary-contrast); cursor: pointer; box-shadow: 0 4px 10px color-mix(in srgb, var(--tj-panel) 60%, transparent); }.tj-profile-avatar-tool:hover { filter: brightness(1.12); transform: scale(1.05); }.tj-profile-avatar-remove { right: 18px; background: var(--tj-panel-alt); border-color: color-mix(in srgb, var(--tj-red) 45%, var(--tj-panel-alt)); color: var(--tj-red); }.tj-personal-profile-avatar i { position: absolute; right: -2px; bottom: 0; display: grid; place-items: center; width: 25px; height: 25px; border: 2px solid var(--tj-panel-alt); border-radius: 50%; background: var(--tj-green); color: white; }.tj-personal-profile-photo-row > div { display: grid; gap: 4px; min-width: 0; }.tj-personal-profile-photo-row > div > strong { font-size: 1.08rem; }.tj-personal-profile-photo-row > div > span { overflow: hidden; color: var(--tj-muted); font-size: 0.8125rem; text-overflow: ellipsis; }.tj-personal-profile-photo-row .tj-chip-row { margin-top: 5px; }
 .tj-personal-profile-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }.tj-personal-profile-fields .tj-field { margin-bottom: 0; }.tj-personal-profile-fields input:read-only { color: var(--tj-muted); background: color-mix(in srgb, var(--tj-input-bg) 72%, var(--tj-panel)); cursor: not-allowed; }
-.tj-profile-danger { display:grid; align-content:start; gap:8px; padding:10px; border:1px solid color-mix(in srgb,var(--tj-red) 55%,var(--tj-border)); border-radius:10px; background:color-mix(in srgb,var(--tj-red) 7%,var(--tj-panel)); }.tj-profile-danger > strong { color:var(--tj-red); font-size:.78rem; letter-spacing:.55px; text-transform:uppercase; }.tj-danger-button { justify-content:center; min-height:34px; padding:7px 10px; border:1px solid color-mix(in srgb,var(--tj-red) 75%,var(--tj-border)); border-radius:7px; background:color-mix(in srgb,var(--tj-red) 12%,var(--tj-panel)); color:var(--tj-red); font:inherit; font-size:.8rem; font-weight:800; cursor:pointer; }.tj-danger-button:disabled { opacity:.55; cursor:not-allowed; }.tj-profile-danger-confirm { display:grid; gap:8px; color:var(--tj-muted); font-size:.75rem; line-height:1.35; }.tj-profile-danger-confirm b { color:var(--tj-red); }.tj-profile-danger-confirm > div { display:flex; justify-content:flex-end; gap:7px; }
+.tj-profile-danger { display:grid; align-content:start; gap:8px; padding:10px; border:1px solid color-mix(in srgb,var(--tj-red) 55%,var(--tj-border)); border-radius:10px; background:color-mix(in srgb,var(--tj-red) 7%,var(--tj-panel)); }.tj-profile-danger > small, .tj-profile-danger > strong { color:var(--tj-red); font-size:.72rem; font-weight:850; letter-spacing:.7px; text-transform:uppercase; }.tj-profile-danger > strong { font-size:.875rem; letter-spacing:0; text-transform:none; }.tj-danger-button { justify-content:center; min-height:34px; padding:7px 10px; border:1px solid color-mix(in srgb,var(--tj-red) 75%,var(--tj-border)); border-radius:8px; background:color-mix(in srgb,var(--tj-red) 12%,var(--tj-panel)); color:var(--tj-red); font:inherit; font-size:.8rem; font-weight:800; cursor:pointer; }.tj-danger-button:disabled { opacity:.55; cursor:not-allowed; }.tj-profile-danger-confirm { display:grid; gap:8px; color:var(--tj-muted); font-size:.75rem; line-height:1.35; }.tj-profile-danger-confirm b { color:var(--tj-red); }.tj-profile-danger-confirm > div, .tj-password-actions { display:flex; justify-content:flex-end; gap:7px; }
 .tj-settings-danger-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }.tj-settings-danger-grid .tj-settings-danger-action { height:100%; }
 .tj-regional-fields { grid-template-columns: minmax(0,1.5fr) repeat(2,minmax(0,1fr)); }
-.tj-password-link { width: fit-content; margin-top: 7px; padding: 0; border: 0; background: transparent; color: var(--tj-green); font: inherit; font-size: 0.75rem; font-weight: 750; cursor: pointer; }.tj-password-link:hover { text-decoration: underline; }.tj-password-editor { display: grid; gap: 7px; margin-top: 8px; padding: 10px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel); }.tj-password-editor > span { font-size: 0.75rem; line-height: 1.35; }.tj-password-editor .tj-btn-small { justify-self: start; }
+.tj-password-link { width: fit-content; margin-top: 7px; padding: 0; border: 0; background: transparent; color: var(--tj-green); font: inherit; font-size: 0.75rem; font-weight: 750; cursor: pointer; }.tj-password-link:hover { text-decoration: underline; }.tj-password-editor { display: grid; gap: 7px; margin-top: 8px; padding: 10px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel); }.tj-password-editor > span { font-size: 0.75rem; line-height: 1.35; }.tj-password-editor .tj-btn-small { justify-self: start; }.tj-password-actions .tj-btn-small { justify-self: auto; }
 .tj-personal-section-title { margin-bottom: 13px; }.tj-personal-section-title strong { font-size: 1.0125rem; }.tj-personal-appearance-card .tj-theme-choice { padding: 12px 14px; border: 1px solid var(--tj-border); border-radius: 11px; background: var(--tj-panel); color: var(--tj-text); font-family: inherit; cursor: pointer; }
 .tj-avatar { overflow: hidden; }.tj-avatar img, .tj-avatar-sm img { width: 100%; height: 100%; object-fit: cover; display: block; }.tj-avatar-sm { overflow: hidden; }
 .tj-btn-disabled { opacity: .58; cursor: not-allowed; filter: saturate(.35); }
@@ -5268,8 +5642,24 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 
 /* Dense Trade Log layout follows the same reference hierarchy while retaining
    AAICOREFX review status, automatic rating and linked-markup data. */
-.tj-tradelog-reference-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1px; overflow: hidden; margin-bottom: 14px; padding: 1px; border: 1px solid var(--tj-border); border-radius: 14px; background: var(--tj-border); }.tj-tradelog-reference-summary > div { min-width: 0; padding: 12px 14px; background: var(--tj-panel); display: grid; gap: 3px; }.tj-tradelog-reference-summary span { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; }.tj-tradelog-reference-summary strong { overflow: hidden; font-size: 1.08rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }.tj-tradelog-reference-summary small { overflow: hidden; color: var(--tj-muted); font-size: 0.75rem; text-overflow: ellipsis; white-space: nowrap; }.tj-tradelog-compact-toolbar { display: grid; grid-template-columns: 1fr auto; gap: 9px; align-items: center; min-height: 32px; margin-bottom: 14px; }.tj-tradelog-filter-controls, .tj-tradelog-sort-controls { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; padding: 9px 10px; border: 1px solid var(--tj-border); border-radius: 9px; background: color-mix(in srgb, var(--tj-panel-alt) 84%, transparent); }.tj-tradelog-filter-controls .tj-toolbar-search { flex: 1; }.tj-tradelog-sort-controls > span { color: var(--tj-muted); font-size: 0.8125rem; }.tj-reference-tradelog-row .tj-tlog-row { min-height: 62px; flex-wrap: nowrap; justify-content: space-between; gap: 14px; }.tj-reference-trade-left { min-width: 0; flex: 1; display: flex; align-items: center; gap: 18px; }.tj-reference-trade-left .tj-reference-trade-meta { flex: 0 0 182px; min-width: 182px; }.tj-reference-trade-left .tj-tlog-main { flex: 0 0 108px; min-width: 108px; }.tj-reference-trade-direction { flex: 0 0 auto; font-size: 0.75rem; font-weight: 800; }.tj-reference-trade-session { min-width: 70px; color: var(--tj-text); font-size: 0.8125rem; font-weight: 700; white-space: nowrap; }.tj-reference-tradelog-row .tj-tlog-pills { flex-wrap: wrap; align-items: center; }.tj-reference-tradelog-row .tj-review-status { min-width: auto; flex-shrink: 0; padding: 2px 6px; border-radius: 5px; font-size: 0.75rem; }.tj-reference-trade-meta { flex: 1; min-width: 170px; display: grid; gap: 3px; color: var(--tj-muted); font-size: 0.75rem; line-height: 1.2; }.tj-reference-trade-meta span:first-child { color: var(--tj-text); }.tj-reference-trade-right { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-shrink: 0; }.tj-reference-tradelog-row .tj-tlog-pnl-block { min-width: 112px; text-align: right; }.tj-reference-trade-return { color: var(--tj-muted); font-size: 0.75rem; }.tj-reference-delete { color: var(--tj-red); border-color: color-mix(in srgb, var(--tj-red) 40%, var(--tj-border)); background: color-mix(in srgb, var(--tj-red) 9%, transparent); }.tj-reference-trade-detail-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-bottom: 13px; }.tj-reference-trade-detail-summary > div { padding: 9px; border: 1px solid var(--tj-border); border-radius: 8px; background: var(--tj-panel); display: grid; gap: 4px; }.tj-reference-trade-detail-summary span { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .5px; }.tj-reference-trade-detail-summary strong { overflow: hidden; font-size: 0.875rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }.tj-reference-linked-markup { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px; margin-top: 12px; border: 1px solid var(--tj-border); border-radius: 8px; background: var(--tj-panel); }.tj-reference-linked-markup > div { display: grid; gap: 3px; }.tj-reference-linked-markup span { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .45px; text-transform: uppercase; }.tj-reference-linked-markup strong { font-size: 0.875rem; }.tj-reference-linked-markup small { color: var(--tj-muted); font-size: 0.75rem; }
+.tj-tradelog-reference-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; overflow: hidden; margin-bottom: 14px; border: 1px solid var(--tj-border); border-radius: 14px; background: var(--tj-panel); }.tj-tradelog-reference-summary > div { min-width: 0; padding: 12px 14px; border-right: 1px solid var(--tj-border); border-bottom: 1px solid var(--tj-border); background: var(--tj-panel); display: grid; gap: 3px; }.tj-tradelog-reference-summary > div:nth-child(5n) { border-right: 0; }.tj-tradelog-reference-summary > div:nth-child(n + 6) { border-bottom: 0; }.tj-tradelog-reference-summary span { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; }.tj-tradelog-reference-summary strong { overflow: hidden; font-size: 1.08rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }.tj-tradelog-reference-summary small { overflow: hidden; color: var(--tj-muted); font-size: 0.75rem; text-overflow: ellipsis; white-space: nowrap; }.tj-tradelog-compact-toolbar { display: grid; grid-template-columns: 1fr auto; gap: 9px; align-items: center; min-height: 32px; margin-bottom: 14px; }.tj-tradelog-filter-controls, .tj-tradelog-sort-controls { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; padding: 9px 10px; border: 1px solid var(--tj-border); border-radius: 9px; background: color-mix(in srgb, var(--tj-panel-alt) 84%, transparent); }.tj-tradelog-filter-controls .tj-toolbar-search { flex: 1; }.tj-tradelog-sort-controls > span { color: var(--tj-muted); font-size: 0.8125rem; }.tj-reference-tradelog-row .tj-tlog-row { min-height: 62px; flex-wrap: nowrap; justify-content: space-between; gap: 14px; }.tj-reference-trade-left { min-width: 0; flex: 1; display: flex; align-items: center; gap: 18px; }.tj-reference-trade-left .tj-reference-trade-meta { flex: 0 0 182px; min-width: 182px; }.tj-reference-trade-left .tj-tlog-main { flex: 0 0 108px; min-width: 108px; }.tj-reference-trade-direction { flex: 0 0 auto; font-size: 0.75rem; font-weight: 800; }.tj-reference-trade-session { min-width: 70px; color: var(--tj-text); font-size: 0.8125rem; font-weight: 700; white-space: nowrap; }.tj-reference-tradelog-row .tj-tlog-pills { flex-wrap: wrap; align-items: center; }.tj-reference-tradelog-row .tj-review-status { min-width: auto; flex-shrink: 0; padding: 2px 6px; border-radius: 5px; font-size: 0.75rem; }.tj-reference-trade-meta { flex: 1; min-width: 170px; display: grid; gap: 3px; color: var(--tj-muted); font-size: 0.75rem; line-height: 1.2; }.tj-reference-trade-meta span:first-child { color: var(--tj-text); }.tj-reference-trade-right { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-shrink: 0; }.tj-reference-tradelog-row .tj-tlog-pnl-block { min-width: 112px; text-align: right; }.tj-reference-trade-return { color: var(--tj-muted); font-size: 0.75rem; }.tj-reference-delete { color: var(--tj-red); border-color: color-mix(in srgb, var(--tj-red) 40%, var(--tj-border)); background: color-mix(in srgb, var(--tj-red) 9%, transparent); }.tj-reference-trade-detail-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-bottom: 13px; }.tj-reference-trade-detail-summary > div { padding: 9px; border: 1px solid var(--tj-border); border-radius: 8px; background: var(--tj-panel); display: grid; gap: 4px; }.tj-reference-trade-detail-summary span { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .5px; }.tj-reference-trade-detail-summary strong { overflow: hidden; font-size: 0.875rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }.tj-reference-linked-markup { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px; margin-top: 12px; border: 1px solid var(--tj-border); border-radius: 8px; background: var(--tj-panel); }.tj-reference-linked-markup > div { display: grid; gap: 3px; }.tj-reference-linked-markup span { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .45px; text-transform: uppercase; }.tj-reference-linked-markup strong { font-size: 0.875rem; }.tj-reference-linked-markup small { color: var(--tj-muted); font-size: 0.75rem; }
+.tj-tradelog-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; }.tj-tradelog-card-shell { min-width: 0; }.tj-tradelog-compact-toolbar { grid-template-columns: 1fr auto 1fr; }.tj-tradelog-compact-toolbar .tj-markup-toolbar-actions { grid-column: 2; }.tj-tradelog-compact-toolbar .tj-markup-toolbar-status { grid-column: 3; justify-self: end; }
+.tj-tradelog-month-controls { align-items: start; }.tj-tradelog-month-controls > div { flex: 1; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 7px; }.tj-tradelog-month-controls small { float: right; color: var(--tj-muted); }
+.tj-tradelog-card-grid .tj-reference-tradelog-row:not(.tj-reference-tradelog-expanded) .tj-tlog-row { min-height: 174px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; padding: 14px; }
+.tj-tradelog-card-grid .tj-reference-tradelog-row:not(.tj-reference-tradelog-expanded) .tj-reference-trade-left { display: grid; grid-template-columns: auto auto 1fr; align-content: start; align-items: center; gap: 7px 10px; }
+.tj-tradelog-card-grid .tj-reference-tradelog-row:not(.tj-reference-tradelog-expanded) .tj-reference-trade-meta { order: -1; grid-column: 1 / -1; min-width: 0; font-size: .6875rem; font-weight: 750; letter-spacing: .25px; }
+.tj-tradelog-card-grid .tj-reference-tradelog-row:not(.tj-reference-tradelog-expanded) .tj-reference-trade-meta span:last-child { display: none; }
+.tj-tradelog-card-grid .tj-reference-tradelog-row:not(.tj-reference-tradelog-expanded) .tj-tlog-main { flex: initial; min-width: 0; }
+.tj-tradelog-card-grid .tj-reference-tradelog-row:not(.tj-reference-tradelog-expanded) .tj-tlog-asset { font-size: 1.2rem; letter-spacing: -.35px; }
+.tj-tradelog-card-grid .tj-reference-tradelog-row:not(.tj-reference-tradelog-expanded) .tj-reference-trade-session { min-width: 0; color: var(--tj-muted); font-size: .75rem; }
+.tj-tradelog-card-grid .tj-reference-tradelog-row:not(.tj-reference-tradelog-expanded) .tj-reference-trade-right { display: grid; grid-template-columns: 112px; grid-template-rows: auto auto 30px; align-content: space-between; justify-items: end; }
+.tj-tradelog-card-grid .tj-reference-tradelog-row:not(.tj-reference-tradelog-expanded) .tj-review-status { white-space: nowrap; }
+.tj-tradelog-card-grid .tj-reference-tradelog-row:not(.tj-reference-tradelog-expanded) .tj-tlog-pnl-block { min-width: 0; }
+.tj-tradelog-card-grid .tj-reference-tradelog-row:not(.tj-reference-tradelog-expanded) .tj-trade-card-identity { display: grid; grid-template-columns: 1fr; align-content: start; gap: 7px; }
+.tj-trade-card-date { color: var(--tj-muted); font-size: .6875rem; font-weight: 800; letter-spacing: .7px; }.tj-trade-card-instrument { font-size: 1.2rem; letter-spacing: -.35px; line-height: 1.1; }.tj-trade-card-status { display: flex; gap: 8px; align-items: center; }.tj-trade-card-status span { font-size: .75rem; font-weight: 800; }.tj-trade-card-status span:last-child { color: var(--tj-muted); }.tj-trade-card-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; padding-top: 4px; }.tj-trade-card-metrics > div { display: grid; gap: 2px; }.tj-trade-card-metrics span { color: var(--tj-muted); font-size: .625rem; font-weight: 800; letter-spacing: .7px; }.tj-trade-card-metrics strong { font-size: .8125rem; }.tj-trade-card-identity p { display: -webkit-box; margin: 1px 0 0; overflow: hidden; color: var(--tj-muted); font-size: .75rem; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .tj-reference-trade-expand { display: grid; gap: 10px; padding: 12px; }
+.tj-reference-trade-detail-inner.tj-reference-trade-expand { padding: 0 12px; }
+.tj-reference-trade-detail-open .tj-reference-trade-detail-inner.tj-reference-trade-expand { padding: 12px; }
 .tj-reference-trade-main-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .tj-reference-trade-brief, .tj-reference-trade-markup, .tj-reference-journal-detail { min-width: 0; padding: 10px; border: 1px solid var(--tj-border); border-radius: 11px; background: var(--tj-panel); }
 .tj-reference-trade-section-head { min-height: 24px; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--tj-muted); font-size: 0.75rem; }
@@ -5304,7 +5694,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-reference-trade-left { display:grid; grid-template-columns:minmax(108px,1.1fr) minmax(48px,.7fr) minmax(182px,2fr) minmax(82px,1fr); column-gap:24px; }
 .tj-reference-trade-left .tj-reference-trade-meta, .tj-reference-trade-left .tj-tlog-main, .tj-reference-trade-direction, .tj-reference-trade-session { min-width:0; }
 .tj-markup-toolbar-button { display:inline-flex; align-items:center; justify-content:center; min-width:32px; padding:0; box-sizing:border-box; }
-.tj-tradelog-filter-grid .tj-field:first-child { grid-column: 1 / -1; }
+.tj-tradelog-filter-grid .tj-field:first-child { grid-column: auto; }
 .tj-tradelog-filter-grid .tj-toolbar-search { width: 100%; height: 30px; }
 .tj-tradelog-filter-grid .tj-toolbar-search-input { height: 100%; }
 .tj-reference-markup-shots .tj-image-preview-selected, .tj-reference-trade-screens .tj-image-preview-selected { border-color: var(--tj-green); background: color-mix(in srgb, var(--tj-green) 15%, var(--tj-panel-alt)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--tj-green) 35%, transparent); }
@@ -5312,6 +5702,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 /* Analytics workspace — uses the same theme and Forest Green tokens as the
    rest of the journal, including every chart and performance surface. */
 .tj-analytics-workspace { display: grid; gap: 14px; }
+.tj-analytics-workspace > .tj-view-transition { display:grid; gap:16px; }
 .tj-analytics-deck { min-height: 90px; display: grid; grid-template-columns: minmax(260px, 1fr) auto minmax(140px, 1fr); align-items: center; gap: 18px; padding: 14px 16px; border-radius: 16px; background: linear-gradient(100deg, color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel)), var(--tj-panel) 54%, color-mix(in srgb, var(--tj-purple) 5%, var(--tj-panel))); scroll-margin-top: 78px; }
 .tj-analytics-deck-copy { display: grid; gap: 3px; }.tj-analytics-deck-copy > span { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: 1.2px; }.tj-analytics-deck-copy > strong { font-size: 1.755rem; line-height: 1; letter-spacing: -.55px; }.tj-analytics-deck-copy > small { color: var(--tj-muted); font-size: 0.75rem; }
 .tj-analytics-deck-tabs { display: flex; align-items: center; gap: 2px; padding: 4px; border: 1px solid var(--tj-border); border-radius: 11px; background: var(--tj-panel-alt); }.tj-analytics-deck-tabs button { min-height: 32px; padding: 0 13px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--tj-muted); font: inherit; font-size: 0.75rem; font-weight: 700; white-space: nowrap; cursor: pointer; }.tj-analytics-deck-tabs button:hover { color: var(--tj-text); }.tj-analytics-deck-tabs .tj-analytics-deck-tab-active { border-color: color-mix(in srgb, var(--tj-green) 36%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 10%, var(--tj-panel)); color: var(--tj-text); box-shadow: 0 0 0 2px color-mix(in srgb, var(--tj-green) 8%, transparent); }
@@ -5336,22 +5727,30 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-performance-bars { display: grid; grid-template-columns: 45px minmax(0, 1fr) auto; align-items: center; gap: 5px 7px; }.tj-performance-bars > span { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .65px; }.tj-performance-bars > i { height: 5px; overflow: hidden; border-radius: 99px; background: var(--tj-border); }.tj-performance-bars > i > b { display: block; height: 100%; border-radius: inherit; background: var(--tj-green); }.tj-performance-bars > i > .tj-performance-purple { background: var(--tj-purple); }.tj-performance-bars > strong { font-size: 0.75rem; text-align: right; }.tj-performance-stat-card footer, .tj-performance-instrument-card footer { display: flex; justify-content: space-between; gap: 8px; color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .55px; }
 .tj-performance-four { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }.tj-performance-four strong { overflow: hidden; font-size: 1.1475rem; text-overflow: ellipsis; white-space: nowrap; }.tj-performance-chart { padding: 12px; border: 1px solid var(--tj-border); border-radius: 12px; background: color-mix(in srgb, var(--tj-green) 5%, var(--tj-panel-alt)); }.tj-performance-chart > div:first-child { display: grid; gap: 4px; }.tj-performance-chart > div:first-child small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .9px; }.tj-performance-chart > div:first-child strong { font-size: 1.485rem; }
 .tj-performance-recent { display: grid; }.tj-performance-recent > header { display: flex; justify-content: space-between; gap: 10px; padding: 0 0 8px; color: var(--tj-muted); font-size: 0.75rem; letter-spacing: .8px; }.tj-performance-recent > header > span { letter-spacing: 0; }.tj-performance-recent > div { display: grid; grid-template-columns: minmax(100px, .7fr) minmax(180px, 1fr) minmax(110px, .45fr) minmax(110px, .45fr); align-items: center; gap: 12px; min-height: 49px; padding: 7px 10px; border-top: 1px solid var(--tj-border); }.tj-performance-recent > div > span { display: grid; gap: 2px; }.tj-performance-recent > div > span:last-child { text-align: right; }.tj-performance-recent small { color: var(--tj-muted); font-size: 0.75rem; }.tj-performance-recent i, .tj-performance-month-list i { height: 6px; overflow: hidden; border-radius: 99px; background: var(--tj-panel); }.tj-performance-recent i > b, .tj-performance-month-list i > b { display: block; height: 100%; border-radius: inherit; }.tj-performance-recent em { display: grid; gap: 2px; font-size: 0.8125rem; font-style: normal; font-weight: 800; }.tj-performance-recent em small { font-weight: 500; }
-.tj-performance-month-list { display: grid; }.tj-performance-month-list > div { display: grid; grid-template-columns: minmax(85px, .45fr) minmax(180px, 1fr) minmax(110px, .55fr) minmax(90px, .35fr); align-items: center; gap: 12px; min-height: 42px; padding: 7px 10px; border: 1px solid var(--tj-border); border-radius: 8px; background: var(--tj-panel-alt); }.tj-performance-month-list > div + div { margin-top: 7px; }.tj-performance-month-list span { color: var(--tj-muted); font-size: 0.75rem; text-align: right; }.tj-performance-month-list em { font-size: 0.75rem; font-style: normal; font-weight: 800; text-align: right; }
+.tj-performance-month-list { display:none; }
 .tj-performance-instrument-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.tj-performance-instrument-card { padding: 12px; }.tj-performance-instrument-card > strong { font-size: 1.4175rem; }.tj-performance-instrument-card > em { font-size: 1.8225rem; }.tj-performance-instrument-card > section { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }.tj-performance-instrument-card > section b { font-size: 0.875rem; }
-.tj-execution-workspace { display: grid; gap: 14px; }.tj-execution-rhythm-card, .tj-core-breakdown, .tj-session-time, .tj-execution-days { padding: 14px; border-radius: 16px; background: linear-gradient(105deg, color-mix(in srgb, var(--tj-green) 5%, var(--tj-panel)), var(--tj-panel) 56%, color-mix(in srgb, var(--tj-purple) 3%, var(--tj-panel))); }.tj-execution-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }.tj-execution-title > div { display: grid; gap: 5px; }.tj-execution-title > strong, .tj-execution-title > div > strong { font-size: 0.9375rem; }.tj-execution-title > small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; }.tj-execution-title > div > span { color: var(--tj-muted); font-size: 0.75rem; line-height: 1.4; }
+.tj-execution-workspace { display: grid; gap: 14px; }.tj-execution-rhythm-card, .tj-execution-weekly-card, .tj-execution-weekday-card, .tj-core-breakdown, .tj-session-time, .tj-execution-days { padding: 14px; border-radius: 16px; background: linear-gradient(105deg, color-mix(in srgb, var(--tj-green) 5%, var(--tj-panel)), var(--tj-panel) 56%, color-mix(in srgb, var(--tj-purple) 3%, var(--tj-panel))); }.tj-execution-rhythm-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }.tj-execution-weekly-card, .tj-execution-weekday-card { min-width:0; min-height:340px; }.tj-execution-weekday-card { display:grid; grid-template-rows:auto 1fr; }.tj-execution-weekday-bars { align-content:space-evenly; gap:0; padding:18px 0 10px; }.tj-execution-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }.tj-execution-title > div { display: grid; gap: 5px; }.tj-execution-title > strong, .tj-execution-title > div > strong { font-size: 0.9375rem; }.tj-execution-title > small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; }.tj-execution-title > div > span { color: var(--tj-muted); font-size: 0.75rem; line-height: 1.4; }
 .tj-execution-four { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 10px; }.tj-execution-four > div, .tj-execution-week-grid > div, .tj-execution-month-grid > div { min-width: 0; display: grid; gap: 4px; padding: 11px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel-alt); }.tj-execution-four small, .tj-execution-week-grid small, .tj-execution-month-grid small, .tj-core-breakdown small, .tj-execution-day-metrics small, .tj-execution-best-worst small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .9px; }.tj-execution-four strong { font-size: 1.1475rem; }.tj-execution-four span, .tj-execution-week-grid span, .tj-execution-month-grid span { color: var(--tj-muted); font-size: 0.75rem; }
 .tj-execution-section-label { margin: 13px 0 7px; color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: 1.1px; }.tj-execution-bars { display: grid; gap: 7px; }.tj-execution-bars > div { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto 32px; align-items: center; gap: 8px; }.tj-execution-bars strong { font-size: 0.75rem; }.tj-execution-bars i { height: 6px; overflow: hidden; border-radius: 99px; background: var(--tj-border); }.tj-execution-bars i > b { display: block; height: 100%; border-radius: inherit; }.tj-execution-bars em { min-width: 64px; font-size: 0.75rem; font-style: normal; font-weight: 800; text-align: right; }.tj-execution-bars span { font-size: 0.75rem; font-weight: 800; text-align: right; }.tj-execution-week-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }.tj-execution-week-grid strong, .tj-execution-month-grid strong { font-size: 1.08rem; }.tj-execution-month-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; }
 .tj-core-breakdown-grid { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(0, 1.2fr); gap: 10px; margin-top: 10px; }.tj-core-breakdown-grid > section { min-width: 0; padding: 12px; border: 1px solid var(--tj-border); border-radius: 12px; background: color-mix(in srgb, var(--tj-purple) 5%, var(--tj-panel-alt)); }.tj-core-breakdown-grid > section:first-child > div:first-child, .tj-discipline-head { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(180px, 1.2fr); gap: 14px; align-items: center; }.tj-core-breakdown-grid span { display: grid; gap: 4px; }.tj-core-breakdown-grid span > strong { font-size: 1.8225rem; line-height: 1; }.tj-core-breakdown-grid span > strong > i { color: var(--tj-muted); font-size: 0.75rem; font-style: normal; }.tj-core-breakdown-grid p { margin: 0; color: var(--tj-muted); font-size: 0.75rem; line-height: 1.45; }.tj-core-breakdown-grid > section:first-child > i { display: block; height: 7px; overflow: hidden; border-radius: 99px; background: var(--tj-border); }.tj-core-breakdown-grid > section:first-child > i > b { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--tj-amber), var(--tj-green)); }
 .tj-discipline-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 11px; }.tj-discipline-grid > div { display: grid; gap: 6px; padding: 9px; border: 1px solid var(--tj-border); border-radius: 9px; background: var(--tj-panel); }.tj-discipline-grid > div > span { display: flex; align-items: center; justify-content: space-between; gap: 8px; }.tj-discipline-grid > div > span strong { font-size: 0.875rem; }.tj-discipline-grid > div > i { height: 5px; overflow: hidden; border-radius: 99px; background: var(--tj-border); }.tj-discipline-grid > div > i > b { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--tj-purple), var(--tj-green)); }.tj-core-breakdown-grid section:last-child > footer { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }.tj-core-breakdown-grid section:last-child > footer > span { padding: 5px 8px; border-radius: 99px; background: var(--tj-panel); color: var(--tj-muted); font-size: 0.75rem; font-weight: 700; }
-.tj-execution-bottom { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1fr); gap: 14px; }.tj-session-time-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 190px)); gap: 9px; margin-top: 11px; }.tj-session-time-grid > div { display: grid; gap: 8px; padding: 11px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel-alt); }.tj-session-time-grid header { display: flex; justify-content: space-between; gap: 8px; }.tj-session-time-grid header strong { font-size: 0.8125rem; }.tj-session-time-grid header span { color: var(--tj-muted); font-size: 0.75rem; letter-spacing: .8px; }.tj-session-time-grid em { font-size: 1rem; font-style: normal; font-weight: 800; }.tj-session-time-grid section { display: flex; gap: 6px; }.tj-session-time-grid section span, .tj-session-time-grid > div > small { padding: 4px 7px; border-radius: 99px; background: var(--tj-panel); color: var(--tj-muted); font-size: 0.75rem; font-weight: 700; }.tj-session-time-grid > div > i { height: 5px; overflow: hidden; border-radius: 99px; background: var(--tj-border); }.tj-session-time-grid > div > i > b { display: block; height: 100%; }.tj-entry-time-empty { display: grid; grid-template-columns: auto 1fr; gap: 7px 12px; margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--tj-border); }.tj-entry-time-empty > span { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: 1px; }.tj-entry-time-empty > small { color: var(--tj-muted); font-size: 0.75rem; text-align: right; }.tj-entry-time-empty > p { grid-column: 1 / -1; margin: 0; padding: 9px; border: 1px dashed var(--tj-border); border-radius: 8px; color: var(--tj-muted); font-size: 0.75rem; }
+.tj-execution-bottom { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1fr); gap: 14px; }.tj-session-time-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding-bottom:12px; border-bottom:1px solid var(--tj-border); }.tj-session-time-head > div { display:grid; gap:8px; }.tj-session-time-head strong, .tj-session-time-head > small, .tj-session-rank-list small, .tj-entry-time-empty header > span { font-size:.68rem; font-weight:900; letter-spacing:1px; }.tj-session-time-head > div > span { color:var(--tj-muted); font-size:.78rem; line-height:1.45; }.tj-session-time-head > small { flex:none; padding:5px 8px; border:1px solid var(--tj-border); border-radius:9px; color:var(--tj-muted); }.tj-session-rank-list { display:grid; margin-top:12px; }.tj-session-rank-list article { display:grid; grid-template-columns:30px minmax(92px,.85fr) minmax(145px,1.55fr) minmax(90px,.65fr); align-items:center; gap:12px; min-width:0; padding:12px; border:1px solid var(--tj-border); border-radius:14px; background:color-mix(in srgb,var(--tj-panel-alt) 88%,transparent); }.tj-session-rank-list article + article { margin-top:9px; }.tj-session-rank { color:var(--tj-muted); font-size:.68rem; font-weight:900; letter-spacing:1px; }.tj-session-name, .tj-session-quality, .tj-session-share { min-width:0; display:grid; gap:4px; }.tj-session-rank-list small { color:var(--tj-muted); }.tj-session-name strong { font-size:1.08rem; }.tj-session-name span, .tj-session-share span { color:var(--tj-muted); font-size:.72rem; }.tj-session-quality i { display:block; height:5px; overflow:hidden; border-radius:99px; background:var(--tj-border); }.tj-session-quality i > b { display:block; height:100%; border-radius:inherit; }.tj-session-share strong { font-size:1rem; }.tj-entry-time-empty { display:grid; gap:8px; margin-top:14px; }.tj-entry-time-empty header { display:flex; justify-content:space-between; gap:12px; align-items:center; }.tj-entry-time-empty header > small { color:var(--tj-muted); font-size:.72rem; text-align:right; }.tj-entry-time-empty > p { margin:0; padding:11px 12px; border:1px dashed var(--tj-border); border-radius:12px; color:var(--tj-muted); font-size:.75rem; }
 .tj-execution-day-head { display: flex; align-items: center; gap: 14px; margin: 10px 0; }.tj-execution-day-head > div { width: 72px; height: 72px; flex: 0 0 72px; display: grid; place-content: center; justify-items: center; border: 3px solid var(--tj-green); border-radius: 50%; }.tj-execution-day-head > div strong { color: var(--tj-green); font-size: 1.5525rem; line-height: 1; }.tj-execution-day-head > div span { color: var(--tj-muted); font-size: 0.75rem; }.tj-execution-day-head section { display: grid; gap: 4px; }.tj-execution-day-head section > strong { color: var(--tj-green); font-size: 1.0125rem; }.tj-execution-day-head section > span, .tj-execution-day-head section > small { color: var(--tj-muted); font-size: 0.75rem; }.tj-execution-day-head section i { display: inline-block; }
 .tj-execution-day-dist { display: flex; height: 7px; overflow: hidden; border-radius: 99px; background: var(--tj-border); }.tj-execution-day-dist > i { background: var(--tj-green); }.tj-execution-day-dist > b { background: var(--tj-red); }.tj-execution-day-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin-top: 11px; }.tj-execution-day-metrics > div { display: grid; justify-items: center; gap: 4px; padding: 8px; border-radius: 8px; background: var(--tj-panel-alt); }.tj-execution-best-worst { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }.tj-execution-best-worst > div { display: grid; gap: 3px; padding: 9px; border-radius: 8px; background: color-mix(in srgb, var(--tj-green) 10%, var(--tj-panel-alt)); }.tj-execution-best-worst > div:last-child { background: color-mix(in srgb, var(--tj-red) 10%, var(--tj-panel-alt)); }.tj-execution-best-worst span { color: var(--tj-muted); font-size: 0.75rem; }.tj-execution-last-days { display: flex; gap: 3px; min-height: 31px; }.tj-execution-last-days > i { min-width: 24px; border-radius: 5px; }.tj-execution-last-days > .tj-day-win { background: var(--tj-green); }.tj-execution-last-days > .tj-day-loss { background: var(--tj-red); }.tj-execution-last-days > .tj-day-flat { background: var(--tj-blue); }
 .tj-risk-workspace { display: grid; gap: 14px; }.tj-risk-audit, .tj-risk-control, .tj-risk-coach { padding: 14px; border-radius: 16px; background: linear-gradient(105deg, color-mix(in srgb, var(--tj-red) 3%, var(--tj-panel)), var(--tj-panel) 55%, color-mix(in srgb, var(--tj-green) 3%, var(--tj-panel))); }.tj-risk-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }.tj-risk-title > div { display: grid; gap: 6px; }.tj-risk-title strong { font-size: 0.9375rem; }.tj-risk-title > div > span { color: var(--tj-muted); font-size: 0.75rem; line-height: 1.4; }
+@media (min-width: 1201px) { .tj-risk-workspace { grid-template-columns:minmax(0,1.4fr) minmax(310px,.95fr); }.tj-risk-audit { grid-column:1 / -1; grid-row:1; }.tj-risk-bottom { display:contents; }.tj-risk-control { grid-column:1; grid-row:2; }.tj-risk-coach { grid-column:2; grid-row:2 / span 2; }.tj-risk-next { grid-column:1; grid-row:3; } }
 .tj-risk-four { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 11px; }.tj-risk-four > div { min-width: 0; display: grid; gap: 4px; padding: 11px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel-alt); }.tj-risk-four small, .tj-risk-control-grid small, .tj-risk-note small, .tj-risk-coach-metrics small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .9px; }.tj-risk-four strong { font-size: 1.08rem; }.tj-risk-four span { overflow: hidden; color: var(--tj-muted); font-size: 0.75rem; text-overflow: ellipsis; white-space: nowrap; }
 .tj-risk-audit-grid { display: grid; grid-template-columns: minmax(0, .95fr) minmax(0, 1.1fr); gap: 10px; margin-top: 11px; }.tj-risk-audit-grid > section { min-width: 0; min-height: 205px; padding: 11px; border: 1px solid var(--tj-border); border-radius: 11px; background: var(--tj-panel-alt); }.tj-risk-audit-grid > section > header { display: flex; justify-content: space-between; gap: 8px; color: var(--tj-muted); font-size: 0.75rem; letter-spacing: .9px; }.tj-risk-utilisation { display: grid; gap: 8px; margin-top: 12px; }.tj-risk-utilisation > div { display: grid; grid-template-columns: 72px minmax(0, 1fr) 34px; align-items: center; gap: 8px; }.tj-risk-utilisation strong, .tj-risk-utilisation span { font-size: 0.75rem; }.tj-risk-utilisation i { height: 7px; overflow: hidden; border-radius: 99px; background: var(--tj-panel); }.tj-risk-utilisation i > b { display: block; height: 100%; border-radius: inherit; }.tj-risk-audit-grid > section > footer { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 11px; color: var(--tj-muted); font-size: 0.75rem; }.tj-risk-audit-grid > section > footer i { display: inline-block; }
 .tj-risk-breaches { display: grid; gap: 8px; margin-top: 11px; }.tj-risk-breaches > div { display: grid; gap: 7px; padding: 10px; border: 1px solid color-mix(in srgb, var(--tj-red) 45%, var(--tj-border)); border-radius: 10px; background: color-mix(in srgb, var(--tj-red) 7%, var(--tj-panel)); }.tj-risk-breaches header { display: flex; justify-content: space-between; gap: 8px; }.tj-risk-breaches header > span { display: grid; gap: 3px; }.tj-risk-breaches header small { color: var(--tj-red); font-size: 0.75rem; font-weight: 800; letter-spacing: .75px; }.tj-risk-breaches header strong { font-size: 0.8125rem; }.tj-risk-breaches header > b, .tj-risk-breaches em { justify-self: start; padding: 4px 7px; border: 1px solid color-mix(in srgb, var(--tj-red) 45%, var(--tj-border)); border-radius: 99px; color: var(--tj-text); font-size: 0.75rem; font-style: normal; }.tj-risk-breaches p { margin: 0; color: var(--tj-muted); font-size: 0.75rem; line-height: 1.4; }.tj-risk-empty { min-height: 140px; display: grid; place-items: center; color: var(--tj-muted); font-size: 0.75rem; text-align: center; }
+.tj-risk-audit-grid > section:first-child { min-height:0; padding:12px; border-radius:0; background:color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel-alt)); }.tj-risk-audit-grid > section:first-child > header { color:var(--tj-muted); font-size:.65rem; font-weight:900; letter-spacing:.85px; }.tj-risk-audit-grid > section:first-child > header strong { font-size:inherit; }.tj-risk-audit-grid > section:first-child > header span { font-size:.65rem; letter-spacing:0; }.tj-risk-audit-grid > section:first-child .tj-risk-utilisation { gap:9px; margin-top:11px; }.tj-risk-audit-grid > section:first-child .tj-risk-utilisation > div { grid-template-columns:74px minmax(0,1fr) 34px; gap:8px; }.tj-risk-audit-grid > section:first-child .tj-risk-utilisation strong, .tj-risk-audit-grid > section:first-child .tj-risk-utilisation span { font-size:.67rem; font-weight:800; }.tj-risk-audit-grid > section:first-child .tj-risk-utilisation i { height:4px; border-radius:0; background:color-mix(in srgb, var(--tj-text) 5%, transparent); }.tj-risk-audit-grid > section:first-child .tj-risk-utilisation i > b { border-radius:0; opacity:.9; }.tj-risk-audit-grid > section:first-child > footer { gap:8px; margin-top:10px; font-size:.64rem; }.tj-risk-audit-grid > section:first-child > footer i { width:6px; height:6px; border-radius:50%; }
+.tj-risk-audit-grid > section:nth-child(2) { min-height:0; padding:12px; border-radius:0; background:color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel-alt)); }.tj-risk-audit-grid > section:nth-child(2) > header { color:var(--tj-muted); font-size:.65rem; font-weight:900; letter-spacing:.85px; }.tj-risk-audit-grid > section:nth-child(2) > header strong { font-size:inherit; }.tj-risk-audit-grid > section:nth-child(2) > header span { font-size:.65rem; letter-spacing:0; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breaches { gap:0; margin-top:11px; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breaches > div { gap:0; padding:0; border-radius:0; background:transparent; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breaches header { align-items:center; padding:10px 12px; border-bottom:1px solid color-mix(in srgb, var(--tj-red) 38%, var(--tj-border)); }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breaches header > span { gap:2px; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breaches header small { font-size:.6rem; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breaches header strong { font-size:.86rem; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breaches header > b { justify-self:end; padding:3px 6px; border-radius:0; color:var(--tj-red); font-size:.6rem; letter-spacing:.55px; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breaches p { padding:10px 12px 0; font-size:.67rem; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breaches em { margin:8px 12px 10px; padding:0; border:0; border-radius:0; color:var(--tj-text); font-size:.7rem; font-weight:800; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-empty { min-height:120px; }
+.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-metrics { display:grid; grid-template-columns:1fr 1fr; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-metrics section, .tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-trigger section { display:grid; gap:3px; padding:10px 12px; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-metrics section + section { border-left:1px solid color-mix(in srgb, var(--tj-red) 38%, var(--tj-border)); }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-metrics small, .tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-trigger small { color:var(--tj-muted); font-size:.6rem; font-weight:900; letter-spacing:.75px; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-metrics strong, .tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-trigger strong { font-size:.78rem; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-metrics span, .tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-trigger span { color:var(--tj-muted); font-size:.62rem; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-trigger { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:start; border-top:1px solid color-mix(in srgb, var(--tj-red) 38%, var(--tj-border)); }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-trigger > b { padding:10px 12px; font-size:.7rem; }
+.tj-risk-audit, .tj-risk-control, .tj-risk-coach, .tj-risk-diagnostic, .tj-risk-next { border-radius:22px; }.tj-risk-audit-grid > section:first-child, .tj-risk-audit-grid > section:nth-child(2) { border-radius:16px; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breaches > div { overflow:hidden; border-radius:12px; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breaches header { border-radius:11px 11px 0 0; }.tj-risk-audit-grid > section:nth-child(2) .tj-risk-breach-trigger { border-radius:0 0 11px 11px; }.tj-risk-diagnostic > header, .tj-risk-next > header { border-radius:21px 21px 0 0; }
 .tj-risk-bottom { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(310px, .95fr); gap: 14px; align-items: start; }.tj-risk-control-grid { display: grid; grid-template-columns: minmax(190px, .75fr) minmax(250px, 1fr) minmax(180px, .75fr); gap: 10px; margin-top: 11px; }.tj-risk-control-grid > section { min-width: 0; padding: 11px; border: 1px solid var(--tj-border); border-radius: 11px; background: var(--tj-panel-alt); }.tj-risk-control-grid > section:first-child { display: grid; align-content: start; gap: 5px; }.tj-risk-control-grid > section:first-child > strong { font-size: 1.2825rem; }.tj-risk-control-grid p, .tj-risk-control-grid span { margin: 0; color: var(--tj-muted); font-size: 0.75rem; line-height: 1.4; }.tj-risk-control-grid hr { width: 100%; margin: 10px 0; border: 0; border-top: 1px solid var(--tj-border); }.tj-risk-control-grid > section:nth-child(2) { display: grid; gap: 9px; }.tj-risk-control-grid > section:nth-child(2) > div { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--tj-border); border-radius: 9px; background: var(--tj-panel); }.tj-risk-control-grid header { display: flex; justify-content: space-between; gap: 8px; font-size: 0.75rem; }.tj-risk-control-grid header strong { font-size: 0.8125rem; }.tj-risk-control-grid section:nth-child(2) i { height: 6px; overflow: hidden; border-radius: 99px; background: var(--tj-panel-alt); }.tj-risk-control-grid section:nth-child(2) i > b { display: block; height: 100%; border-radius: inherit; background: var(--tj-green); }.tj-risk-control-grid .tj-risk-target { border-color: color-mix(in srgb, var(--tj-purple) 35%, var(--tj-border)); }.tj-risk-target strong { font-size: 1.08rem; }.tj-risk-bases { display: grid; align-content: start; gap: 0; }.tj-risk-bases > div { display: grid; gap: 3px; padding: 8px 0; border-bottom: 1px solid var(--tj-border); }.tj-risk-bases > div:last-child { border-bottom: 0; }.tj-risk-bases strong { font-size: 0.875rem; }
 .tj-risk-coach { display: grid; gap: 9px; }.tj-risk-note { display: grid; gap: 5px; padding: 10px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel-alt); }.tj-risk-note strong { font-size: 0.875rem; }.tj-risk-note span { color: var(--tj-muted); font-size: 0.75rem; line-height: 1.35; }.tj-risk-note-good { border-color: color-mix(in srgb, var(--tj-green) 35%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel-alt)); }.tj-risk-note-warn { border-color: color-mix(in srgb, var(--tj-amber) 35%, var(--tj-border)); background: color-mix(in srgb, var(--tj-amber) 8%, var(--tj-panel-alt)); }.tj-risk-note-context { background: color-mix(in srgb, var(--tj-purple) 9%, var(--tj-panel-alt)); }.tj-risk-coach-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }.tj-risk-coach-metrics > div { min-width: 0; display: grid; gap: 3px; padding: 9px; border: 1px solid var(--tj-border); border-radius: 9px; background: var(--tj-panel-alt); }.tj-risk-coach-metrics strong, .tj-risk-coach-metrics span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.tj-risk-coach-metrics strong { font-size: 0.875rem; }.tj-risk-coach-metrics span, .tj-risk-coach > footer { color: var(--tj-muted); font-size: 0.75rem; }.tj-risk-coach > footer { line-height: 1.4; }
+.tj-risk-diagnostics { display:none; }.tj-risk-diagnostic, .tj-risk-next { padding:0; overflow:hidden; border-radius:16px; background:var(--tj-panel); }.tj-risk-diagnostic > header, .tj-risk-next > header { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:3px 12px; padding:12px 14px; border-bottom:1px solid var(--tj-border); }.tj-risk-diagnostic > header > span, .tj-risk-next header span { color:var(--tj-muted); font-size:.64rem; font-weight:900; letter-spacing:.9px; }.tj-risk-diagnostic > header > strong, .tj-risk-next header strong { font-size:.9rem; }.tj-risk-diagnostic > header > small, .tj-risk-next header > small { grid-column:2; grid-row:1 / span 2; align-self:center; padding:4px 7px; border:1px solid var(--tj-border); color:var(--tj-muted); font-size:.65rem; font-weight:800; letter-spacing:.4px; }.tj-risk-diagnostic > div, .tj-risk-next > div { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); }.tj-risk-diagnostic section, .tj-risk-next section { min-width:0; display:grid; gap:4px; padding:12px 14px; border-right:1px solid var(--tj-border); }.tj-risk-diagnostic section:last-child, .tj-risk-next section:last-child { border-right:0; }.tj-risk-diagnostic section small, .tj-risk-next section small { color:var(--tj-muted); font-size:.61rem; font-weight:900; letter-spacing:.75px; }.tj-risk-diagnostic section b, .tj-risk-next section b { overflow:hidden; font-size:.82rem; text-overflow:ellipsis; white-space:nowrap; }.tj-risk-diagnostic section span, .tj-risk-next section span { overflow:hidden; color:var(--tj-muted); font-size:.68rem; line-height:1.3; text-overflow:ellipsis; white-space:nowrap; }.tj-risk-next > header { align-items:center; }.tj-risk-next > header > div { display:grid; gap:4px; }.tj-risk-next > div { grid-template-columns:minmax(120px,.55fr) minmax(260px,2.3fr) minmax(220px,1.2fr); }.tj-risk-next section { min-height:70px; }.tj-risk-next section:nth-child(2) { background:color-mix(in srgb,var(--tj-green) 5%,var(--tj-panel-alt)); }
+.tj-risk-diagnostic .tj-risk-session-danger { background:color-mix(in srgb, var(--tj-red) 12%, var(--tj-panel-alt)); box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--tj-red) 32%, transparent); }
+@media (min-width:1201px) { .tj-risk-bottom { display:contents; } }
 .tj-risk-insights-workspace { display: grid; gap: 14px; }.tj-risk-insights-summary, .tj-risk-growth, .tj-risk-recommendations { padding: 14px; border-radius: 16px; background: linear-gradient(105deg, color-mix(in srgb, var(--tj-green) 4%, var(--tj-panel)), var(--tj-panel) 58%, color-mix(in srgb, var(--tj-purple) 4%, var(--tj-panel))); }.tj-risk-insight-five { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 11px; }.tj-risk-insight-five > div { min-width: 0; min-height: 88px; display: grid; align-content: space-between; gap: 5px; padding: 11px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel-alt); }.tj-risk-insight-five small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .8px; }.tj-risk-insight-five strong { overflow: hidden; font-size: 1.35rem; text-overflow: ellipsis; white-space: nowrap; }.tj-risk-insight-five span { color: var(--tj-muted); font-size: 0.75rem; }
 .tj-risk-growth-chart { min-height: 280px; margin-top: 11px; padding: 8px 8px 0 0; border: 1px solid var(--tj-border); border-radius: 12px; background: color-mix(in srgb, var(--tj-green) 4%, var(--tj-panel-alt)); }.tj-risk-growth > footer { display: flex; gap: 15px; margin-top: 9px; color: var(--tj-muted); font-size: 0.75rem; }.tj-risk-growth > footer span { display: flex; align-items: center; gap: 5px; }.tj-risk-growth > footer i { width: 14px; height: 2px; background: var(--tj-green); }.tj-risk-growth > footer span:last-child i { background: repeating-linear-gradient(90deg, var(--tj-purple) 0 4px, transparent 4px 7px); }
 .tj-risk-recommendations > div:last-child { display: grid; gap: 8px; margin-top: 10px; }.tj-risk-recommendation { display: grid; gap: 5px; padding: 11px; border: 1px solid var(--tj-border); border-left-width: 3px; border-radius: 9px; background: var(--tj-panel-alt); }.tj-risk-recommendation small { color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .9px; }.tj-risk-recommendation strong { font-size: 0.875rem; }.tj-risk-recommendation span { color: var(--tj-muted); font-size: 0.75rem; line-height: 1.4; }.tj-risk-recommendation-danger { border-left-color: var(--tj-red); }.tj-risk-recommendation-warning { border-left-color: var(--tj-amber); }.tj-risk-recommendation-good { border-left-color: var(--tj-green); }.tj-risk-recommendation-neutral { border-left-color: var(--tj-purple); }
@@ -5362,7 +5761,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-engine-tabs { display: flex; align-items: center; gap: 2px; }.tj-engine-tabs button { min-height: 28px; padding: 0 11px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--tj-muted); font: inherit; font-size: 0.75rem; font-weight: 700; cursor: pointer; }.tj-engine-tabs button:hover { color: var(--tj-text); }.tj-engine-tabs .tj-engine-tab-active { border-color: var(--tj-border); background: var(--tj-panel-alt); color: var(--tj-text); }
 .tj-engine-wide-value { display: grid; grid-template-columns: minmax(0, 1fr) 96px; align-items: end; gap: 16px; }.tj-engine-wide-value > div:first-child { display: grid; gap: 8px; }.tj-engine-wide-value > div:first-child > span { color: var(--tj-muted); font-size: 0.75rem; line-height: 1.45; }.tj-engine-wide-value > div:first-child > strong { font-size: clamp(34px, 3.3vw, 48px); line-height: .95; letter-spacing: -1.5px; }.tj-engine-wide-value .tj-engine-score { min-height: 76px; padding: 9px; }.tj-engine-wide-value .tj-engine-score strong { font-size: 1.6875rem; }.tj-engine-wide-value .tj-engine-score span { font-size: 0.75rem; }
 .tj-analytics-engine-wide .tj-engine-pills { gap: 6px; }.tj-analytics-engine-wide .tj-engine-pills i { border: 1px solid var(--tj-border); background: color-mix(in srgb, var(--tj-panel-alt) 86%, transparent); }
-.tj-analytics-engine-wide .tj-engine-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }.tj-analytics-engine-wide .tj-engine-metrics > div { min-height: 59px; padding: 9px 10px; }.tj-analytics-engine-wide .tj-engine-metrics strong { font-size: 1.0125rem; }.tj-analytics-engine-wide .tj-engine-metrics span { font-size: 0.75rem; }
+.tj-analytics-engine-wide .tj-engine-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }.tj-analytics-engine-wide .tj-engine-metrics > div { min-height: 59px; padding: 9px 10px; }.tj-analytics-engine-wide .tj-engine-metrics strong { font-size: 1.0125rem; }.tj-analytics-engine-wide .tj-engine-metrics span { font-size: 0.75rem; }
 .tj-analytics-engine-wide .tj-engine-trade-mix { grid-template-columns: 1fr auto; gap: 6px 10px; margin-top: 0; }.tj-analytics-engine-wide .tj-engine-trade-mix > small { text-align: right; }.tj-analytics-engine-wide .tj-engine-trade-mix > i { grid-column: 1 / -1; height: 7px; }
 .tj-engine-drilldown { display: grid; align-content: start; gap: 12px; }.tj-engine-drilldown-hero { display: grid; grid-template-columns: minmax(0, 1fr) 96px; align-items: start; gap: 16px; }.tj-engine-drilldown-hero > div:first-child { display: grid; justify-items: start; gap: 7px; }.tj-engine-drilldown-hero p { max-width: 340px; margin: 0; color: var(--tj-muted); font-size: 0.75rem; line-height: 1.45; }.tj-engine-drilldown-hero h3 { margin: 0; font-size: 1.755rem; line-height: 1; letter-spacing: -.65px; }.tj-engine-drilldown-hero > div:first-child > strong { font-size: clamp(34px, 3vw, 46px); line-height: .95; letter-spacing: -1.35px; }.tj-engine-drilldown-hero .tj-engine-score { min-height: 76px; }.tj-engine-drilldown-hero .tj-engine-score strong { font-size: 1.6875rem; }
 .tj-engine-drilldown-cards { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 7px; }.tj-engine-model-cards { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }.tj-engine-drill-card { min-width: 0; display: grid; align-content: start; gap: 4px; padding: 9px; border: 1px solid var(--tj-border); border-radius: 9px; background: var(--tj-panel-alt); }.tj-engine-drill-card > div { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 7px; }.tj-engine-drill-card > div > strong { overflow: hidden; font-size: 0.875rem; text-overflow: ellipsis; white-space: nowrap; }.tj-engine-drill-card > em { overflow: hidden; font-size: 1.08rem; font-style: normal; font-weight: 800; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }.tj-engine-drill-card > span { overflow: hidden; color: var(--tj-muted); font-size: 0.75rem; text-overflow: ellipsis; white-space: nowrap; }.tj-engine-drill-card > i { height: 6px; overflow: hidden; margin-top: 3px; border-radius: 999px; background: var(--tj-border); }.tj-engine-drill-card > i > small { display: block; height: 100%; border-radius: inherit; }
@@ -5477,6 +5876,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-modal-head-actions { display: flex; align-items: center; gap: 7px; }
 .tj-modal-confirm { color: var(--tj-green); border-color: color-mix(in srgb, var(--tj-green) 48%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 12%, var(--tj-panel-alt)); }
 .tj-modal-confirm:disabled { opacity: .38; cursor: not-allowed; }
+.tj-modal-close { border-color: color-mix(in srgb, var(--tj-muted) 52%, var(--tj-border)); background: color-mix(in srgb, var(--tj-panel-alt) 72%, transparent); color: var(--tj-text); }.tj-modal-close:hover { border-color: var(--tj-green); color: var(--tj-green); background: color-mix(in srgb, var(--tj-green) 9%, var(--tj-panel-alt)); }
 .tj-review-table-wrap { overflow-x: auto; }
 .tj-review-table { min-width: 1160px; display: grid; grid-template-columns: 1.25fr .58fr .72fr 1.05fr .78fr 2.35fr .78fr .9fr .38fr; align-items: center; gap: 12px; }
 .tj-review-table-head { padding: 8px 10px; color: var(--tj-muted); font-size: 0.75rem; font-weight: 800; letter-spacing: .65px; }
@@ -5536,7 +5936,9 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
   .tj-engine-drilldown-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .tj-performance-stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .tj-risk-bottom, .tj-risk-control-grid { grid-template-columns: 1fr; }
+  .tj-risk-diagnostic > div { grid-template-columns:repeat(2, minmax(0, 1fr)); }.tj-risk-diagnostic section:nth-child(2) { border-right:0; }.tj-risk-diagnostic section:nth-child(-n+2) { border-bottom:1px solid var(--tj-border); }.tj-risk-next > div { grid-template-columns:1fr; }.tj-risk-next section { border-right:0; border-bottom:1px solid var(--tj-border); }.tj-risk-next section:last-child { border-bottom:0; }
   .tj-risk-insight-five { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .tj-local-briefing-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 900px) {
   .tj-psychology-main { grid-template-columns: 1fr; }
@@ -5554,6 +5956,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
   .tj-core-breakdown-grid, .tj-execution-bottom { grid-template-columns: 1fr; }
   .tj-risk-audit-grid { grid-template-columns: 1fr; }
   .tj-risk-four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tj-risk-diagnostic > div { grid-template-columns:1fr; }.tj-risk-diagnostic section { border-right:0; border-bottom:1px solid var(--tj-border); }.tj-risk-diagnostic section:last-child { border-bottom:0; }
   .tj-review-month-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .tj-review-quarter-grid, .tj-period-metric-grid, .tj-period-meter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tj-review-annual-grid { grid-template-columns: minmax(210px, .5fr) 1fr; }
@@ -5563,7 +5966,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
   .tj-row3 { grid-template-columns: 1fr; }
   .tj-row2 { grid-template-columns: 1fr; }
   .tj-tradelog-stats { grid-template-columns: repeat(2, 1fr); }
-  .tj-sidebar { position: fixed; z-index: 50; top: 0; left: 0; box-shadow: 0 0 0 9999px transparent; }
+  .tj-sidebar { position: fixed; z-index: 50; top: 0; left: 0; height:100dvh; margin:0; border-radius:0; box-shadow: 0 0 0 9999px transparent; }
   .tj-sidebar.tj-sidebar-collapsed { width: 220px; min-width: 220px; padding: 18px 14px; transform: translateX(-100%); border-right: 1px solid var(--tj-border); }
   .tj-sidebar.tj-sidebar-shown { transform: translateX(0); box-shadow: 20px 0 40px rgba(0,0,0,0.5); }
   .tj-backdrop { display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 45; }
@@ -5588,6 +5991,12 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 @media (max-width: 700px) {
   .tj-insights-hero { align-items: flex-start; flex-direction: column; }
   .tj-insights-return { width: 100%; }
+  .tj-local-briefing-head { flex-direction:column; gap:10px; }
+  .tj-local-briefing-result { width:100%; justify-items:start; padding:10px 0 0; border-top:1px solid var(--tj-border); border-left:0; text-align:left; }
+  .tj-local-briefing-metrics { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+  .tj-local-briefing-metrics section:nth-child(2) { border-right:0; }
+  .tj-local-briefing-metrics section:nth-child(-n+2) { border-bottom:1px solid var(--tj-border); }
+  .tj-local-briefing-grid { grid-template-columns:1fr; }
   .tj-analytics-deck { grid-template-columns: 1fr; align-items: stretch; }
   .tj-analytics-period-wrap { grid-column: 1; grid-row: 2; justify-self: start; }
   .tj-analytics-period-popover { right: auto; left: 0; }
@@ -5601,6 +6010,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
   .tj-performance-instrument-card > section { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tj-performance-recent > div, .tj-performance-month-list > div { grid-template-columns: 1fr; gap: 6px; }
   .tj-performance-recent > div > span:last-child, .tj-performance-month-list span, .tj-performance-month-list em { text-align: left; }
+  .tj-execution-rhythm-grid { grid-template-columns:1fr; }
   .tj-execution-four, .tj-execution-week-grid, .tj-execution-day-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tj-core-breakdown-grid > section:first-child > div:first-child, .tj-discipline-head { grid-template-columns: 1fr; }
   .tj-discipline-grid { grid-template-columns: 1fr; }
@@ -5612,6 +6022,8 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
   .tj-toolbar-right { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; width: 100%; }
   .tj-toolbar-dd, .tj-toolbar-pill { width: 100%; height: 38px; text-align: center; justify-content: center; }
   .tj-reference-markup-row { align-items: flex-start; flex-direction: column; }
+  .tj-markup-card-grid { grid-template-columns: 1fr; }
+  .tj-tradelog-card-grid { grid-template-columns: 1fr; }
   .tj-reference-markup-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
   .tj-reference-markup-actions .tj-markup-pnl { margin-right: auto; text-align: left; }
   .tj-markup-expanded-grid, .tj-markup-charts-head, .tj-markup-chart-columns { grid-template-columns: 1fr; }
@@ -5707,7 +6119,8 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-calendar-day-modal .tj-day-trade-shots .tj-image-preview { flex: 0 0 96px; width: 96px; height: 66px; padding: 4px; border-radius: 8px; }
 .tj-calendar-day-modal .tj-day-trade-shots .tj-image-preview img { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 3px; }
 .tj-day-trade-actions { flex-shrink: 0; display: flex; gap: 6px; margin-left: auto; }
-.tj-day-trade-actions .tj-icon-btn { width: 35px; height: 27px; border-radius: 99px; background: var(--tj-panel-alt); }
+.tj-day-trade-actions .tj-icon-btn { width: 28px; min-width: 28px; height: 28px; min-height: 28px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--tj-border); border-radius: 50%; background: color-mix(in srgb, var(--tj-panel-alt) 82%, var(--tj-panel)); color: var(--tj-muted); }
+.tj-day-trade-actions .tj-icon-btn:hover:not(:disabled) { border-color: color-mix(in srgb, var(--tj-accent) 60%, var(--tj-border)); background: var(--tj-accent-muted); color: var(--tj-accent); }
 .tj-day-trade-actions .tj-day-trade-delete { color: var(--tj-red); border-color: color-mix(in srgb, var(--tj-red) 40%, var(--tj-border)); background: color-mix(in srgb, var(--tj-red) 15%, var(--tj-panel-alt)); }
 @media (max-width: 420px) { .tj-day-trade-head { padding-left: 0; } .tj-day-trade-footer { flex-wrap: wrap; } }
 
@@ -5753,10 +6166,10 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-attached-week-bar b { display: block; min-width: 0; height: 100%; border-radius: inherit; background: var(--tj-green); }
 .tj-attached-week-loss .tj-attached-week-bar b { background: var(--tj-red); }
 .tj-attached-week span { color: var(--tj-muted); font-size: 0.8125rem; white-space: nowrap; }
-.tj-dashboard-welcome { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 360px); align-items: center; gap: 32px; padding: 26px 0 30px; margin-bottom: 22px; border-bottom: 1px solid var(--tj-border); }
+.tj-dashboard-welcome { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 360px); align-items: center; gap: 18px; padding: 0 0 7px; margin: -10px 0 7px; border-bottom: 1px solid var(--tj-border); }
 .tj-dashboard-welcome-copy { min-width: 0; }
 .tj-dashboard-welcome-copy > span { color: var(--tj-green); font-size: .65rem; letter-spacing: 1.7px; font-weight: 650; }
-.tj-dashboard-welcome h1 { font-size: clamp(1.6rem, 2.8vw, 2.6rem); line-height: 1.15; letter-spacing: -1.2px; margin: 12px 0 14px; overflow-wrap: anywhere; }
+.tj-dashboard-welcome h1 { font-size: clamp(1.6rem, 2.8vw, 2.6rem); line-height: 1.15; letter-spacing: -1.2px; margin: 0 0 7px; overflow-wrap: anywhere; }
 .tj-dashboard-welcome h1 { width: fit-content; max-width: 100%; color: var(--tj-green); }
 @supports ((background-clip: text) or (-webkit-background-clip: text)) {
   .tj-dashboard-welcome h1 { background: linear-gradient(105deg, var(--tj-green) 0%, color-mix(in srgb, var(--tj-green) 40%, var(--tj-text)) 32%, var(--tj-text) 52%, color-mix(in srgb, var(--tj-green) 75%, var(--tj-text)) 76%, var(--tj-green) 100%); background-clip: text; -webkit-background-clip: text; color: transparent; -webkit-text-fill-color: transparent; }
@@ -5767,7 +6180,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-dashboard-quote-icon { display: grid; place-items: center; flex: 0 0 36px; height: 36px; border-radius: 50%; color: var(--tj-green); background: color-mix(in srgb, var(--tj-green) 17%, transparent); }
 .tj-dashboard-quote strong { display: block; color: var(--tj-green); font-size: .875rem; margin-bottom: 6px; }
 .tj-dashboard-quote blockquote { font-size: .875rem; line-height: 1.6; font-style: italic; color: var(--tj-text); margin: 0; }
-@media (max-width: 760px) { .tj-dashboard-welcome { grid-template-columns: minmax(0, 1fr); gap: 18px; padding-top: 12px; } .tj-dashboard-welcome h1 { letter-spacing: -.7px; } }
+@media (max-width: 760px) { .tj-dashboard-welcome { grid-template-columns: minmax(0, 1fr); gap: 8px; padding-top: 0; } .tj-dashboard-welcome h1 { letter-spacing: -.7px; } }
 .tj-main-attached-calendar { margin-top: 12px; }
 @media (max-width: 760px) {
   .tj-attached-calendar { padding: 14px; }
@@ -5775,7 +6188,140 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
   .tj-markup-meta-row, .tj-markup-pair-row { grid-template-columns: 1fr; }
 }
 /* Responsive surfaces: allow content to reflow instead of widening the page. */
-.tj-root, .tj-main, .tj-sidebar { height: 100dvh; }
+.tj-root, .tj-main { height: 100dvh; }
+@media (min-width: 901px) { .tj-sidebar { width:232px; height:calc(100dvh - 20px); margin:10px; padding:18px 14px; border:1px solid var(--tj-border); border-radius:28px; background:var(--tj-chrome); box-shadow:0 18px 42px color-mix(in srgb,var(--tj-bg) 62%,transparent); }.tj-topbar { margin:10px 10px 0 0; padding:14px 20px; border:1px solid var(--tj-border); border-radius:28px; background:var(--tj-chrome); box-shadow:0 14px 32px color-mix(in srgb,var(--tj-bg) 48%,transparent); }.tj-content { margin:10px 10px 10px 0; border:1px solid var(--tj-border); border-radius:28px; background:var(--tj-bg); }.tj-sidebar-shown .tj-theme-nav { width:100%; min-height:40px; justify-content:flex-start; gap:10px; margin:0; padding:9px 10px; border:1px solid transparent; }.tj-sidebar-shown .tj-theme-nav > span:last-child { color:inherit; font-family:inherit; font-size:.875rem; font-weight:inherit; line-height:normal; }.tj-sidebar.tj-sidebar-collapsed { width:64px; padding:14px 8px; border-radius:28px; }.tj-sidebar-collapsed .tj-nav-item, .tj-sidebar-collapsed .tj-sidebar-user, .tj-sidebar-collapsed .tj-import-nav, .tj-sidebar-collapsed .tj-theme-nav { width:42px; }.tj-sidebar-collapsed .tj-nav-item { min-height:44px; }.tj-sidebar-collapsed .tj-sidebar-user { min-height:48px; }.tj-sidebar-collapsed .tj-sidebar-profile { margin-bottom:12px; }.tj-sidebar-collapsed .tj-sidebar-profile-avatar { width:42px; height:42px; }.tj-sidebar-collapsed .tj-nav-item > .tj-theme-toggle-icons { width:auto; overflow:visible; opacity:1; pointer-events:auto; }.tj-sidebar-collapsed .tj-theme-nav .tj-theme-toggle-icons { display:inline-grid; place-items:center; }.tj-sidebar-collapsed .tj-theme-nav .tj-theme-toggle-icons svg, .tj-sidebar-collapsed .tj-sync-nav, .tj-sidebar-collapsed .tj-sync-nav svg { color:var(--tj-accent); } }
+@media (min-width: 901px) { .tj-content { background:transparent; scrollbar-width:none; }.tj-content::-webkit-scrollbar { width:0; height:0; } }
+@media (min-width: 901px) { .tj-sidebar-collapsed .tj-account-menu { position:fixed; left:76px; bottom:18px; width:min(300px, calc(100vw - 96px)); z-index:120; } }
+/* Sidebar expansion: open the rail first, then bring its content in with a gentle cascade. */
+@media (min-width: 901px) and (prefers-reduced-motion: no-preference) {
+  /*
+   * The rail is the one deliberate layout transition: it owns the flex-space
+   * that the main workspace must reclaim. Everything inside it is composited,
+   * avoiding a width/padding transition on every navigation item.
+   */
+  .tj-sidebar { contain:layout; z-index:130; transition: width .32s cubic-bezier(.22,1,.36,1); }
+  .tj-nav-label, .tj-nav-item > span:not(.tj-theme-toggle-icons), .tj-sidebar-user > div:nth-child(2), .tj-sidebar-user-chevron { max-width:170px; opacity:1; transform:translateX(0); transition:opacity .16s ease, transform .2s cubic-bezier(.22,1,.36,1); will-change:transform, opacity; }
+  .tj-sidebar-collapsed .tj-nav-item > span:not(.tj-theme-toggle-icons), .tj-sidebar-collapsed .tj-sidebar-user > div:nth-child(2), .tj-sidebar-collapsed .tj-sidebar-user-chevron { max-width:0; opacity:0; transform:translateX(-8px); }
+  .tj-sidebar-collapsed .tj-nav-label { max-width:0; opacity:0; transform:translateX(-8px); }
+  .tj-sidebar-collapsed .tj-theme-nav .tj-theme-toggle-icons { width:18px !important; height:18px; flex:0 0 18px; transform:none; }
+  .tj-sidebar-shown .tj-sidebar-profile, .tj-sidebar-shown .tj-nav, .tj-sidebar-shown .tj-sidebar-import, .tj-sidebar-shown .tj-sidebar-footer, .tj-sidebar-shown .tj-nav-label, .tj-sidebar-shown .tj-nav-item > span, .tj-sidebar-shown .tj-sidebar-user > div:nth-child(2), .tj-sidebar-shown .tj-sidebar-user-chevron, .tj-sidebar-shown .tj-nav-active { animation:none; }
+
+  /* Zush-inspired rail timing: the frame moves slowly, then its labels settle
+     into place. Only the single rail width changes layout; every child motion
+     below is transform/opacity on the compositor. The account menu is excluded
+     so its fixed/absolute positioning and independent popover animation remain
+     untouched. */
+  .tj-sidebar { transition-duration:.48s; transition-timing-function:cubic-bezier(.16,1,.3,1); }
+  .tj-sidebar :is(.tj-nav-label, .tj-nav-item > span:not(.tj-theme-toggle-icons), .tj-sidebar-user > div:nth-child(2), .tj-sidebar-user-chevron) { transition:opacity .24s ease, transform .38s cubic-bezier(.16,1,.3,1); will-change:transform, opacity; }
+  .tj-sidebar-shown :is(.tj-nav-label, .tj-nav-item > span:not(.tj-theme-toggle-icons), .tj-sidebar-user > div:nth-child(2), .tj-sidebar-user-chevron) { transition-delay:.11s; }
+  .tj-sidebar-collapsed :is(.tj-nav-label, .tj-nav-item > span:not(.tj-theme-toggle-icons), .tj-sidebar-user > div:nth-child(2), .tj-sidebar-user-chevron) { transition-delay:0s; }
+  .tj-sidebar :is(.tj-nav-item > svg, .tj-nav-item > .tj-nav-symbol, .tj-sidebar-profile-avatar, .tj-sidebar-user .tj-account-initial) { transform:translate3d(0,0,0) scale(1); transition:transform .48s cubic-bezier(.16,1,.3,1), filter .24s ease; will-change:transform; }
+  .tj-sidebar-collapsed :is(.tj-nav-item > svg, .tj-nav-item > .tj-nav-symbol) { transform:translate3d(0,0,0) scale(1.06); }
+  .tj-sidebar-collapsed .tj-sidebar-profile-avatar, .tj-sidebar-collapsed .tj-sidebar-user .tj-account-initial { transform:translate3d(0,0,0) scale(.94); }
+}
+@keyframes tj-sidebar-content-in { from { opacity:0; transform:translateX(-7px); } to { opacity:1; transform:translateX(0); } }
+@keyframes tj-sidebar-section-in { from { opacity:0; transform:translateX(-8px); } to { opacity:1; transform:translateX(0); } }
+@keyframes tj-sidebar-active-in { from { clip-path:inset(0 100% 0 0 round 8px); } to { clip-path:inset(0 0 0 0 round 8px); } }
+@media (prefers-reduced-motion: reduce) { .tj-sidebar *, .tj-sidebar *::before, .tj-sidebar *::after { animation:none !important; transition-duration:.01ms !important; } }
+/* Shared content-surface shape: softer, more tactile corners without changing controls or tables. */
+.tj-card, .tj-panel, .tj-tlog-card, .tj-reference-markup-card, .tj-command-panel, .tj-personal-profile-card, .tj-personal-appearance-card, .tj-performance-stat-card, .tj-performance-instrument-card, .tj-live-panel, .tj-review-library-card, .tj-review-reference-card, .tj-period-review-summary, .tj-period-at-glance, .tj-tradelog-reference-summary { border-radius:22px; box-shadow:0 16px 34px color-mix(in srgb, var(--tj-bg) 24%, transparent); }
+.tj-markup-plan-card, .tj-markup-linked-card, .tj-markup-charts-card, .tj-setup-card, .tj-session-card, .tj-performance-mini-metrics > span, .tj-engine-drill-card, .tj-reference-trade-detail-summary > div, .tj-reference-linked-markup { border-radius:16px; }
+/* The dashboard KPI row is one shared strip, not five standalone cards. */
+.tj-reference-kpis { border-radius:22px; box-shadow:0 16px 34px color-mix(in srgb, var(--tj-bg) 24%, transparent); }
+.tj-reference-kpis > .tj-reference-kpi { border-radius:0; box-shadow:none; }
+/* Calendar is a single workspace: month grid on the left, every performance view beside it. */
+.tj-calendar-page { display:grid; gap:14px; }
+.tj-calendar-workspace { display:grid; grid-template-columns:minmax(0, 1.35fr) minmax(0, .85fr); align-items:stretch; gap:14px; }
+.tj-calendar-workspace .tj-main-attached-calendar { margin-top:0; }
+.tj-calendar-insights { min-width:0; min-height:100%; display:grid; align-content:start; gap:14px; padding:18px; border:1px solid var(--tj-border); border-radius:22px; background:linear-gradient(145deg, color-mix(in srgb, var(--tj-green) 4%, var(--tj-panel-alt)), color-mix(in srgb, var(--tj-blue) 5%, var(--tj-panel)) 72%); box-shadow:inset 0 1px 0 color-mix(in srgb, var(--tj-text) 4%, transparent), 0 12px 30px rgba(0,0,0,.16); container-type:inline-size; }
+.tj-calendar-insights-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 2px; }
+.tj-calendar-insights-head > div { display:grid; gap:3px; }
+.tj-calendar-insights-head strong { font-size:1rem; }
+.tj-calendar-insights-head span { color:var(--tj-muted); font-size:.75rem; line-height:1.4; }
+.tj-calendar-insights-head nav { display:flex; flex-shrink:0; gap:4px; padding:3px; border:1px solid var(--tj-border); border-radius:11px; background:var(--tj-panel); }
+.tj-calendar-insights-head nav button { min-height:27px; padding:4px 8px; border:0; border-radius:8px; background:transparent; color:var(--tj-muted); font:inherit; font-size:.6875rem; font-weight:800; cursor:pointer; transition:background .16s ease, color .16s ease; }
+.tj-calendar-insights-head nav button:hover { color:var(--tj-text); }
+.tj-calendar-insights-head nav .tj-calendar-insight-active { background:var(--tj-accent-muted); color:var(--tj-accent); box-shadow:inset 0 0 0 1px var(--tj-accent-border); }
+.tj-calendar-insight-section { min-width:0; display:grid; gap:8px; }
+.tj-calendar-insight-label { padding-left:2px; color:var(--tj-muted); font-size:.6875rem; font-weight:850; letter-spacing:.9px; text-transform:uppercase; }
+.tj-calendar-insights .tj-panel { padding:13px; border-radius:18px; }
+.tj-calendar-insights .tj-panel-head { margin-bottom:8px; font-size:.875rem; }
+.tj-calendar-insights .tj-table-wrap { max-height:236px; overflow:auto; scrollbar-width:none; }
+.tj-calendar-insights .tj-table-wrap::-webkit-scrollbar { display:none; }
+.tj-calendar-insights .tj-perf-table { font-size:.75rem; }
+.tj-calendar-insights .tj-perf-table th, .tj-calendar-insights .tj-perf-table td { padding:8px 7px; }
+.tj-calendar-insights .tj-calendar-period-panel { display:flex; flex-direction:column; overflow:hidden; }
+.tj-calendar-insights .tj-calendar-period-panel .tj-table-wrap { width:100%; max-width:100%; flex:1; min-height:0; max-height:388px; }
+.tj-calendar-insights .tj-calendar-period-panel .tj-perf-table { min-width:100%; font-variant-numeric:tabular-nums; }
+.tj-calendar-insights .tj-calendar-period-panel .tj-perf-table thead th { position:sticky; top:0; z-index:1; background:var(--tj-panel-alt); }
+.tj-calendar-insights .tj-calendar-period-panel .tj-perf-table tbody tr { height:63px; }
+.tj-calendar-insights .tj-calendar-period-panel .tj-perf-table td { vertical-align:middle; white-space:nowrap; }
+.tj-calendar-insights .tj-calendar-period-panel .tj-perf-table th:last-child, .tj-calendar-insights .tj-calendar-period-panel .tj-perf-table td:last-child { width:76px; overflow:hidden; }
+.tj-calendar-insights .tj-calendar-period-panel .tj-statuspill { display:inline-flex; box-sizing:border-box; max-width:100%; overflow:hidden; align-items:center; text-overflow:ellipsis; white-space:nowrap; }
+/* Calendar performance can briefly live in a narrow column during a rail
+   resize. Simplify the table at its own container width instead of exposing
+   only a clipped sliver of the Result column. */
+@container (max-width: 520px) {
+  .tj-calendar-insights .tj-table-wrap { overflow-x:hidden; }
+  .tj-calendar-insights .tj-perf-table { width:100%; min-width:0; table-layout:fixed; }
+  .tj-calendar-insights .tj-perf-table th:nth-child(3), .tj-calendar-insights .tj-perf-table td:nth-child(3),
+  .tj-calendar-insights .tj-perf-table th:nth-child(4), .tj-calendar-insights .tj-perf-table td:nth-child(4) { display:none; }
+  .tj-calendar-insights .tj-perf-table th, .tj-calendar-insights .tj-perf-table td { overflow:hidden; padding-inline:5px; text-overflow:ellipsis; }
+  .tj-calendar-insights .tj-inline-bar { gap:4px; }
+  .tj-calendar-insights .tj-inline-bar .tj-bar-track { width:44px !important; }
+  .tj-calendar-insights .tj-statuspill { max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+}
+@container (max-width: 250px) {
+  .tj-calendar-insights .tj-perf-table th:nth-child(2), .tj-calendar-insights .tj-perf-table td:nth-child(2),
+  .tj-calendar-insights .tj-perf-table th:nth-child(5), .tj-calendar-insights .tj-perf-table td:nth-child(5) { display:none; }
+  .tj-calendar-insights .tj-perf-table th, .tj-calendar-insights .tj-perf-table td { padding-inline:3px; }
+  .tj-calendar-insights .tj-statuspill { font-size:.56rem; padding:3px 4px; }
+}
+.tj-calendar-insights .tj-perf-summary-grid { grid-template-columns:repeat(3, minmax(0, 1fr)); gap:7px; margin-top:7px; }
+.tj-calendar-insights .tj-perf-summary-card { min-width:0; min-height:64px; display:grid; align-content:center; gap:2px; padding:9px 6px; border-radius:14px; }
+.tj-calendar-insights .tj-perf-summary-card > div:nth-child(1) { line-height:1; }
+.tj-calendar-insights .tj-perf-summary-card > div:nth-child(2) { font-size:1rem !important; line-height:1.05; white-space:nowrap; }
+.tj-calendar-insights .tj-perf-summary-card > div:nth-child(3) { overflow:hidden; font-size:.65rem !important; line-height:1.1; text-overflow:ellipsis; white-space:nowrap; }
+.tj-calendar-insights .tj-calendar-daily-panel { display:flex; flex-direction:column; }
+.tj-calendar-insights .tj-dow-list { flex:1; display:flex; justify-content:space-evenly; gap:0; padding:7px 0; }
+.tj-calendar-insights .tj-dow-row { display:grid; grid-template-columns:38px max-content minmax(0, 1fr) 48px; align-items:center; gap:8px; min-height:34px; }
+.tj-calendar-insights .tj-dow-label { width:auto; font-size:.8125rem; }
+.tj-calendar-insights .tj-dow-pnl { width:auto; font-size:.8125rem; line-height:1.15; font-variant-numeric:tabular-nums; text-align:left; white-space:nowrap; }
+.tj-calendar-insights .tj-dow-bar { width:100%; height:7px; }
+.tj-calendar-insights .tj-dow-wr { width:auto; font-size:.75rem; text-align:right; white-space:nowrap; }
+.tj-calendar-insights .tj-dow-row .tj-daytag, .tj-calendar-insights .tj-dow-count { display:none; }
+.tj-calendar-narrative { display:grid; gap:12px; padding:16px 20px 20px; border:1px solid color-mix(in srgb, var(--tj-accent) 30%, var(--tj-border)); background:linear-gradient(135deg, color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel-alt)), var(--tj-panel) 52%, color-mix(in srgb, var(--tj-blue) 7%, var(--tj-panel))); }
+.tj-calendar-narrative-head { display:flex; align-items:center; justify-content:space-between; gap:20px; }
+.tj-calendar-narrative-head > div:first-child { min-width:0; }
+.tj-calendar-narrative-kicker { display:block; margin-bottom:5px; color:var(--tj-accent); font-size:.68rem; font-weight:900; letter-spacing:1.1px; }
+.tj-calendar-narrative h2 { margin:0; font-size:1.18rem; line-height:1.15; }
+.tj-calendar-narrative-head p { max-width:720px; margin:6px 0 0; color:var(--tj-muted); font-size:.8rem; line-height:1.45; }
+.tj-calendar-narrative-result { flex:0 0 auto; display:grid; justify-items:end; gap:2px; padding:9px 0 9px 18px; border-left:1px solid var(--tj-border); text-align:right; }
+.tj-calendar-narrative-result span, .tj-calendar-narrative-metrics small, .tj-calendar-narrative-grid section > span { color:var(--tj-muted); font-size:.64rem; font-weight:900; letter-spacing:.8px; }
+.tj-calendar-narrative-result strong { font-size:1.4rem; line-height:1.05; }
+.tj-calendar-narrative-result small { color:var(--tj-muted); font-size:.72rem; }
+.tj-calendar-narrative-metrics { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); overflow:hidden; border:1px solid var(--tj-border); border-radius:14px; background:color-mix(in srgb, var(--tj-panel-alt) 88%, transparent); }
+.tj-calendar-narrative-metrics > span { display:grid; gap:4px; min-width:0; padding:12px 14px; border-right:1px solid var(--tj-border); }
+.tj-calendar-narrative-metrics > span:last-child { border-right:0; }
+.tj-calendar-narrative-metrics b { color:var(--tj-text); font-size:1rem; font-variant-numeric:tabular-nums; }
+.tj-calendar-narrative-metrics b.tj-green { color:var(--tj-green); }
+.tj-calendar-narrative-metrics b.tj-red { color:var(--tj-red); }
+.tj-calendar-narrative-metrics i { color:var(--tj-muted); font-style:normal; }
+.tj-calendar-narrative-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; }
+.tj-calendar-narrative-grid section { min-width:0; padding:14px; border:1px solid var(--tj-border); border-radius:14px; background:color-mix(in srgb, var(--tj-panel-alt) 76%, transparent); }
+.tj-calendar-narrative-grid p { margin:7px 0 0; color:var(--tj-muted); font-size:.8rem; line-height:1.55; }
+.tj-calendar-narrative-grid p b { color:var(--tj-text); font-weight:850; }
+.tj-calendar-narrative-grid p b.tj-green { color:var(--tj-green); }
+.tj-calendar-narrative-grid p b.tj-red { color:var(--tj-red); }
+@media (min-width: 1181px) {
+  .tj-calendar-insights { grid-template-rows:auto minmax(0, 1fr); }
+  .tj-calendar-insight-section { min-height:0; height:100%; display:flex; flex-direction:column; }
+  .tj-calendar-insight-section > .tj-panel { flex:1 1 auto; min-height:0; }
+  .tj-calendar-insight-section > .tj-perf-summary-grid { margin-top:auto; padding-top:7px; }
+}
+@media (max-width: 1180px) { .tj-calendar-workspace { grid-template-columns:1fr; }.tj-calendar-insights { grid-template-columns:repeat(2, minmax(0, 1fr)); }.tj-calendar-insights-head, .tj-calendar-insight-section:last-child { grid-column:1 / -1; } }
+@media (max-width: 760px) { .tj-calendar-narrative-head { flex-direction:column; gap:10px; }.tj-calendar-narrative-result { width:100%; justify-items:start; padding:10px 0 0; border-top:1px solid var(--tj-border); border-left:0; text-align:left; }.tj-calendar-narrative-metrics { grid-template-columns:repeat(2, minmax(0, 1fr)); }.tj-calendar-narrative-metrics > span:nth-child(2) { border-right:0; }.tj-calendar-narrative-metrics > span:nth-child(-n+2) { border-bottom:1px solid var(--tj-border); }.tj-calendar-narrative-grid { grid-template-columns:1fr; } }
+@media (max-width: 680px) { .tj-calendar-insights { grid-template-columns:1fr; }.tj-calendar-insights-head, .tj-calendar-insight-section:last-child { grid-column:auto; }.tj-calendar-insights-head { align-items:flex-start; flex-direction:column; }.tj-calendar-insights .tj-perf-summary-grid { grid-template-columns:1fr; }.tj-calendar-insights .tj-table-wrap { max-height:220px; }.tj-calendar-insights .tj-dow-row { grid-template-columns:32px max-content minmax(0,1fr) 42px; gap:6px; }.tj-calendar-insights .tj-dow-pnl { font-size:.75rem; }.tj-calendar-insights .tj-dow-wr { font-size:.6875rem; }.tj-calendar-narrative { padding:15px; } }
 .tj-content, .tj-modal { overscroll-behavior-y: contain; }
 .tj-content-inner, .tj-page-transition, .tj-view-transition, .tj-subview-transition { min-width: 0; max-width: 100%; }
 .tj-root :is(.tj-card, .tj-panel, .tj-field, .tj-grid2, .tj-grid3, .tj-grid4) > * { min-width: 0; }
@@ -5846,6 +6392,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
   .tj-reference-trade-direction, .tj-reference-trade-session { min-width:0; }
   .tj-markup-toolbar-button { width:36px; height:36px; min-width:36px; min-height:36px; }
 }
+@media (max-width: 600px) { .tj-profile-summary-grid, .tj-profile-account-security-options { grid-template-columns: 1fr; }.tj-theme-studio-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }.tj-profile-summary-grid > section, .tj-profile-account-email, .tj-profile-account-security-options .tj-profile-danger { min-height: auto; }.tj-personal-profile-summary-head { align-items: flex-start; }.tj-profile-reference-head { flex-wrap: wrap; }.tj-profile-reference-stats { width: 100%; margin-left: 0; }.tj-profile-reference-stats > div { padding-left: 0; border-left: 0; }.tj-profile-reference-edit { margin-left: auto; } }
 @media (max-width: 360px) {
   .tj-reference-kpis, .tj-stats-grid, .tj-reference-flow-metrics, .tj-settings-hero-metrics { grid-template-columns: minmax(0, 1fr); }
   .tj-attached-month-nav .tj-attached-this-month { margin-left: 0; }
@@ -5913,7 +6460,7 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-finance-card-capital { border-color: color-mix(in srgb, var(--tj-green) 42%, var(--tj-border)); background: color-mix(in srgb, var(--tj-green) 7%, var(--tj-panel)); }.tj-finance-card-capital strong { color: var(--tj-green); }.tj-finance-card-savings { border-color: color-mix(in srgb, var(--tj-purple) 45%, var(--tj-border)); background: color-mix(in srgb, var(--tj-purple) 7%, var(--tj-panel)); }.tj-finance-card-savings strong { color: var(--tj-purple); }.tj-finance-card-deposit { border-color: color-mix(in srgb, var(--tj-green) 32%, var(--tj-border)); }.tj-finance-card-deposit strong { color: var(--tj-green); }.tj-finance-card-withdrawal { border-color: color-mix(in srgb, var(--tj-red) 45%, var(--tj-border)); background: color-mix(in srgb, var(--tj-red) 5%, var(--tj-panel)); }.tj-finance-card-withdrawal strong { color: var(--tj-red); }.tj-finance-movement:has(.tj-finance-movement-out) > b { color: var(--tj-red); }.tj-finance-movement:has(.tj-finance-movement-in) > b { color: var(--tj-green); }.tj-finance-movement:has(.tj-finance-movement-out) > i { color: var(--tj-red); }.tj-finance-movement-list { max-height: 365px; }.tj-finance-saving { grid-template-columns: minmax(145px, .8fr) minmax(140px, .65fr) minmax(190px, 1.1fr) minmax(155px, .75fr); }.tj-finance-saving-transfer { justify-self: end; text-align: right; }.tj-finance-saving-transfer strong { font-size: 1rem; }.tj-finance-saving-transfer strong small { font-size: .58rem; }.tj-finance-saving-transfer span { font-size: .67rem; }.tj-finance-saving-transfer button { margin-top: 4px; white-space: nowrap; }
 .tj-finance-form { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .tj-tradelog-actions { position: fixed; right: 22px; bottom: 22px; z-index: 8; display: flex; align-items: center; gap: 8px; }.tj-tradelog-actions .tj-fab { position: static; }.tj-import-modal { width: min(620px, calc(100vw - 40px)); height: auto; max-height: calc(100dvh - 40px); border-radius: 14px; }.tj-import-account { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--tj-green) 36%, var(--tj-border)); border-radius: 10px; background: color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel)); color: var(--tj-green); }.tj-import-account > div { display: grid; gap: 2px; }.tj-import-account small { color: var(--tj-muted); font-size: .65rem; font-weight: 800; letter-spacing: .8px; }.tj-import-account strong { color: var(--tj-text); font-size: .875rem; }.tj-import-preview { display: grid; gap: 7px; max-height: 245px; overflow: auto; margin-top: 14px; padding: 12px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel-alt); font-size: .8rem; }.tj-import-preview > div { display: flex; justify-content: space-between; gap: 12px; padding-top: 7px; border-top: 1px solid var(--tj-border); }.tj-import-preview span { overflow: hidden; color: var(--tj-muted); text-overflow: ellipsis; white-space: nowrap; }.tj-import-preview small { color: var(--tj-muted); }.tj-import-live { display: flex; align-items: center; gap: 9px; margin-top: 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--tj-green) 40%, var(--tj-border)); border-radius: 10px; background: color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel)); }.tj-import-live > div { display: grid; gap: 2px; }.tj-import-live strong { font-size: .8125rem; }.tj-import-live span { color: var(--tj-muted); font-size: .75rem; }.tj-import-error { margin-top: 12px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--tj-red) 55%, var(--tj-border)); border-radius: 9px; color: var(--tj-red); background: color-mix(in srgb, var(--tj-red) 8%, var(--tj-panel)); font-size: .8rem; line-height: 1.4; }
-.tj-import-button { display: inline-flex; align-items: center; gap: 7px; margin-top: 9px; }.tj-import-progress { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--tj-panel) var(--progress), color-mix(in srgb, var(--tj-panel) 34%, transparent) 0); color: var(--tj-panel); font-size: .52rem; font-style: normal; font-weight: 900; line-height: 1; }
+.tj-import-button { display: inline-flex; align-items: center; gap: 7px; margin-top: 9px; }.tj-import-progress { width: 30px; height: 30px; flex: 0 0 30px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--tj-green) 52%, var(--tj-border)); border-radius: 50%; background: radial-gradient(circle, var(--tj-panel) 57%, transparent 59%), conic-gradient(var(--tj-green) var(--progress), color-mix(in srgb, var(--tj-green) 17%, var(--tj-panel)) 0); color: var(--tj-text); font-size: .61rem; font-style: normal; font-weight: 900; font-variant-numeric: tabular-nums; line-height: 1; text-shadow: 0 1px 1px color-mix(in srgb, var(--tj-panel) 80%, transparent); }
 .tj-list-pagination { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 9px; padding-top: 4px; color: var(--tj-muted); font-size: .8125rem; }.tj-list-pagination > span, .tj-pagination-arrows > span { font-variant-numeric: tabular-nums; }.tj-pagination-arrows { display: inline-flex; align-items: center; gap: 7px; }.tj-pagination-arrows > span { min-width: 42px; text-align: center; }
 @media (max-width: 900px) { .tj-finance-layout { grid-template-columns: 1fr; }.tj-finance-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tj-finance-hero aside { width: 43%; }.tj-finance-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tj-finance-saving { grid-template-columns: 1fr 1fr; }.tj-finance-saving-transfer { justify-self: start; text-align: left; } }
 @media (max-width: 580px) { .tj-finance-hero { display: grid; padding: 15px; }.tj-finance-hero aside { width: auto; }.tj-finance-summary { grid-template-columns: 1fr; }.tj-finance-form { grid-template-columns: 1fr; }.tj-finance-saving { grid-template-columns: 1fr; gap: 10px; }.tj-finance-movement { grid-template-columns: auto minmax(0, 1fr) auto; }.tj-finance-delete { grid-column: 3; }.tj-finance-movement > b { grid-column: 2; }.tj-finance-movement > div { grid-column: 2; }.tj-finance-movement > i { grid-row: span 2; }.tj-tradelog-actions { right: 14px; bottom: 14px; }.tj-import-modal { width: min(100%, calc(100vw - 24px)); }.tj-import-preview > div { font-size: .74rem; } }

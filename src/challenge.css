@@ -20,7 +20,7 @@
 .tj-challenge-table-head { padding:18px; }
 .tj-challenge-table-head label { display:flex; gap:8px; align-items:center; font-size: 0.9375rem; }
 .tj-challenge-table-head input { accent-color:var(--tj-green); }
-.tj-challenge-scroll { overflow:auto; max-height:70vh; border-top:1px solid var(--tj-border); }
+.tj-challenge-scroll { overflow:auto; max-height:70vh; margin:0 14px 14px; border:1px solid var(--tj-border); border-radius:16px; scrollbar-width:none !important; }.tj-challenge-scroll::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }
 .tj-challenge table { width:100%; border-collapse:separate; border-spacing:0; font-size: 1rem; font-variant-numeric:tabular-nums; }
 .tj-challenge th,.tj-challenge td { padding:13px 15px; border-bottom:1px solid var(--tj-border); text-align:left; white-space:nowrap; }
 .tj-challenge thead th { position:sticky; top:0; z-index:1; background:var(--tj-panel-alt); color:var(--tj-muted); font-size: 0.875rem; }

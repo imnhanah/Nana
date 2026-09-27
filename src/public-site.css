@@ -31,6 +31,8 @@
   .pub-screen:focus-visible img{transform:scale(1.015)}
 }
 @media(prefers-reduced-motion:reduce){.pub-reveal-pending{opacity:1;transform:none}.pub-reveal{transition:none}}
+/* Keep gallery controls and slides on compositor layers; the active dot no longer shifts its siblings. */
+.pub-gallery-dot>span{transform:scaleX(1);transform-origin:left center;transition:transform .35s,opacity .35s;will-change:transform,opacity}.pub-gallery-dot[aria-current]>span{width:8px;transform:scaleX(3.5)}.pub-gallery-slide{will-change:transform,opacity}
 .pub-header nav{color:var(--pub-text)}
 .pub-header nav>a,.pub-header nav>button,.pub-footer nav>button{transition:color .2s,background .2s}
 .pub-header nav>a:not(.pub-signup):is(:hover,:focus-visible),.pub-header nav>button:not(.pub-signup):is(:hover,:focus-visible),.pub-footer nav>button:is(:hover,:focus-visible){color:var(--pub-green)}

@@ -1,20 +1,14 @@
-// Pulls real economic-calendar data from ForexFactory's public calendar export
-// feed (the same unofficial JSON feed used by most trading tools/EAs, since
-// ForexFactory has no official public API and blocks its calendar page from
-// being embedded directly). Docs: https://nfs.faireconomy.media/
-//
-// Important: this feed is rate-limited (ForexFactory allows ~2 requests per
-// 5 minutes across ALL users of a feed URL), so results are cached and only
-// refreshed periodically rather than on every page view.
-
+// Economic calendar data is retrieved through the Supabase Edge Function.
+// That keeps the ForexFactory export and its cache on the server rather than
+// relying on an in-browser CORS proxy. The browser cache is only an offline
+// convenience layer; the server cache is the shared source of truth.
 const FEED_URLS = {
   "-1": "https://nfs.faireconomy.media/ff_calendar_lastweek.json",
   "0": "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
   "1": "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
 };
 
-const CORS_PROXY = "https://corsproxy.io/?url=";
-const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours — refreshes at least twice a day
+const CLIENT_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function normalizeEvents(raw) {
   return raw.map((e) => {
@@ -33,24 +27,30 @@ function normalizeEvents(raw) {
 }
 
 async function fetchLive(url) {
-  try {
-    const res = await fetch(url, { mode: "cors" });
-    if (!res.ok) throw new Error("bad status " + res.status);
-    return normalizeEvents(await res.json());
-  } catch (e) {
-    // Fall back through a CORS proxy in case the feed doesn't send
-    // Access-Control-Allow-Origin for browser fetches from arbitrary sites.
-    const res2 = await fetch(CORS_PROXY + encodeURIComponent(url));
-    if (!res2.ok) throw new Error("proxy bad status " + res2.status);
-    return normalizeEvents(await res2.json());
-  }
+  const res = await fetch(url, { mode: "cors" });
+  if (!res.ok) throw new Error("bad status " + res.status);
+  return normalizeEvents(await res.json());
+}
+
+async function fetchFromCalendarFunction(offset) {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/economic-calendar?weekOffset=${encodeURIComponent(offset)}`;
+  const response = await fetch(url, {
+    headers: {
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+    },
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data?.events) throw new Error(data?.error || "Calendar function returned no events.");
+  return { events: normalizeEvents(data.events), source: data.source || "live", fetchedAt: data.fetchedAt || Date.now() };
 }
 
 /**
  * Get calendar events for a given week offset (-1 = last week, 0 = this
  * week, 1 = next week — those are the only three the feed provides).
  * Returns { events, source, fetchedAt } where source is one of
- * 'live' | 'cache' | 'stale-cache' | 'unavailable'.
+ * 'live' | 'cache' | 'stale-cache' | 'unavailable'. No mock calendar data is
+ * returned here: an unavailable source stays visibly unavailable in the UI.
  */
 export async function getCalendarWeek(offset) {
   const key = `ff-cache:${offset}`;
@@ -61,19 +61,27 @@ export async function getCalendarWeek(offset) {
   } catch (e) { /* no cache yet */ }
 
   const now = Date.now();
-  if (cache && now - cache.fetchedAt < CACHE_TTL_MS) {
+  if (cache && now - cache.fetchedAt < CLIENT_CACHE_TTL_MS) {
     return { events: cache.events, source: "cache", fetchedAt: cache.fetchedAt };
   }
 
-  const url = FEED_URLS[String(offset)];
-  if (!url) return { events: null, source: "unavailable", fetchedAt: null };
-
   try {
-    const events = await fetchLive(url);
+    const result = await fetchFromCalendarFunction(offset);
+    const events = result.events;
     try { window.localStorage.setItem(key, JSON.stringify({ events, fetchedAt: now })); } catch (e) {}
-    return { events, source: "live", fetchedAt: now };
+    return { events, source: result.source, fetchedAt: result.fetchedAt };
   } catch (e) {
-    if (cache) return { events: cache.events, source: "stale-cache", fetchedAt: cache.fetchedAt };
-    return { events: null, source: "unavailable", fetchedAt: null };
+    // The direct export is a development-only rescue path until the function
+    // is deployed. It has no proxy and is never treated as the primary source.
+    const url = FEED_URLS[String(offset)];
+    try {
+      if (!url) throw new Error("Unknown calendar week.");
+      const events = await fetchLive(url);
+      try { window.localStorage.setItem(key, JSON.stringify({ events, fetchedAt: now })); } catch (ignore) {}
+      return { events, source: "live", fetchedAt: now };
+    } catch (directError) {
+      if (cache) return { events: cache.events, source: "stale-cache", fetchedAt: cache.fetchedAt };
+      return { events: null, source: "unavailable", fetchedAt: null };
+    }
   }
 }
