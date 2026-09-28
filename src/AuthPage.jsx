@@ -2,6 +2,15 @@ import React, { useState } from 'react';
 import { BarChart3, BookOpen, ShieldCheck, ClipboardCheck, ArrowLeft, ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { signUp, signIn, signInWithGoogle, requestPasswordReset } from './auth';
 
+function GoogleMark() {
+  return <svg className="auth-google-mark" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+    <path fill="#EA4335" d="M17.64 9.205c0-.638-.057-1.252-.164-1.841H9v3.482h4.844a4.14 4.14 0 0 1-1.796 2.716v2.258h2.909c1.702-1.567 2.683-3.875 2.683-6.615Z"/>
+    <path fill="#4285F4" d="M9 18c2.43 0 4.468-.806 5.957-2.18l-2.909-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.585-5.037-3.714H.956v2.332A9 9 0 0 0 9 18Z"/>
+    <path fill="#FBBC05" d="M3.963 10.708A5.41 5.41 0 0 1 3.682 9c0-.592.102-1.168.281-1.708V4.96H.956A9 9 0 0 0 0 9c0 1.452.348 2.828.956 4.04l3.007-2.332Z"/>
+    <path fill="#34A853" d="M9 3.58c1.322 0 2.508.455 3.442 1.35l2.582-2.582C13.464.892 11.426 0 9 0A9 9 0 0 0 .956 4.96l3.007 2.332C4.672 5.163 6.656 3.58 9 3.58Z"/>
+  </svg>;
+}
+
 export default function AuthPage({ onAuthed, initialMode = 'login', onModeChange, onBack, brand = 'AAICOREFX' }) {
   const [mode, setMode] = useState(initialMode);
   const [firstName, setFirstName] = useState('');
@@ -39,7 +48,7 @@ export default function AuthPage({ onAuthed, initialMode = 'login', onModeChange
           {error && <div className="auth-message auth-error" role="alert">{error}</div>}{info && <div className="auth-message" role="status">{info}</div>}
           <button className="auth-submit" type="submit" disabled={busy}>{busy ? 'Please wait…' : mode === 'signup' ? 'Create account' : mode === 'forgot' ? 'Send reset link' : 'Sign in'}<ArrowRight size={17}/></button>
         </form>
-        {mode !== 'forgot' && <><div className="auth-divider">OR CONTINUE WITH</div><button className="auth-google" disabled={busy} onClick={google}><strong aria-hidden="true">G</strong>Continue with Google</button></>}
+        {mode !== 'forgot' && <><div className="auth-divider">OR CONTINUE WITH</div><button className="auth-google" disabled={busy} onClick={google}><GoogleMark/>Continue with Google</button></>}
         <div className="auth-switch">{mode === 'login' ? <>Don’t have an account? <button onClick={() => switchMode('signup')}>Sign up</button></> : <>{mode === 'signup' ? 'Already have an account? ' : ''}<button onClick={() => switchMode('login')}>Sign in</button></>}</div>
       </section>
     </div>
