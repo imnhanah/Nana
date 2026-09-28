@@ -20,11 +20,12 @@ import JournalPreloader from './JournalPreloader';
 import { ThemedFields, ThemeSelect, ThemeTime, ThemeDate, ConfirmDeleteButton, ThemeInstrument, ThemeRiskReward } from './JournalControls';
 import JournalSignalHeader from './JournalSignalHeader';
 import { tradeTimingError } from './tradeTiming';
+import { localDateKey } from './dateUtils';
 import { getLoginQuote } from "./loginQuote";
 import ChallengePage from "./ChallengePage";
 import useChallenge from './useChallenge';
 import ChallengeModeSettings from './ChallengeModeSettings';
-import { isChallengeEnabled } from "./challengeModel";
+import { buildChallengePlan, isChallengeEnabled } from "./challengeModel";
 import ResetPasswordForm from "./ResetPasswordForm";
 import { supabase } from "./supabaseClient";
 import { onAuthStateChange, getSession, signOut, updatePassword, updateProfile, deleteProfilePermanently } from "./auth";
@@ -206,17 +207,20 @@ const financeProfitCycle = (account) => {
 const reminderScheduleDue = (saving, movements, now = new Date()) => {
   const interval = saving.interval || "Manual";
   if (interval === "Manual" || now.getHours() < 12) return false;
-  const today = now.toISOString().slice(0, 10);
   const transfers = (movements || []).filter((movement) => movement.type === "transfer" && movement.savingsAccountId === saving.id);
   const startOfWeek = new Date(now); startOfWeek.setHours(0, 0, 0, 0); startOfWeek.setDate(now.getDate() - ((now.getDay() + 6) % 7));
   const wasTransferredSince = (date) => transfers.some((movement) => String(movement.date) >= date);
-  if (interval === "Weekly") return now.getDay() === 5 && !wasTransferredSince(startOfWeek.toISOString().slice(0, 10));
+  if (interval === "Weekly") return now.getDay() === 5 && !wasTransferredSince(localDateKey(startOfWeek));
   if (interval === "Bi-weekly") return now.getDate() >= 15 && !wasTransferredSince(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`);
   if (interval === "Monthly") { const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate(); return now.getDate() >= monthEnd && !wasTransferredSince(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`); }
   return false;
 };
 const norm = (v, max) => clamp((v / max) * 100, 0, 100);
 const classify = (pnl, cap) => (Math.abs(pnl) <= cap ? "be" : pnl > 0 ? "win" : "loss");
+const RUNNING_TRADE_MARKER = "[aaicorefx-running-trade]";
+const isRunningTrade = (trade) => trade?.pnl === null || trade?.pnl === "" || String(trade?.context || "").includes(RUNNING_TRADE_MARKER);
+const tradeNote = (trade) => String(trade?.context || "").replace(RUNNING_TRADE_MARKER, "").trim();
+const closedTrades = (trades) => (Array.isArray(trades) ? trades : []).filter((trade) => trade && !isRunningTrade(trade));
 const tradeRiskReward = (trade) => Number(trade?.pnl) < 0 ? -1 : Math.max(0, Number(trade?.rr) || 0);
 const clsColor = (cls) => (cls === "win" ? "tj-green" : cls === "loss" ? "tj-red" : "tj-blue");
 // Win-rate percentage system: >50% green, 30-50% muted theme amber, <30% red.
@@ -238,7 +242,7 @@ function computeStats(trades, cap = 0) {
   // A save may be briefly optimistic while the database response arrives.
   // Ignore an invalid placeholder rather than allowing one malformed row to
   // take down the entire journal view.
-  const sorted = (Array.isArray(trades) ? trades : []).filter(Boolean).sort((a, b) => (a.date < b.date ? -1 : 1));
+  const sorted = closedTrades(trades).sort((a, b) => (a.date < b.date ? -1 : 1));
   const total = sorted.length;
   const wins = sorted.filter((t) => classify(t.pnl, cap) === "win");
   const losses = sorted.filter((t) => classify(t.pnl, cap) === "loss");
@@ -303,9 +307,10 @@ function computeStats(trades, cap = 0) {
 }
 
 function accountGuardrails(account, trades, now = new Date()) {
+  trades = closedTrades(trades);
   const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const yearKey = String(now.getFullYear());
-  const dateKey = now.toISOString().slice(0, 10);
+  const dateKey = localDateKey(now);
   const total = (items) => items.reduce((sum, item) => sum + Number(item.pnl || 0), 0);
   const monthlyPnl = total(trades.filter((trade) => trade.date?.slice(0, 7) === monthKey));
   const yearlyPnl = total(trades.filter((trade) => trade.date?.slice(0, 4) === yearKey));
@@ -345,7 +350,7 @@ function progressPct(value, target) {
 
 function groupByDay(trades, cap) {
   const map = {};
-  trades.forEach((t) => {
+  closedTrades(trades).forEach((t) => {
     if (!map[t.date]) map[t.date] = { pnl: 0, count: 0 };
     map[t.date].pnl += t.pnl;
     map[t.date].count += 1;
@@ -484,13 +489,13 @@ function StatCard({ label, children }) {
   );
 }
 
-function Modal({ title, onClose, children, wide, onConfirm, confirmDisabled = false, className = "", centered = false }) {
+function Modal({ title, onClose, children, wide, className = "", centered = false }) {
   return (
     <div className={`tj-modal-overlay ${centered ? "tj-modal-overlay-centered" : ""}`} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className={`tj-modal ${wide ? "tj-modal-wide" : ""} ${className}`}>
         <div className="tj-modal-head">
           <div className="tj-modal-title">{title}</div>
-          <div className="tj-modal-head-actions">{onConfirm && <button className="tj-icon-btn tj-modal-confirm" title="Save" disabled={confirmDisabled} onClick={onConfirm}><CheckCircle2 size={18} /></button>}<button className="tj-icon-btn tj-modal-close" title="Cancel" aria-label="Cancel" onClick={onClose}><X size={18} /></button></div>
+          <div className="tj-modal-head-actions"><button className="tj-icon-btn tj-modal-close" title="Cancel" aria-label="Cancel" onClick={onClose}><X size={18} /></button></div>
         </div>
         <ThemedFields.Provider value={true}><div className="tj-modal-body">{children}</div></ThemedFields.Provider>
       </div>
@@ -775,11 +780,11 @@ const tradeScreenshotItems = (screenshots) => {
 function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags, confluenceSessions, markups, rules, instruments = [], defaultCommission, account }) {
   const [form, setForm] = useState(() => {
     const currentTime = nowTime();
-    const base = { id: uid(), date: todayISO(), time: currentTime, closeDate: todayISO(), closeTime: currentTime, asset: "", direction: "BUY", riskPct: account?.defaultRiskPct || 1, stopLossPips: account?.defaultStopLossPips || "", entryPrice: "", exitPrice: "", stopLossPrice: "", grossPnl: "", commission: defaultCommission || 0, swap: 0, pnl: "", rr: "", entryType: "", entrySession: entrySessionFromOpenTime(currentTime), session: entrySessionFromOpenTime(currentTime), confluence: [], types: [], mistakes: [], moodBefore: "Neutral", moodAfter: "Neutral", context: "", screenshots: { entry: [], exit: [] }, premarketMarkupId: null, ruleEvaluations: [] };
+    const base = { id: uid(), date: todayISO(), time: currentTime, closeDate: "", closeTime: "", asset: "", direction: "BUY", riskPct: account?.defaultRiskPct || 1, stopLossPips: account?.defaultStopLossPips || "", entryPrice: "", exitPrice: "", stopLossPrice: "", grossPnl: "", commission: defaultCommission || 0, swap: 0, pnl: "", rr: "", entryType: "", entrySession: entrySessionFromOpenTime(currentTime), session: entrySessionFromOpenTime(currentTime), confluence: [], types: [], mistakes: [], moodBefore: "Neutral", moodAfter: "Neutral", context: "", screenshots: { entry: [], exit: [] }, premarketMarkupId: null, ruleEvaluations: [] };
     if (!editing && !draft) return base;
     const source = editing || draft;
     const openTime = editing ? (source.time || "") : (source.time || currentTime);
-    return { ...base, ...source, time: openTime, entryType: source.entryType || source.confluenceSession || "", entrySession: entrySessionFromOpenTime(openTime) || normalizeSession(source.entrySession || source.session || SESSIONS[2]), confluence: source.confluence || source.types || [], ruleEvaluations: source.ruleEvaluations || [] };
+    return { ...base, ...source, grossPnl: isRunningTrade(source) ? "" : source.grossPnl, time: openTime, entryType: source.entryType || source.confluenceSession || "", entrySession: entrySessionFromOpenTime(openTime) || normalizeSession(source.entrySession || source.session || SESSIONS[2]), confluence: source.confluence || source.types || [], ruleEvaluations: source.ruleEvaluations || [] };
   });
   const activeRules = rules.filter((rule) => rule.active);
   const recentMarkups = useMemo(() => [...markups].sort((a, b) => `${b.date || ""} ${b.time || ""}`.localeCompare(`${a.date || ""} ${a.time || ""}`)).slice(0, 3), [markups]);
@@ -809,6 +814,7 @@ function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags,
   }, [account, form.asset, form.entryPrice, form.riskPct, form.stopLossPips, form.stopLossPrice]);
   const completedRules = activeRules.filter((rule) => form.ruleEvaluations.some((entry) => entry.ruleId === rule.id && entry.checked)).length;
   const ruleRating = activeRules.length ? (completedRules / activeRules.length) * 2 : 0;
+  const isRunning = form.grossPnl === "" || form.grossPnl == null;
   const liveNetPnl = (Number(form.grossPnl) || 0) - (Number(form.commission) || 0) - (Number(form.swap) || 0);
   const isLossResult = liveNetPnl < 0;
   const resultRating = liveNetPnl > 0 ? 1 : liveNetPnl < 0 ? -1 : 0;
@@ -833,16 +839,17 @@ function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags,
     ruleEvaluations: [...current.ruleEvaluations.filter((entry) => entry.ruleId !== rule.id), { ruleId: rule.id, name: rule.text, checked }],
   }));
   const save = () => {
-    if (!form.asset.trim() || form.grossPnl === "" || !form.time || timingError) return;
-    const grossPnl = Number(form.grossPnl), commission = Number(form.commission) || 0, swap = Number(form.swap) || 0;
-    if (!Number.isFinite(grossPnl)) return;
+    if (!form.asset.trim() || !form.time || timingError) return;
+    const grossPnl = isRunning ? null : Number(form.grossPnl), commission = Number(form.commission) || 0, swap = Number(form.swap) || 0;
+    if (!isRunning && !Number.isFinite(grossPnl)) return;
     const manualCTraderOpening = /Imported cTrader position #.*\[close-only\]/i.test(form.context || "") && !cTraderOpeningWasEnteredManually(form) && form.date && form.time;
-    const context = manualCTraderOpening ? `${form.context} [opening-time:manual]` : form.context;
+    const note = tradeNote(form);
+    const context = `${manualCTraderOpening ? `${note} [opening-time:manual]` : note}${isRunning ? ` ${RUNNING_TRADE_MARKER}` : ""}`.trim();
     const entrySession = entrySessionFromOpenTime(form.time) || form.entrySession;
-    onSave({ ...form, entrySession, context, session: entrySession, types: form.confluence, confluenceSession: form.entryType, grossPnl, commission, swap, pnl: grossPnl - commission - swap, rr: isLossResult ? -1 : Math.max(0, parseFloat(form.rr) || 0), rating: calculatedRating });
+    onSave({ ...form, entrySession, context, session: entrySession, types: form.confluence, confluenceSession: form.entryType, closeDate: isRunning ? null : form.closeDate, closeTime: isRunning ? null : form.closeTime, grossPnl: isRunning ? 0 : grossPnl, commission, swap, pnl: isRunning ? 0 : grossPnl - commission - swap, rr: isRunning ? 0 : (isLossResult ? -1 : Math.max(0, parseFloat(form.rr) || 0)), rating: isRunning ? ruleRating + markupRating : calculatedRating });
   };
-  const timingError = tradeTimingError(form);
-  return <Modal title={editing ? "Edit Trade" : "Log Trade"} onClose={onClose} onConfirm={save} confirmDisabled={!form.asset.trim() || form.grossPnl === "" || !form.time || !!timingError} wide>
+  const timingError = isRunning ? "" : tradeTimingError(form);
+  return <Modal title={editing ? "Edit Trade" : "Log Trade"} onClose={onClose} wide>
     {account?.positionSizeEnabled && <div className="tj-position-suggestion">
       <span>SUGGESTED POSITION SIZE</span>
       {positionSuggestion?.supported && positionSuggestion.lots > 0 ? <>
@@ -851,42 +858,33 @@ function NewTradeModal({ onClose, onSave, editing, draft, typeTags, mistakeTags,
         <em>Pip value: {fmtMoney(positionSuggestion.pipValue, positionSuggestion.currency)} / standard lot · {positionSuggestion.exactPipValue ? "Converted to your account currency" : "Standard FX estimate; add entry price for exact conversion"}</em>
       </> : <em>{!form.asset ? "Select a currency pair to calculate position size." : !positionSuggestion?.supported ? "Select a valid six-letter currency pair to calculate position size." : "Enter a stop loss in pips, or provide entry and stop prices."}</em>}
     </div>}
-    <div className="tj-section-label">Trade Details</div>
-    <div className="tj-grid2">
+    <div className="tj-section-label">Entry Type &amp; Markup</div>
+    <div className="tj-grid4 tj-trade-entry-grid">
       <Field label="Instrument *"><InstrumentPicker value={form.asset} onChange={(value) => set("asset", value)} /></Field>
-      <Field label="Direction"><select className="tj-input" value={form.direction} onChange={(event) => set("direction", event.target.value)}><option value="BUY">BUY</option><option value="SELL">SELL</option></select></Field>
+      <Field label="Entry Type"><select className="tj-input" value={form.entryType} onChange={(event) => set("entryType", event.target.value)}><option value="">None</option>{confluenceSessions.map((entryType) => <option key={entryType} value={entryType}>{entryType}</option>)}</select></Field>
+      <Field label="Markup"><select className="tj-input" value={form.premarketMarkupId || ""} onChange={(event) => set("premarketMarkupId", event.target.value || null)}><option value="">None</option>{recentMarkups.map((markup) => <option key={markup.id} value={markup.id}>{formatDate(markup.date)} · {markup.instrument || markup.market || "Untitled"} · {markup.bias || "No bias"}</option>)}</select></Field>
+      <Field label="Entry Session"><input className="tj-input" readOnly value={form.entrySession || "Set an open time"} /></Field>
     </div>
-    {account?.positionSizeEnabled && <>
-      <div className="tj-grid2"><Field label="Risk %"><input type="number" min="0" step="0.1" className="tj-input" value={form.riskPct} onChange={(event) => set("riskPct", event.target.value)} /></Field><Field label="Stop Loss (Pips)"><input type="number" min="0" step="0.1" className="tj-input" placeholder="e.g. 12" value={form.stopLossPips} onChange={(event) => set("stopLossPips", event.target.value)} /></Field></div>
-      <Field label="Stop Loss Price (optional)"><input type="number" min="0" step="any" className="tj-input" placeholder="Derives pips if needed" value={form.stopLossPrice} onChange={(event) => set("stopLossPrice", event.target.value)} /></Field>
-    </>}
+    <div className="tj-section-label">Trade Details</div>
+    <div className="tj-grid4 tj-trade-core-grid">
+      <Field label="Direction"><select className="tj-input" value={form.direction} onChange={(event) => set("direction", event.target.value)}><option value="BUY">BUY</option><option value="SELL">SELL</option></select></Field>
+      <Field label="Entry Price"><input type="number" min="0" step="any" className="tj-input" value={form.entryPrice} onChange={(event) => set("entryPrice", event.target.value)} /></Field>
+      <Field label="Exit Price"><input type="number" min="0" step="any" className="tj-input" value={form.exitPrice} onChange={(event) => set("exitPrice", event.target.value)} /></Field>
+      <Field label="Risk:Reward (R)"><ThemeRiskReward value={isLossResult ? -1 : form.rr} onChange={(value) => set("rr", value)} disabled={isRunning || isLossResult} customValues={account?.rewardPresets || []} />{isLossResult && <div className="tj-muted-txt tj-settings-hint">Losses are recorded as −1R automatically.</div>}</Field>
+    </div>
+    {account?.positionSizeEnabled && <div className="tj-grid3"><Field label="Risk %"><input type="number" min="0" step="0.1" className="tj-input" value={form.riskPct} onChange={(event) => set("riskPct", event.target.value)} /></Field><Field label="Stop Loss (Pips)"><input type="number" min="0" step="0.1" className="tj-input" value={form.stopLossPips} onChange={(event) => set("stopLossPips", event.target.value)} /></Field><Field label="Stop Loss Price (optional)"><input type="number" min="0" step="any" className="tj-input" value={form.stopLossPrice} onChange={(event) => set("stopLossPrice", event.target.value)} /></Field></div>}
     <div className="tj-trade-timing-row">
       <Field label="Open date *"><input type="date" value={form.date} onChange={event=>set('date',event.target.value)}/></Field>
       <Field label="Open time *"><input type="time" value={form.time} onChange={event=>setOpenTime(event.target.value)}/></Field>
       <Field label="Close date *"><input type="date" required value={form.closeDate || ''} onChange={event=>set('closeDate',event.target.value)}/></Field>
       <Field label="Close time *"><input type="time" required value={form.closeTime || ''} onChange={event=>set('closeTime',event.target.value)}/></Field>
     </div>
-    <div className="tj-grid2">
-      <Field label="Entry Price"><input type="number" min="0" step="any" className="tj-input" value={form.entryPrice} onChange={(event) => set("entryPrice", event.target.value)} /></Field>
-      <Field label="Exit Price"><input type="number" min="0" step="any" className="tj-input" value={form.exitPrice} onChange={(event) => set("exitPrice", event.target.value)} /></Field>
-    </div>
     {timingError && <p role="alert" className="tj-trade-timing-error">{timingError}</p>}
-    <div className="tj-grid2">
-      <Field label={`Gross P&L (${activeMoneyCurrency}) *`}><input type="number" className="tj-input" placeholder="-50" value={form.grossPnl} onChange={(event) => set("grossPnl", event.target.value)} /></Field>
+    <div className="tj-grid4 tj-trade-pnl-grid">
+      <Field label={`Gross P&L (${activeMoneyCurrency})`}><input type="number" className="tj-input" placeholder="-50" value={form.grossPnl ?? ""} onChange={(event) => set("grossPnl", event.target.value)} /></Field>
+      <Field label={`Net P&L (${activeMoneyCurrency})`}><input className="tj-input" readOnly value={isRunning ? "Running" : fmtMoney(liveNetPnl)} /></Field>
       <Field label={`Commission (${activeMoneyCurrency})`}><input type="number" className="tj-input" value={form.commission} onChange={(event) => set("commission", event.target.value)} /></Field>
-    </div>
-    <div className="tj-grid2">
       <Field label={`Swap (${activeMoneyCurrency})`}><input type="number" className="tj-input" value={form.swap} onChange={(event) => set("swap", event.target.value)} /></Field>
-      <Field label="Entry Session (from open time)"><input className="tj-input" readOnly value={form.entrySession || "Set an open time"} /></Field>
-    </div>
-    <div className="tj-grid2">
-      <Field label={`Net P&L (${activeMoneyCurrency})`}><input className="tj-input" readOnly value={fmtMoney((Number(form.grossPnl) || 0) - (Number(form.commission) || 0) - (Number(form.swap) || 0))} /></Field>
-      <Field label="Risk:Reward (R)"><ThemeRiskReward value={isLossResult ? -1 : form.rr} onChange={(value) => set("rr", value)} disabled={isLossResult} customValues={account?.rewardPresets || []} />{isLossResult && <div className="tj-muted-txt tj-settings-hint">Losses are recorded as −1R automatically.</div>}</Field>
-    </div>
-    <div className="tj-section-label">Entry Type &amp; Markup</div>
-    <div className="tj-grid2">
-      <Field label="Entry Type"><select className="tj-input" value={form.entryType} onChange={(event) => set("entryType", event.target.value)}><option value="">None</option>{confluenceSessions.map((entryType) => <option key={entryType} value={entryType}>{entryType}</option>)}</select></Field>
-      <Field label="Markup"><select className="tj-input" value={form.premarketMarkupId || ""} onChange={(event) => set("premarketMarkupId", event.target.value || null)}><option value="">None</option>{recentMarkups.map((markup) => <option key={markup.id} value={markup.id}>{formatDate(markup.date)} · {markup.instrument || markup.market || "Untitled"} · {markup.bias || "No bias"}</option>)}</select></Field>
     </div>
     <div className="tj-section-label">Confluence</div>
     <TagPicker options={typeTags} selected={form.confluence} onToggle={(value) => toggleArr("confluence", value)} color="purple" />
@@ -998,7 +996,7 @@ function AccountSettingsModal({ account, onClose, onSave, onDelete, onReset, onI
     onClose();
   };
   return (
-    <Modal title={<span className="tj-symbol-title"><WalletCards size={18} />Account Settings</span>} onClose={() => { if (!savingSettings) onClose(); }} onConfirm={saveSettings} confirmDisabled={!name.trim() || !baseCurrency || savingSettings || (challengeEnabled && challenge.loading && !challenge.error)} wide>
+    <Modal title={<span className="tj-symbol-title"><WalletCards size={18} />Account Settings</span>} onClose={() => { if (!savingSettings) onClose(); }} wide>
       <div className="tj-settings-account-hero tj-settings-account-hero-no-avatar">
         <div className="tj-settings-hero-copy"><span>ACCOUNT CONTROL CENTER</span><strong>{name.trim() || "Main Account"}</strong><p>Build the account once, then let goals and guardrails carry through the dashboard, analytics, and daily workflow.</p></div>
         <div className="tj-settings-hero-metrics"><div className="tj-settings-balance-tile"><small>STARTING BALANCE</small><b>{fmtMoneyShort(accountBase, baseCurrency)}</b><span>Account base</span></div><div className={`tj-settings-month-goal ${goalsEnabled ? "tj-settings-goal-on" : ""}`}><small>MONTHLY GOAL</small><b>{monthlyGoalPct ? fmtMoneyShort(monthlyTarget, baseCurrency) : "Optional"}</b><span>{monthlyGoalPct ? `+${Number(monthlyGoalPct).toFixed(2)}% target` : "Not set"}</span></div><div className={`tj-settings-year-goal ${goalsEnabled ? "tj-settings-goal-on" : ""}`}><small>YEARLY GOAL</small><b>{yearlyGoalPct ? fmtMoneyShort(yearlyTarget, baseCurrency) : "Optional"}</b><span>{yearlyGoalPct ? `+${Number(yearlyGoalPct).toFixed(2)}% target` : "Not set"}</span></div><div className={`tj-settings-daily-loss ${guardrailsEnabled ? "tj-settings-risk-on" : ""}`}><small>DAILY LOSS</small><b>{dailyLossLimitPct ? fmtMoneyShort(-dailyLimit, baseCurrency) : "Optional"}</b><span>{dailyLossLimitPct ? `${Number(dailyLossLimitPct).toFixed(2)}% cap` : "Not set"}</span></div><div className={`tj-settings-month-loss ${guardrailsEnabled ? "tj-settings-risk-on" : ""}`}><small>MONTHLY LOSS</small><b>{monthlyLossLimitPct ? fmtMoneyShort(-monthlyLimit, baseCurrency) : "Optional"}</b><span>{monthlyLossLimitPct ? `${Number(monthlyLossLimitPct).toFixed(2)}% cap` : "Not set"}</span></div></div>
@@ -1074,7 +1072,7 @@ function ProfileSettingsModal({ user, account, themeValue, themePreference, acce
   const unchanged = fullName.trim() === original.fullName && displayName.trim() === original.displayName && profileImage === original.profileImage && theme === original.theme && accent === original.accent && timezone === original.timezone && dateFormat === original.dateFormat && timeFormat === original.timeFormat && sessionTimeoutMinutes === original.timeout;
   const initials = (displayName || fullName).trim().split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "T";
   const preview = (nextTheme = theme, nextAccent = accent) => onPreviewAppearance?.(nextTheme, nextAccent);
-  const accentChoices = [{ id: "default", label: "Default", dark: "#60A5FA", light: "#2563EB" }, ...ACCENT_OPTIONS];
+  const accentChoices = [{ id: "default", label: "Default", dark: "#6EE7B7", light: "#059669" }, ...ACCENT_OPTIONS];
   const uploadProfile = async (files) => {
     const file = files?.[0];
     if (!file || !file.type.startsWith("image/")) return;
@@ -1104,7 +1102,7 @@ function ProfileSettingsModal({ user, account, themeValue, themePreference, acce
     if (result?.error) { setDeleteError(result.error); setDeleting(false); }
   };
   return (
-    <Modal title={<span className="tj-symbol-title"><UserRound size={18} />Profile</span>} onClose={close} onConfirm={save} confirmDisabled={saving || !displayName.trim()} className="tj-profile-modal tj-profile-modal-editing" wide>
+    <Modal title={<span className="tj-symbol-title"><UserRound size={18} />Profile</span>} onClose={close} className="tj-profile-modal tj-profile-modal-editing" wide>
       <div className="tj-personal-profile-card">
         <div className="tj-profile-reference-head"><div className="tj-profile-avatar-tools"><button type="button" className="tj-personal-profile-avatar" onClick={() => photoRef.current?.click()} aria-label="Change profile photo">{profileImage ? <img src={profileImage} alt="Profile" /> : <span>{initials}</span>}</button><button type="button" className="tj-profile-avatar-tool" onClick={() => photoRef.current?.click()} title="Upload photo" aria-label="Upload photo"><ImagePlus size={14}/></button><input ref={photoRef} type="file" accept="image/*" style={{display:"none"}} onChange={(event) => { uploadProfile(event.target.files); event.target.value = ""; }} /></div><div className="tj-profile-reference-identity"><div>{editingDisplayName ? <input className="tj-profile-name-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && setEditingDisplayName(false)} autoFocus aria-label="Display name" /> : <strong>{displayName.trim() || "Your name"}</strong>}{!editingDisplayName && <em>Verified</em>}</div><span>{user.email || "No email address"}</span></div><div className="tj-profile-reference-stats"><div><small>MEMBER SINCE</small><strong>{user.created_at ? formatDate(user.created_at) : "—"}</strong></div><div><small>LAST SIGN IN</small><strong>{user.last_sign_in_at ? formatDate(user.last_sign_in_at) : "—"}</strong></div></div><button type="button" className="tj-profile-reference-edit" onClick={() => setEditingDisplayName((open) => !open)}><Pencil size={14}/>{editingDisplayName ? "Done" : "Edit"}</button></div>
         <div className="tj-personal-profile-heading tj-personal-profile-summary-head"><div className="tj-profile-avatar-tools"><button type="button" className="tj-personal-profile-avatar" onClick={() => photoRef.current?.click()} aria-label="Change profile photo">{profileImage ? <img src={profileImage} alt="Profile" /> : <span>{initials}</span>}</button><button type="button" className="tj-profile-avatar-tool" onClick={() => photoRef.current?.click()} title="Upload photo" aria-label="Upload photo"><ImagePlus size={14}/></button><input ref={photoRef} type="file" accept="image/*" style={{display:"none"}} onChange={(event) => { uploadProfile(event.target.files); event.target.value = ""; }} /></div><div><span>PROFILE PREFERENCES</span><strong>{displayName.trim() || "Your name"}</strong></div></div>
@@ -1192,7 +1190,7 @@ function MarkupModal({ onClose, onSave, editing, instruments = [] }) {
   const setReview=(k,v)=>setF(x=>({...x,sessionReview:{...(x.sessionReview||{}),[k]:v}}));
   const setShots=(slot)=>(updater)=>setF(x=>({...x,screenshots:{...x.screenshots,[slot]:updater(x.screenshots[slot])}}));
   const save = () => { if (f.time) onSave(f); };
-  return <Modal title={editing ? "Edit Premarket Markup" : "New Premarket Markup"} onClose={onClose} onConfirm={save} confirmDisabled={!f.time} wide>
+  return <Modal title={editing ? "Edit Premarket Markup" : "New Premarket Markup"} onClose={onClose} wide>
     <div className="tj-markup-meta-row"><Field label="Date"><input type="date" className="tj-input" value={f.date} onChange={e=>set("date",e.target.value)}/></Field><Field label="Time *"><input type="time" required className="tj-input" value={f.time} onChange={e=>set("time",e.target.value)}/></Field><Field label="Session"><select className="tj-input" value={f.market} onChange={e=>set("market",e.target.value)}><option value="">Select session</option>{SESSIONS.map((session)=><option key={session} value={session}>{session}</option>)}</select></Field></div>
     <div className="tj-markup-pair-row"><Field label="Status"><select className="tj-input" value={f.status} onChange={e=>set("status",e.target.value)}>{["Planned","Watching","Executed","Passed"].map((status)=><option key={status} value={status}>{status}</option>)}</select></Field><Field label="Instrument"><InstrumentPicker value={f.instrument} onChange={(value) => set("instrument", value)} /></Field></div>
     <div className="tj-markup-section"><div className="tj-section-label">Pre-Session Analysis</div><div className="tj-markup-pair-row"><Field label="Bias"><select className="tj-input" value={f.bias} onChange={e=>set("bias",e.target.value)}><option value="">Select bias</option>{MARKUP_BIASES.map((bias)=><option key={bias} value={bias}>{bias}</option>)}</select></Field><Field label="Key levels, liquidity & zones"><input className="tj-input" value={f.levels} onChange={e=>set("levels",e.target.value)}/></Field></div><Field label="Market structure / narrative"><textarea className="tj-input tj-textarea" placeholder="HTF context, structure and key areas..." value={f.structure} onChange={e=>set("structure",e.target.value)}/></Field><div className="tj-grid3"><div><div className="tj-field-label">HTF chart</div><ScreenshotUploader max={2} captions screenshots={f.screenshots.preHTF} onChange={setShots("preHTF")}/></div><div><div className="tj-field-label">MTF chart</div><ScreenshotUploader max={2} captions screenshots={f.screenshots.preH4} onChange={setShots("preH4")}/></div><div><div className="tj-field-label">LTF chart</div><ScreenshotUploader max={2} captions screenshots={f.screenshots.preM15} onChange={setShots("preM15")}/></div></div></div>
@@ -1235,7 +1233,7 @@ function useCloseOnOutside(isOpen, onClose) {
   return surfaceRef;
 }
 
-function ListPagination({ total, page, showAll, onPageChange, onShowAll, label }) {
+function ListPagination({ total, page, showAll, onPageChange, onShowAll, label, hideArrows = false }) {
   const pageCount = Math.max(1, Math.ceil(total / 10));
   const currentPage = Math.min(page, pageCount);
   const first = total ? showAll ? 1 : (currentPage - 1) * 10 + 1 : 0;
@@ -1244,7 +1242,7 @@ function ListPagination({ total, page, showAll, onPageChange, onShowAll, label }
   return <nav className="tj-list-pagination" aria-label={`${label} pagination`}>
     <span>{showAll ? `All ${total}` : `${first}–${last} of ${total}`}</span>
     <button type="button" className="tj-btn-outline tj-btn-small" onClick={() => onShowAll(!showAll)}>{showAll ? "Show 10 per page" : "Show all"}</button>
-    {!showAll && <div className="tj-pagination-arrows"><button type="button" className="tj-icon-btn" aria-label={`Previous ${label} page`} title="Previous page" disabled={currentPage === 1} onClick={() => onPageChange(currentPage - 1)}><ChevronLeft size={16}/></button><span>{currentPage} / {pageCount}</span><button type="button" className="tj-icon-btn" aria-label={`Next ${label} page`} title="Next page" disabled={currentPage === pageCount} onClick={() => onPageChange(currentPage + 1)}><ChevronRight size={16}/></button></div>}
+    {!showAll && !hideArrows && <div className="tj-pagination-arrows"><button type="button" className="tj-icon-btn" aria-label={`Previous ${label} page`} title="Previous page" disabled={currentPage === 1} onClick={() => onPageChange(currentPage - 1)}><ChevronLeft size={16}/></button><span>{currentPage} / {pageCount}</span><button type="button" className="tj-icon-btn" aria-label={`Next ${label} page`} title="Next page" disabled={currentPage === pageCount} onClick={() => onPageChange(currentPage + 1)}><ChevronRight size={16}/></button></div>}
   </nav>;
 }
 
@@ -1323,6 +1321,17 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
   const markupPageCount = Math.max(1, Math.ceil(shown.length / 10));
   const activeMarkupPage = Math.min(listPage, markupPageCount);
   const visibleMarkups = showAll ? shown : shown.slice((activeMarkupPage - 1) * 10, activeMarkupPage * 10);
+  const shownLinked = shown.filter((markup) => linkedTrades(markup).length > 0);
+  const shownLinkedTrades = shownLinked.flatMap(linkedTrades);
+  const shownPnl = shownLinked.reduce((sum, markup) => sum + totalLinkedPnl(markup), 0);
+  const shownBest = shownLinked.length ? Math.max(...shownLinked.map(totalLinkedPnl)) : 0;
+  const shownWorst = shownLinked.length ? Math.min(...shownLinked.map(totalLinkedPnl)) : 0;
+  const shownExecutionMatch = shown.length ? Math.round(shownLinked.length / shown.length * 100) : 0;
+  const shownCoverage = (predicate) => shown.length ? Math.round(shown.filter(predicate).length / shown.length * 100) : 0;
+  const shownPlanCoverage = shownCoverage((markup) => markup.levels || markup.structure || markup.notes || markup.bias);
+  const shownPreCoverage = shownCoverage(countWith(["preHTF", "preH4", "preM15"]));
+  const shownPostCoverage = shownCoverage(countWith(["postH4", "postM15"]));
+  const shownTotalCoverage = Math.round((shownPlanCoverage + shownPreCoverage + shownPostCoverage) / 3);
   useEffect(() => () => Object.values(closeTimers.current).forEach(window.clearTimeout), []);
   const toggleMarkup = (id) => {
     if (!open[id]) {
@@ -1347,14 +1356,14 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
   return <div className="tj-reference-markups">
     <div className="tj-rules-head"><div><div className="tj-bold" style={{ fontSize: 19.44 }}>Markups</div><div className="tj-muted-txt" style={{ fontSize: 14 }}>Prepare context before execution, then attach the final trade to its plan.</div></div><button className="tj-btn-primary" onClick={onNew}><Plus size={15}/> New Markup</button></div>
     <div className="tj-markup-overview-grid">
-      <Card className="tj-markup-overview-card"><div className="tj-stat-label">MARKUPS IN VIEW</div><strong>{markups.length}</strong><span>{top(markups, "instrument")} is showing up most</span><div className="tj-markup-progress"><i style={{transform: `scaleX(${markups.length ? 1 : 0})`}}/></div><small>Top session: {top(markups, "market")} · {executed} executed · {planned} planned</small></Card>
-      <Card className="tj-markup-overview-card"><div className="tj-stat-label">EXECUTION MATCH</div><strong className={executionMatch >= 70 ? "tj-green" : "tj-amber-txt"}>{executionMatch}%</strong><span>{linked.length} of {markups.length} markups were linked to execution</span><div className="tj-markup-split"><i style={{transform: `scaleX(${executionMatch / 100})`}}/><b style={{transform: `scaleX(${(100 - executionMatch) / 100})`}}/></div><small>{allLinkedTrades.length} linked trades · {profitableLinked} profitable · {losingLinked} losing</small></Card>
-      <Card className="tj-markup-overview-card"><div className="tj-stat-label">LINKED P&amp;L</div><strong className={allPnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(allPnl)}</strong><span>Average {linked.length ? fmtMoney(allPnl / linked.length) : fmtMoney(0)} per linked markup</span><div className="tj-markup-bestworst"><div><small>Best linked</small><b className={best >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(best)}</b></div><div><small>Worst linked</small><b className={worst >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(worst)}</b></div></div></Card>
-      <Card className="tj-markup-overview-card"><div className="tj-stat-label">CAPTURE COVERAGE</div><strong>{Math.round((planCoverage + preCoverage + postCoverage) / 3)}%</strong><span>How complete the markup journal is across plan, pre-session, and review assets.</span><div className="tj-markup-coverage"><div><small>Plan</small><i><b style={{width: `${planCoverage}%`}}/></i><em>{planCoverage}%</em></div><div><small>Pre</small><i><b style={{width: `${preCoverage}%`}}/></i><em>{preCoverage}%</em></div><div><small>Post</small><i><b style={{width: `${postCoverage}%`}}/></i><em>{postCoverage}%</em></div></div></Card>
+      <Card className="tj-markup-overview-card"><div className="tj-markup-overview-top"><div className="tj-stat-label">MARKUPS IN VIEW</div><span>{shown.length} pair{shown.length === 1 ? "" : "s"} in focus</span></div><strong>{shown.length}</strong><div className="tj-markup-overview-metrics"><div><small>Leading pair</small><b>{top(shown, "instrument")}</b></div><div><small>Top session</small><b>{top(shown, "market")}</b></div></div></Card>
+      <Card className="tj-markup-overview-card"><div className="tj-markup-overview-top"><div className="tj-stat-label">EXECUTION MATCH</div><span>{shownLinked.length} plans linked</span></div><strong className={shownExecutionMatch >= 70 ? "tj-green" : "tj-amber-txt"}>{shownExecutionMatch}%</strong><div className="tj-markup-overview-bars"><div><small>Linked</small><i><b style={{width: `${shown.length ? shownLinked.length / shown.length * 100 : 0}%`}}/></i><em>{shownLinked.length}</em></div><div><small>Unlinked</small><i><b style={{width: `${shown.length ? (shown.length - shownLinked.length) / shown.length * 100 : 0}%`}}/></i><em>{shown.length - shownLinked.length}</em></div></div><small>{shownLinkedTrades.length} linked trade{shownLinkedTrades.length === 1 ? "" : "s"} across this view</small></Card>
+      <Card className="tj-markup-overview-card"><div className="tj-markup-overview-top"><div className="tj-stat-label">LINKED P&amp;L</div><span>avg {fmtMoney(shownLinked.length ? shownPnl / shownLinked.length : 0)}</span></div><strong className={shownPnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(shownPnl)}</strong><div className="tj-markup-overview-metrics tj-markup-outcome-cards"><div><small>Best outcome</small><b className={shownBest >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(shownBest)}</b></div><div><small>Worst outcome</small><b className={shownWorst >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(shownWorst)}</b></div></div></Card>
+      <Card className="tj-markup-overview-card"><div className="tj-markup-overview-top"><div className="tj-stat-label">CAPTURE COVERAGE</div><span>markup journal complete</span></div><strong>{shownTotalCoverage}%</strong><div className="tj-markup-coverage"><div><small>Plan</small><i><b style={{width: `${shownPlanCoverage}%`}}/></i><em>{shownPlanCoverage}%</em></div><div><small>Pre</small><i><b style={{width: `${shownPreCoverage}%`}}/></i><em>{shownPreCoverage}%</em></div><div><small>Post</small><i><b style={{width: `${shownPostCoverage}%`}}/></i><em>{shownPostCoverage}%</em></div></div></Card>
     </div>
     <div className="tj-markup-toolbar" ref={toolbarRef}>
       <div className="tj-markup-toolbar-actions"><button className={`tj-icon-btn tj-markup-toolbar-button ${filtersOpen ? "tj-icon-btn-active" : ""}`} title="Filter markups" onClick={() => { setFiltersOpen((value) => !value); setSortOpen(false); }}><SlidersHorizontal size={16}/></button><button className={`tj-icon-btn tj-markup-toolbar-button ${sortOpen ? "tj-icon-btn-active" : ""}`} title="Sort markups" onClick={() => { setSortOpen((value) => !value); setFiltersOpen(false); }}><ArrowDownUp size={16}/></button><button className="tj-icon-btn tj-markup-toolbar-button" title="Restore markups board" aria-label="Restore markups board" onClick={restoreMarkupBoard}><RotateCcw size={15}/></button></div>
-      <div className="tj-markup-toolbar-status"><span>{shown.length} shown</span><b>{showAll ? "All visible" : `Page ${activeMarkupPage} of ${markupPageCount}`}</b></div>
+      <div className="tj-markup-toolbar-status">{showAll ? <b>All visible</b> : <div className="tj-pagination-arrows tj-toolbar-pagination"><button type="button" className="tj-icon-btn" aria-label="Previous markups page" title="Previous page" disabled={activeMarkupPage === 1} onClick={() => setListPage(activeMarkupPage - 1)}><ChevronLeft size={16}/></button><b>{`Page ${activeMarkupPage} of ${markupPageCount}`}</b><button type="button" className="tj-icon-btn" aria-label="Next markups page" title="Next page" disabled={activeMarkupPage === markupPageCount} onClick={() => setListPage(activeMarkupPage + 1)}><ChevronRight size={16}/></button></div>}</div>
       {filtersOpen && <div className="tj-markup-filter-popover">
         <div className="tj-markup-filter-head"><div><strong>Filter markups</strong><span>Keep the markup board clean while focusing on the exact setup window you want.</span></div><button className="tj-icon-btn" title="Close filters" onClick={() => setFiltersOpen(false)}><X size={14}/></button></div>
         <div className="tj-markup-filter-grid">
@@ -1406,7 +1415,7 @@ function ReferenceMarkupsPage({ markups, trades, onNew, onEdit, onDelete, onTrad
         </div></div>
       </Card></div>;
     }) : <div className="tj-empty-block"><ScanLine size={32} color="var(--tj-muted)"/><div className="tj-empty-title">No markups match these filters</div><button className="tj-btn-primary" onClick={onNew}>Create a markup</button></div>}</div>
-    <ListPagination total={shown.length} page={activeMarkupPage} showAll={showAll} onPageChange={setListPage} onShowAll={(next) => { setShowAll(next); if (!next) setListPage(1); }} label="markups"/>
+    <ListPagination total={shown.length} page={activeMarkupPage} showAll={showAll} onPageChange={setListPage} onShowAll={(next) => { setShowAll(next); if (!next) setListPage(1); }} label="markups" hideArrows/>
   </div>;
 }
 
@@ -1419,7 +1428,7 @@ const periodMatchesTrade = (trade, type, key) => {
 };
 
 function reviewPeriodStats(trades, reviews, account, type, key) {
-  const periodTrades = trades.filter((trade) => periodMatchesTrade(trade, type, key));
+  const periodTrades = closedTrades(trades).filter((trade) => periodMatchesTrade(trade, type, key));
   const reviewedIds = new Set(reviews.map((review) => review.tradeId).filter(Boolean));
   const reviewedTrades = periodTrades.filter((trade) => reviewedIds.has(trade.id));
   const wins = periodTrades.filter((trade) => classify(trade.pnl, account.breakevenCap) === "win");
@@ -1493,7 +1502,7 @@ function TradeReviewEditorModal({ trade, trades = [], existing, reviews = [], ma
   };
   const save = () => { void onSave({ ...form, tradeId: activeTrade.id }); onClose(); };
   const pct = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
-  return <Modal title="Write Trade Review" onClose={onClose} onConfirm={save} className="tj-review-editor-modal" wide>
+  return <Modal title="Write Trade Review" onClose={onClose} className="tj-review-editor-modal" wide>
     <div className="tj-review-editor-intro"><span>Keep it light: capture the lesson, save it, move on.</span><b className={`tj-pill ${resultClass === "win" ? "tj-pill-green" : resultClass === "loss" ? "tj-pill-red" : "tj-pill-blue"}`}>{resultLabel}</b></div>
     <div className="tj-review-trade-banner"><div><strong>{activeTrade.asset || "Trade"}</strong><span><b className={activeTrade.direction === "BUY" ? "tj-green" : "tj-red"}>{activeTrade.direction}</b><em>{activeTrade.entrySession || activeTrade.session || "—"}</em><em>{compactDate}</em><em>{Number(activeTrade.rr || 0).toFixed(2)}R</em></span></div><strong className={activeTrade.pnl >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(activeTrade.pnl)}</strong></div>
     <div className="tj-review-reference-stack">
@@ -1559,7 +1568,7 @@ function PeriodReviewModal({ period, saved, reviews, onClose, onSave, onStartTra
   const periodName = period.type === "monthly" ? "Month" : period.type === "quarterly" ? "Quarter" : "Year";
   const activeDays = new Set(stat.trades.map((trade) => trade.date)).size;
   const section = (id, title) => <section className="tj-period-section" key={id}><button type="button" className="tj-period-section-head" onClick={() => setOpenSections((current) => ({ ...current, [id]: !current[id] }))}><strong>{title}</strong><ChevronDown size={17} style={{ transform: openSections[id] ? "rotate(180deg)" : "none" }} /></button>{openSections[id] && <div className="tj-period-section-body">{PERIOD_REVIEW_FIELDS[id].map(([key, label]) => <Field key={key} label={label}><textarea className="tj-input tj-textarea" placeholder="Write your review…" value={content[key] || ""} onChange={(event) => set(key, event.target.value)} /></Field>)}</div>}</section>;
-  return <Modal title={`${period.label} Review`} onClose={onClose} onConfirm={save} className="tj-period-review-modal" wide>
+  return <Modal title={`${period.label} Review`} onClose={onClose} className="tj-period-review-modal" wide>
     <div className="tj-period-review-summary">
       <div className="tj-period-review-title"><div className="tj-section-label">{period.label.toUpperCase()} REVIEW</div><span>{period.year} · {stat.total} trade{stat.total === 1 ? "" : "s"} closed · {stat.reviewed} reviewed</span></div>
       <div className="tj-period-metric-grid tj-period-metric-grid-reference"><div className={completed ? "tj-period-complete-yes" : "tj-period-complete-no"}><small>COMPLETED</small><strong className={completed ? "tj-green" : "tj-red"}>{completed ? "Yes" : "No"}</strong><span>{completed ? `${periodName} At A Glance is complete.` : `${completedFields}/4 At A Glance fields completed.`}</span></div><div><small>{periodName.toUpperCase()} P&amp;L (%)</small><strong className={stat.netPnl >= 0 ? "tj-green" : "tj-red"}>{stat.returnPct >= 0 ? "+" : ""}{stat.returnPct.toFixed(2)}%</strong><span>{fmtMoney(stat.netPnl)} net across the {periodName.toLowerCase()}.</span></div><div><small>WIN RATE</small><strong className={wrColorClass(stat.winRate)}>{stat.winRate.toFixed(1)}%</strong><span>{stat.wins} wins · {stat.losses} losses · {stat.breakeven} B/E</span></div><div><small>PERFORMANCE (0–5)</small><div className="tj-period-performance"><strong>{Math.round(stat.performance)}/5</strong><span>{[1,2,3,4,5].map((dot) => <i key={dot} className={dot <= Math.round(stat.performance) ? "tj-score-dot-on" : ""} />)}</span></div><em>Auto score {Math.round(stat.performance)}/5 before any manual override.</em></div><div><small>TRADES</small><strong>{stat.total}</strong><span>{activeDays} active day{activeDays === 1 ? "" : "s"} on the tape.</span></div><div><small>REVIEWED</small><strong>{stat.reviewed}/{stat.total || 0}</strong><span>{(stat.coverage * 100).toFixed(0)}% trade review coverage.</span></div><div><small>AVG RR</small><strong>{stat.avgRR.toFixed(2)}</strong><span>Risk quality across the {periodName.toLowerCase()}.</span></div><div><small>BEST SESSION</small><strong>{stat.bestSession}</strong><span>{fmtMoney(stat.bestSessionPnl)} strongest return.</span></div></div>
@@ -1589,7 +1598,7 @@ function ReviewLibraryPage({ account, trades, reviews, periodReviews, markups = 
   const annual = { type: "annual", key: String(reviewYear), label: `${reviewYear} Annual`, year: reviewYear, stats: reviewPeriodStats(trades, reviews, account, "annual", String(reviewYear)) };
   const activePeriodLive = activePeriod ? [...months, ...quarters, annual].find((period) => period.type === activePeriod.type && period.key === activePeriod.key) || activePeriod : null;
   const reviewedIds = new Set(reviews.map((review) => review.tradeId));
-  const pending = trades.filter((trade) => trade.date?.slice(0, 4) === String(reviewYear) && !reviewedIds.has(trade.id)).sort((a, b) => `${b.date} ${b.time || ""}`.localeCompare(`${a.date} ${a.time || ""}`));
+  const pending = closedTrades(trades).filter((trade) => trade.date?.slice(0, 4) === String(reviewYear) && !reviewedIds.has(trade.id)).sort((a, b) => `${b.date} ${b.time || ""}`.localeCompare(`${a.date} ${a.time || ""}`));
   const openPeriod = (period) => setActivePeriod(period);
   const renderPeriodCard = (period, compact = false) => {
     const saved = savedByPeriod.get(`${period.type}:${period.key}`);
@@ -1660,7 +1669,7 @@ function AddAccountModal({ onClose, onCreate }) {
     if (!created) { setCreating(false); setImportingTrades(false); }
   };
   return (
-    <Modal title="New Account Workspace" onClose={onClose} onConfirm={create} confirmDisabled={!name.trim() || !baseCurrency || creating} className="tj-new-account-modal" wide>
+    <Modal title="New Account Workspace" onClose={onClose} className="tj-new-account-modal" wide>
       <div className="tj-settings-account-hero tj-new-account-hero tj-settings-account-hero-no-avatar">
         <div className="tj-settings-hero-copy"><span>NEW ACCOUNT BLUEPRINT</span><strong>{name.trim() || "Untitled Account"}</strong><p>Set up the account once, then let goals and guardrails carry through the dashboard, analytics, and daily workflow.</p></div>
         <div className="tj-settings-hero-metrics"><div><small>STARTING BALANCE</small><b>{fmtMoneyShort(accountBase, baseCurrency)}</b><span>Funding base</span></div><div className={monthlyGoalPct ? "tj-settings-goal-on" : ""}><small>MONTHLY GOAL</small><b>{monthlyGoalPct ? fmtMoneyShort(monthlyTarget, baseCurrency) : "Optional"}</b><span>{monthlyGoalPct ? `+${Number(monthlyGoalPct).toFixed(2)}% target` : "Set a monthly target"}</span></div><div className={yearlyGoalPct ? "tj-settings-goal-on" : ""}><small>YEARLY GOAL</small><b>{yearlyGoalPct ? fmtMoneyShort(yearlyTarget, baseCurrency) : "Optional"}</b><span>{yearlyGoalPct ? `+${Number(yearlyGoalPct).toFixed(2)}% target` : "Keep the long runway open"}</span></div><div className={dailyLossLimitPct ? "tj-settings-risk-on" : ""}><small>DAILY LOSS</small><b>{dailyLossLimitPct ? fmtMoneyShort(-dailyLimit, baseCurrency) : "Optional"}</b><span>{dailyLossLimitPct ? `${Number(dailyLossLimitPct).toFixed(2)}% cap` : "No daily lock"}</span></div><div className={monthlyLossLimitPct ? "tj-settings-risk-on" : ""}><small>MONTHLY LOSS</small><b>{monthlyLossLimitPct ? fmtMoneyShort(-monthlyLimit, baseCurrency) : "Optional"}</b><span>{monthlyLossLimitPct ? `${Number(monthlyLossLimitPct).toFixed(2)}% cap` : "No monthly lock"}</span></div></div>
@@ -1973,7 +1982,7 @@ function AccountGuardrailsPanel({ account, guardrails, stats, periodDate = new D
   const month = periodDate.getMonth();
   const monthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
   const monthStats = computeStats(account.trades.filter((trade) => trade.date?.slice(0, 7) === monthKey), account.breakevenCap);
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = localDateKey();
   const todayTrades = account.trades.filter((trade) => trade.date === todayKey).length;
   const monthGoalProgress = guardrails.monthlyGoal ? Math.max(0, guardrails.monthlyPnl) / guardrails.monthlyGoal * 100 : 0;
   const yearGoalProgress = guardrails.yearlyGoal ? Math.max(0, guardrails.yearlyPnl) / guardrails.yearlyGoal * 100 : 0;
@@ -1987,17 +1996,6 @@ function AccountGuardrailsPanel({ account, guardrails, stats, periodDate = new D
     </div>
     <div className="tj-guardrails-footer">When a loss limit is hit, trade logging pauses until the next reset period while markups stay open for preparation and review.</div>
   </Card>;
-}
-
-function ChallengeDashboardProgress({ account, challenge }) {
-  if (!isChallengeEnabled(account) || challenge.loading || challenge.error) return null;
-  const passed = Object.values(challenge.state.statuses || {}).filter((status) => status === "Pass").length;
-  const currentLevel = clamp(Number(challenge.state.activeLevel) || 1, 1, 30);
-  const tier = currentLevel <= 10 ? "start" : currentLevel <= 20 ? "middle" : "finish";
-  return <div className={`tj-challenge-dashboard-progress tj-challenge-dashboard-${tier}`}>
-    <div><span>LEVELS PASSED</span><strong>{passed} / 30</strong></div>
-    <i aria-label={`Challenge progress: ${passed} of 30 levels passed`}><b style={{ width: `${passed / 30 * 100}%` }} /></i>
-  </div>;
 }
 
 function ReferenceDashboardPage({ account, stats, monthCursor, setMonthCursor, onDayClick, guardrails, displayName, loginQuote, challenge }) {
@@ -2039,6 +2037,12 @@ function ReferenceDashboardPage({ account, stats, monthCursor, setMonthCursor, o
   ];
   const allTimeReturn = account.balance ? (thisYearStats.netPnl / account.balance) * 100 : 0;
   const payoffSegment = thisYearStats.avgWin + thisYearStats.avgLoss ? clamp((thisYearStats.avgWin / (thisYearStats.avgWin + thisYearStats.avgLoss)) * 100, 0, 100) : 50;
+  const challengeEnabled = isChallengeEnabled(account);
+  const passedChallengeLevels = challengeEnabled && !challenge?.loading ? Object.values(challenge?.state?.statuses || {}).filter((status) => status === "Pass").length : 0;
+  const challengeComplete = challengeEnabled && passedChallengeLevels === 30;
+  const activeChallengeLevel = clamp(Number(challenge?.state?.activeLevel) || 1, 1, 30);
+  const challengePlan = challengeEnabled ? buildChallengePlan(account.challengeStartingBalance, challenge?.state?.automation?.mode || "risk") : [];
+  const nextChallengeRisk = challengeComplete ? null : challengePlan[activeChallengeLevel - 1]?.risk;
   const dayWinBars = thisYearStats.dayClasses.slice(-13);
   const lastSixPositive = lastSix.filter((trade) => trade.pnl > account.breakevenCap).length;
 
@@ -2049,8 +2053,9 @@ function ReferenceDashboardPage({ account, stats, monthCursor, setMonthCursor, o
       <Card className="tj-reference-kpi tj-kpi-equity"><div className="tj-kpi-top"><div className="tj-stat-label">ALL-TIME NET P&amp;L</div><span>{allTimeReturn >= 0 ? "+" : ""}{allTimeReturn.toFixed(2)}%</span></div><div className={`tj-reference-kpi-value ${thisYearStats.netPnl >= 0 ? "tj-green" : "tj-red"}`}>{fmtMoney(thisYearStats.netPnl)}</div><div className="tj-stat-sub">Starting balance {fmtMoney(account.balance)}</div><div className="tj-kpi-spark"><ResponsiveContainer width="100%" height={26}><AreaChart data={cumulative}><Area type="monotone" dataKey="cumulative" stroke={UI_COLORS.primary} fill="none" strokeWidth={2} dot={false}/></AreaChart></ResponsiveContainer></div><small>Live balance {fmtMoney(liveAccountBalance)} · Streak {thisYearStats.streak ? `${thisYearStats.streakType === "loss" ? "-" : "+"}${thisYearStats.streak}` : "—"}</small></Card>
       <Card className="tj-reference-kpi tj-kpi-profit"><div className="tj-kpi-top"><div className="tj-stat-label">PROFIT FACTOR</div><span className={thisYearStats.profitFactor >= 1.5 ? "tj-green" : "tj-red"}>{thisYearStats.profitFactor >= 1.5 ? "healthy" : "needs work"}</span></div><div className="tj-reference-kpi-value">{thisYearStats.profitFactor.toFixed(2)}</div><div className="tj-kpi-line"><i style={{width: `${clamp(norm(thisYearStats.profitFactor, 5), 0, 100)}%`}}/></div><div className="tj-stat-sub">Risk-adjusted payoff quality.</div><small>Recovery {thisYearStats.recovery.toFixed(0)}% <em>Core Score {thisYearStats.thunderScore}</em></small></Card>
       <Card className="tj-reference-kpi tj-kpi-days"><div className="tj-kpi-top"><div className="tj-stat-label">DAY WIN %</div></div><div className={`tj-reference-kpi-value ${wrColorClass(thisYearStats.dayWinRate)}`}>{thisYearStats.dayWinRate.toFixed(2)}%</div><div className="tj-day-bar-strip">{dayWinBars.length ? dayWinBars.map((day) => <i key={day.date} className={day.cls === "win" ? "tj-day-bar-win" : day.cls === "loss" ? "tj-day-bar-loss" : "tj-day-bar-be"}/>) : <span>No completed days</span>}</div><div className="tj-stat-sub">{monthStats.dayClasses.length} trading day{monthStats.dayClasses.length === 1 ? "" : "s"} this month</div></Card>
-      <Card className="tj-reference-kpi tj-kpi-winrate"><div className="tj-kpi-top"><div className="tj-stat-label">WIN RATE %</div><span>{thisYearStats.total} total</span></div><div className={`tj-reference-kpi-value ${wrColorClass(thisYearStats.winRate)}`}>{thisYearStats.winRate.toFixed(2)}%</div><div className="tj-kpi-split"><i style={{width: `${thisYearStats.winRate}%`}}/><b style={{width: `${100 - thisYearStats.winRate}%`}}/></div><div className="tj-stat-sub"><strong className="tj-green">{thisYearStats.wins} wins</strong><strong className="tj-red">{thisYearStats.losses} losses</strong></div><ChallengeDashboardProgress account={account} challenge={challenge}/></Card>
+      <Card className="tj-reference-kpi tj-kpi-winrate"><div className="tj-kpi-top"><div className="tj-stat-label">WIN RATE %</div><span>{thisYearStats.total} total</span></div><div className={`tj-reference-kpi-value ${wrColorClass(thisYearStats.winRate)}`}>{thisYearStats.winRate.toFixed(2)}%</div><div className="tj-kpi-split"><i style={{width: `${thisYearStats.winRate}%`}}/><b style={{width: `${100 - thisYearStats.winRate}%`}}/></div><div className="tj-stat-sub"><strong className="tj-green">{thisYearStats.wins} wins</strong><strong className="tj-red">{thisYearStats.losses} losses</strong></div></Card>
       <Card className="tj-reference-kpi tj-kpi-payoff"><div className="tj-kpi-top"><div className="tj-stat-label">AVG WIN/LOSS TRADE</div><span>{thisYearStats.avgWinLoss >= 1.5 ? "strong" : "building"}</span></div><div className="tj-reference-kpi-value">{thisYearStats.avgLoss ? thisYearStats.avgWinLoss.toFixed(2) : "—"}</div><div className="tj-kpi-split"><i style={{width: `${payoffSegment}%`}}/><b style={{width: `${100 - payoffSegment}%`}}/></div><div className="tj-stat-sub">Winner vs loser edge.</div><small>Best run {thisYearStats.bestWinStreak}W <em>Max loss run {thisYearStats.bestLossStreak}L</em></small></Card>
+      <Card className={`tj-reference-kpi tj-kpi-challenge ${challengeComplete ? "tj-kpi-challenge-complete" : ""}`}><div className="tj-kpi-top"><div className="tj-stat-label">LEVELS PASSED</div><span className={challengeComplete ? "tj-green" : ""}>{challengeComplete ? "🎉 PASSED 🎉" : challengeEnabled ? challenge?.loading ? "loading" : "active" : "off"}</span></div><div className={`tj-reference-kpi-value ${challengeComplete ? "tj-green" : ""}`}>{challengeEnabled ? `${passedChallengeLevels} / 30` : "—"}</div><div className="tj-kpi-line"><i style={{width: `${challengeEnabled ? passedChallengeLevels / 30 * 100 : 0}%`}}/></div><div className="tj-stat-sub">{challengeComplete ? "🎉 Challenge passed! 🎉" : challengeEnabled ? nextChallengeRisk != null ? `Next risk ${fmtMoney(nextChallengeRisk)}` : "Challenge progress is loading." : "Challenge not active yet."}</div><small>{challengeComplete ? "All 30 levels complete" : challengeEnabled ? `Level ${activeChallengeLevel} is next` : "Enable it in Account settings"}</small></Card>
     </div>
 
     <div className="tj-reference-hero-grid">
@@ -2330,7 +2335,11 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
   });
   filtered = [...filtered].sort((a, b) => {
     let cmp = 0;
-    if (sortKey === "date") cmp = a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+    if (sortKey === "date") {
+      const left = `${a.date || ""} ${a.time || ""}`;
+      const right = `${b.date || ""} ${b.time || ""}`;
+      cmp = left < right ? -1 : left > right ? 1 : 0;
+    }
     else if (sortKey === "pnl") cmp = a.pnl - b.pnl;
     else if (sortKey === "asset") cmp = a.asset.localeCompare(b.asset);
     return sortDir === "asc" ? cmp : -cmp;
@@ -2342,6 +2351,21 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
   useEffect(() => { setListPage(1); }, [search, assetFilter, sessionFilter, resultFilter, monthFilters, sortKey, sortDir]);
 
   const stats = computeStats(account.trades, cap);
+  const accountBalance = financeTotals(account).tradingBalance;
+  const balanceCurve = useMemo(() => {
+    let runningBalance = Number(account.balance) || 0;
+    const events = [
+      ...account.trades.map((trade) => ({ date: trade.date, time: trade.time || "", kind: "trade", value: Number(trade.pnl) || 0 })),
+      ...(account.financeMovements || []).map((movement) => ({ date: movement.date, time: movement.createdAt || "", kind: "cash", value: financeTradingImpact(movement) })),
+    ].sort((left, right) => `${left.date || ""} ${left.time}`.localeCompare(`${right.date || ""} ${right.time}`));
+
+    const points = [{ balance: runningBalance }];
+    events.forEach((event) => {
+      runningBalance += event.value;
+      points.push({ balance: +runningBalance.toFixed(2) });
+    });
+    return points;
+  }, [account.balance, account.trades, account.financeMovements]);
   const netReturn = account.balance ? (stats.netPnl / account.balance) * 100 : 0;
   const totalCosts = stats.totalCommission + stats.totalSwap;
   const averageTrade = filtered.length ? filtered.reduce((sum, trade) => sum + (Number(trade.pnl) || 0), 0) / filtered.length : 0;
@@ -2370,7 +2394,7 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
   return (
     <>
       <div className="tj-tradelog-reference-summary">
-        <div><span>Showing</span><strong>{filtered.length} trades</strong><small>{assetFilter === "All" ? "All instruments" : assetFilter} · {sessionFilter === "All" ? "All sessions" : sessionFilter} · {resultFilter === "All" ? "All results" : resultFilter}</small></div>
+        <div className="tj-tradelog-balance-summary"><span>Account Balance</span><strong>{fmtMoney(accountBalance).replace(/^\+/, "")}</strong><div className="tj-tradelog-balance-curve" aria-label="Account balance curve"><ResponsiveContainer width="100%" height="100%"><AreaChart data={balanceCurve}><Area type="monotone" dataKey="balance" stroke={UI_COLORS.primary} fill="none" strokeWidth={2} dot={false} isAnimationActive={false}/></AreaChart></ResponsiveContainer></div><small>Current trading balance</small></div>
         <div><span>Net Return</span><strong className={netReturn >= 0 ? "tj-green" : "tj-red"}>{netReturn >= 0 ? "+" : ""}{netReturn.toFixed(2)}%</strong><small>{fmtMoney(stats.netPnl)}</small></div>
         <div><span>Average Trade</span><strong className={averageTrade >= 0 ? "tj-green" : "tj-red"}>{fmtMoney(averageTrade)}</strong><small>Expected result per trade</small></div>
         <div><span>Costs</span><strong className={totalCosts > 0 ? "tj-red" : "tj-muted-txt"}>{account.balance ? `-${((totalCosts / account.balance) * 100).toFixed(2)}%` : "—"}</strong><small>{fmtMoney(-totalCosts)}</small></div>
@@ -2384,7 +2408,7 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
 
       <div className="tj-tradelog-compact-toolbar" ref={toolbarRef}>
         <div className="tj-markup-toolbar-actions"><button className={`tj-icon-btn tj-markup-toolbar-button ${filtersOpen ? "tj-icon-btn-active" : ""}`} title="Filter trade log" onClick={() => { setFiltersOpen((value) => !value); setSortOpen(false); }}><SlidersHorizontal size={16}/></button><button className={`tj-icon-btn tj-markup-toolbar-button ${sortOpen ? "tj-icon-btn-active" : ""}`} title="Sort trade log" onClick={() => { setSortOpen((value) => !value); setFiltersOpen(false); }}><ArrowDownUp size={16}/></button><button className="tj-icon-btn tj-markup-toolbar-button" title="Restore trade log board" aria-label="Restore trade log board" onClick={restoreTradeLogBoard}><RotateCcw size={15}/></button></div>
-        <div className="tj-markup-toolbar-status"><span>{filtered.length} shown</span><b>{showAll ? "All visible" : `Page ${activeTradePage} of ${tradePageCount}`}</b></div>
+        <div className="tj-markup-toolbar-status">{showAll ? <b>All visible</b> : <div className="tj-pagination-arrows tj-toolbar-pagination"><button type="button" className="tj-icon-btn" aria-label="Previous trade logs page" title="Previous page" disabled={activeTradePage === 1} onClick={() => setListPage(activeTradePage - 1)}><ChevronLeft size={16}/></button><b>{`Page ${activeTradePage} of ${tradePageCount}`}</b><button type="button" className="tj-icon-btn" aria-label="Next trade logs page" title="Next page" disabled={activeTradePage === tradePageCount} onClick={() => setListPage(activeTradePage + 1)}><ChevronRight size={16}/></button></div>}</div>
         {filtersOpen && <div className="tj-markup-filter-popover tj-tradelog-filter-popover">
           <div className="tj-markup-filter-head"><div><strong>Filter trades</strong><span>Focus the trade log on the exact instrument, session, or result you want to review.</span></div><button className="tj-icon-btn" title="Close filters" onClick={() => setFiltersOpen(false)}><X size={14}/></button></div>
           <div className="tj-markup-filter-grid tj-tradelog-filter-grid">
@@ -2404,7 +2428,8 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
         <div className="tj-tradelog-card-grid">
           {visibleTrades.map((rawTrade) => {
             const t = { ...rawTrade, rr: tradeRiskReward(rawTrade) };
-            const cls = classify(t.pnl, cap);
+            const isRunning = isRunningTrade(t);
+            const cls = isRunning ? "running" : classify(t.pnl, cap);
             const isOpen = !!expanded[t.id], isClosing = !!closing[t.id], visible = isOpen || isClosing;
             const isReviewed = reviewedTradeIds.has(t.id);
             const linkedMarkupRecord = markups.find((markup) => markup.id === t.premarketMarkupId);
@@ -2417,23 +2442,23 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
             const linkedMarkupScreenshots = linkedMarkup ? Object.entries(linkedMarkup.screenshots || {}).filter(([, images]) => Array.isArray(images)).flatMap(([slot, images]) => images.map((screenshot, index) => ({ source: screenshotSource(screenshot), key: `${slot}-${index}` }))) : [];
             const linkDraft = linkDrafts[t.id] ?? t.premarketMarkupId ?? "";
             return (
-              <div key={t.id} ref={visible ? expandedTradeRef : null} className="tj-tradelog-card-shell"><Card className={`tj-tlog-card tj-reference-tradelog-row tj-tlog-${cls} ${visible ? "tj-reference-tradelog-expanded" : ""}`}>
+              <div key={t.id} ref={visible ? expandedTradeRef : null} className={`tj-tradelog-card-shell ${visible ? "tj-tradelog-card-shell-expanded" : ""}`}><Card className={`tj-tlog-card tj-reference-tradelog-row tj-tlog-${cls} ${visible ? "tj-reference-tradelog-expanded" : ""}`}>
                 <div className="tj-tlog-row" onClick={() => toggleTrade(t.id)}>
-                  {isOpen ? <div className="tj-reference-trade-left"><div className="tj-tlog-main"><div className="tj-tlog-asset">{t.asset || "No instrument"}</div></div><span className={`tj-dirpill-sm tj-reference-trade-direction ${t.direction === "BUY" ? "tj-green" : "tj-red"}`}>{t.direction}</span><div className="tj-reference-trade-meta"><span>Opened: {cTraderOpeningIsUnknown(t) ? "Not included in cTrader report" : `${formatDate(t.date)} · ${formatTime(t.time)}`}</span><span>Closed: {t.closeDate ? `${formatDate(t.closeDate)} · ${t.closeTime ? formatTime(t.closeTime) : "Time not logged"}` : "Not logged"}</span></div><span className="tj-reference-trade-session">{t.entrySession || t.session || "No session"}</span></div> : <div className="tj-reference-trade-left tj-trade-card-identity"><small className="tj-trade-card-date">{cTraderOpeningIsUnknown(t) ? "Opening time not included" : `${formatDate(t.date)} · ${formatTime(t.time)}`}</small><strong className="tj-trade-card-instrument">{t.asset || "No instrument"}</strong><div className="tj-trade-card-status"><span className={t.direction === "BUY" ? "tj-green" : "tj-red"}>{t.direction}</span><span>{t.entrySession || t.session || "No session"}</span></div><div className="tj-trade-card-metrics"><div><span>SESSION</span><strong>{t.entrySession || t.session || "—"}</strong></div><div><span>RR</span><strong>{t.rr ? `${t.rr.toFixed(2)}R` : "—"}</strong></div><div><span>CONFLUENCE</span><strong>{confluenceCount}</strong></div></div><p>{t.context || "No trade note added."}</p></div>}
+                  {isOpen ? <div className="tj-reference-trade-left"><div className="tj-tlog-main"><div className="tj-tlog-asset">{t.asset || "No instrument"}</div></div><span className={`tj-dirpill-sm tj-reference-trade-direction ${t.direction === "BUY" ? "tj-green" : "tj-red"}`}>{t.direction}</span><div className="tj-reference-trade-meta"><span>Opened: {cTraderOpeningIsUnknown(t) ? "Not included in cTrader report" : `${formatDate(t.date)} · ${formatTime(t.time)}`}</span><span>Closed: {t.closeDate ? `${formatDate(t.closeDate)} · ${t.closeTime ? formatTime(t.closeTime) : "Time not logged"}` : "Not logged"}</span></div><span className="tj-reference-trade-session">{t.entrySession || t.session || "No session"}</span></div> : <div className="tj-reference-trade-left tj-trade-card-identity"><small className="tj-trade-card-date">{cTraderOpeningIsUnknown(t) ? "Opening time not included" : `${formatDate(t.date)} · ${formatTime(t.time)}`}</small><strong className="tj-trade-card-instrument">{t.asset || "No instrument"}</strong><div className="tj-trade-card-status"><span className={t.direction === "BUY" ? "tj-green" : "tj-red"}>{t.direction}</span><span>{t.entrySession || t.session || "No session"}</span></div><div className="tj-trade-card-metrics"><div><span>SESSION</span><strong>{t.entrySession || t.session || "—"}</strong></div><div><span>RR</span><strong>{t.rr ? `${t.rr.toFixed(2)}R` : "—"}</strong></div><div><span>CONFLUENCE</span><strong>{confluenceCount}</strong></div></div><p>{tradeNote(t) || "No trade note added."}</p></div>}
                   <div className="tj-reference-trade-right" onClick={(e) => e.stopPropagation()}>
-                    <span className={`tj-review-status ${isReviewed ? "tj-review-reviewed" : "tj-review-pending"}`} title={isReviewed ? "This trade has a linked review" : "No trade review has been added yet"}>{isReviewed ? <><CheckCircle2 size={12} /> Reviewed</> : "Review Pending"}</span>
+                    <span className={`tj-review-status ${isRunning ? "tj-review-pending" : (isReviewed ? "tj-review-reviewed" : "tj-review-pending")}`} title={isRunning ? "This trade is still open and cannot be reviewed yet" : (isReviewed ? "This trade has a linked review" : "No trade review has been added yet")}>{isRunning ? "Open" : (isReviewed ? <><CheckCircle2 size={12} /> Reviewed</> : "Review Pending")}</span>
                     <div className="tj-tlog-pnl-block">
-                      <div className={cls === "be" ? "tj-blue tj-tlog-pnl" : (t.pnl >= 0 ? "tj-green tj-tlog-pnl" : "tj-red tj-tlog-pnl")}>{cls === "be" ? "B/E" : fmtMoney(t.pnl)}</div>
-                      <div className="tj-reference-trade-return">{tradeReturn >= 0 ? "+" : ""}{tradeReturn.toFixed(2)}%{isOpen && t.rr ? ` · ${t.rr.toFixed(2)}R` : ""}</div>
+                      <div className={isRunning ? "tj-amber tj-tlog-pnl" : (cls === "be" ? "tj-blue tj-tlog-pnl" : (t.pnl >= 0 ? "tj-green tj-tlog-pnl" : "tj-red tj-tlog-pnl"))}>{isRunning ? "Running" : (cls === "be" ? "B/E" : fmtMoney(t.pnl))}</div>
+                      <div className="tj-reference-trade-return">{isRunning ? "Open trade" : `${tradeReturn >= 0 ? "+" : ""}${tradeReturn.toFixed(2)}%${isOpen && t.rr ? ` · ${t.rr.toFixed(2)}R` : ""}`}</div>
                     </div>
                     {isOpen && <><button className="tj-markup-round-button" disabled={locked} title={locked ? "Trade changes are locked by the account loss limit" : "Edit trade"} onClick={() => onEdit(t)}><Pencil size={15}/></button><ConfirmDeleteButton className="tj-markup-round-button tj-markup-delete-button" disabled={locked} title="Delete trade" onClick={() => onDelete(t.id)}><Trash2 size={14}/></ConfirmDeleteButton></>}<button className="tj-markup-round-button" title={isOpen ? "Collapse trade" : "Expand trade"} onClick={() => toggleTrade(t.id)}>{isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</button>
                   </div>
                 </div>
                 <div className={`tj-reference-trade-detail ${visible ? "tj-reference-trade-detail-open" : ""} ${isClosing ? "tj-reference-detail-closing" : ""}`} aria-hidden={!visible}>
-                  <div className="tj-tlog-expand tj-reference-trade-expand tj-reference-trade-detail-inner">
-                    <div className="tj-reference-trade-detail-summary"><div><span>NET RETURN</span><strong className={t.pnl >= 0 ? "tj-green" : "tj-red"}>{tradeReturn >= 0 ? "+" : ""}{tradeReturn.toFixed(2)}% · {fmtMoney(t.pnl)}</strong></div><div><span>GROSS RETURN</span><strong>{account.balance ? `${grossTradeReturn >= 0 ? "+" : ""}${grossTradeReturn.toFixed(2)}%` : "—"} · {fmtMoney(Number(t.grossPnl ?? t.pnl))}</strong></div><div><span>COSTS</span><strong className="tj-red">{fmtMoney(-((Number(t.commission) || 0) + (Number(t.swap) || 0)))}</strong></div><div><span>R:R</span><strong>{t.rr ? `${t.rr.toFixed(2)}R` : "—"}</strong></div><div><span>RULES CHECKED</span><strong>{t.ruleEvaluations?.filter((entry) => entry.checked).length || 0}/{t.ruleEvaluations?.length || 0}</strong></div></div>
+                    <div className="tj-tlog-expand tj-reference-trade-expand tj-reference-trade-detail-inner">
+                    <div className="tj-reference-trade-detail-summary"><div><span>NET RETURN</span><strong className={isRunning ? "tj-amber" : (t.pnl >= 0 ? "tj-green" : "tj-red")}>{isRunning ? "Running · P&L pending" : `${tradeReturn >= 0 ? "+" : ""}${tradeReturn.toFixed(2)}% · ${fmtMoney(t.pnl)}`}</strong></div><div><span>GROSS RETURN</span><strong>{isRunning ? "P&L pending" : `${account.balance ? `${grossTradeReturn >= 0 ? "+" : ""}${grossTradeReturn.toFixed(2)}%` : "—"} · ${fmtMoney(Number(t.grossPnl ?? t.pnl))}`}</strong></div><div><span>COSTS</span><strong className="tj-red">{isRunning ? "Pending" : fmtMoney(-((Number(t.commission) || 0) + (Number(t.swap) || 0)))}</strong></div><div><span>R:R</span><strong>{isRunning ? "—" : (t.rr ? `${t.rr.toFixed(2)}R` : "—")}</strong></div><div><span>RULES CHECKED</span><strong>{t.ruleEvaluations?.filter((entry) => entry.checked).length || 0}/{t.ruleEvaluations?.length || 0}</strong></div></div>
                     <div className="tj-reference-trade-main-grid">
-                      <section className="tj-reference-trade-brief"><div className="tj-reference-trade-section-head"><span>Trade Brief</span><div><em className={t.direction === "BUY" ? "tj-green" : "tj-red"}>{t.direction}</em><em>{t.entrySession || t.session || "—"}</em>{(t.entryType || t.confluenceSession) && <em>{t.entryType || t.confluenceSession}</em>}<em className={tradeReturn >= 0 ? "tj-green" : "tj-red"}>{tradeReturn >= 0 ? "+" : ""}{tradeReturn.toFixed(2)}%</em></div></div><div className="tj-reference-trade-brief-rows"><div><span>RESULT</span><strong>{cls === "win" ? "Win" : cls === "loss" ? "Loss" : "B/E"} · {fmtMoney(t.pnl)} · {t.rr ? `${t.rr.toFixed(2)}R` : "—"}</strong></div><div><span>ENTRY MODEL</span><strong>{t.entryType || t.confluenceSession || "—"}</strong></div><div><span>ENTRY PRICE</span><strong>{t.entryPrice === "" || t.entryPrice == null ? "—" : Number(t.entryPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</strong></div><div><span>EXIT PRICE</span><strong>{t.exitPrice === "" || t.exitPrice == null ? "—" : Number(t.exitPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</strong></div><div><span>MOOD SHIFT</span><strong>{t.moodBefore || "—"} → {t.moodAfter || "—"}</strong></div><div><span>RATING</span><strong><RatingDisplay value={t.rating} noRules={!t.ruleEvaluations?.length&&!t.rating}/></strong></div></div><div className="tj-reference-trade-note">{t.context || "No trade note added."}</div></section>
+                      <section className="tj-reference-trade-brief"><div className="tj-reference-trade-section-head"><span>Trade Brief</span><div><em className={t.direction === "BUY" ? "tj-green" : "tj-red"}>{t.direction}</em><em>{t.entrySession || t.session || "—"}</em>{(t.entryType || t.confluenceSession) && <em>{t.entryType || t.confluenceSession}</em>}<em className={isRunning ? "tj-amber" : (tradeReturn >= 0 ? "tj-green" : "tj-red")}>{isRunning ? "Open trade" : `${tradeReturn >= 0 ? "+" : ""}${tradeReturn.toFixed(2)}%`}</em></div></div><div className="tj-reference-trade-brief-rows"><div><span>RESULT</span><strong>{isRunning ? "Running · P&L pending" : `${cls === "win" ? "Win" : cls === "loss" ? "Loss" : "B/E"} · ${fmtMoney(t.pnl)} · ${t.rr ? `${t.rr.toFixed(2)}R` : "—"}`}</strong></div><div><span>ENTRY MODEL</span><strong>{t.entryType || t.confluenceSession || "—"}</strong></div><div><span>ENTRY PRICE</span><strong>{t.entryPrice === "" || t.entryPrice == null ? "—" : Number(t.entryPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</strong></div><div><span>EXIT PRICE</span><strong>{t.exitPrice === "" || t.exitPrice == null ? "—" : Number(t.exitPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</strong></div><div><span>MOOD SHIFT</span><strong>{t.moodBefore || "—"} → {t.moodAfter || "—"}</strong></div><div><span>RATING</span><strong><RatingDisplay value={t.rating} noRules={!t.ruleEvaluations?.length&&!t.rating}/></strong></div></div><div className="tj-reference-trade-note">{tradeNote(t) || "No trade note added."}</div></section>
                       <section className="tj-reference-trade-markup"><div className="tj-reference-trade-section-head"><span>Linked Markup</span><small>{linkedMarkup ? "Executed" : "Not linked"}</small></div><strong className="tj-reference-linked-title">{linkedMarkup ? `${linkedMarkup.date} · ${linkedMarkup.instrument || "Untitled markup"}` : "No linked markup"}</strong><div className="tj-reference-linked-meta">{linkedMarkup ? `${linkedMarkup.market || "No session"} · ${linkedMarkup.bias || "No bias"} · Executed` : "Choose one of your three most recent markups."}</div><div className="tj-reference-link-controls"><select className="tj-input" value={linkDraft} onChange={(event) => setLinkDrafts((current) => ({ ...current, [t.id]: event.target.value }))}><option value="">No linked markup</option>{recentMarkups.map((markup) => <option key={markup.id} value={markup.id}>{markup.date} · {markup.instrument || "Untitled"} · {markup.bias || "No bias"}</option>)}</select><button className="tj-btn-outline tj-btn-small" disabled={String(linkDraft || "") === String(t.premarketMarkupId || "")} onClick={() => onLinkMarkup(t, linkDraft || null)}>Save Link</button></div><div className="tj-reference-markup-shots-head"><span>MARKUP SCREENSHOTS</span><small>{linkedMarkupScreenshots.length} shot{linkedMarkupScreenshots.length === 1 ? "" : "s"}</small></div>{linkedMarkupScreenshots.length ? <div className="tj-reference-markup-shots">{linkedMarkupScreenshots.slice(0, 3).map((image) => <ImagePreview key={image.key} src={image.source} alt="Linked markup screenshot" selected={selectedImage === image.source} onSelect={setSelectedImage}/>)}</div> : <div className="tj-reference-trade-empty">No markup screenshots.</div>}</section>
                     </div>
                     <section className="tj-reference-journal-detail"><div className="tj-reference-trade-section-head"><span>Journal Detail</span><small>{confluenceCount} confluence{confluenceCount === 1 ? "" : "s"}</small></div><div className="tj-reference-journal-grid"><div><div className="tj-mlabel">CONFLUENCES</div><div className="tj-tlog-types">{confluenceCount ? (t.confluence || t.types || []).map((item) => <span key={item} className="tj-tag tj-tag-purple tj-tag-active tj-tag-xs">{item}</span>) : <span className="tj-muted-txt">No confluences logged.</span>}</div></div><div><div className="tj-mlabel">MISTAKES</div><div className="tj-tlog-mistakes">{t.mistakes?.length ? t.mistakes.map((m) => <span key={m} className="tj-tag tj-tag-red tj-tag-active tj-tag-xs">{m}</span>) : <span className="tj-muted-txt">No mistakes logged.</span>}</div></div></div>{screenshotCount > 0 && <div className="tj-reference-trade-screens"><div className="tj-mlabel">SCREENSHOTS</div><div className="tj-tlog-shots">{tradeScreenshots.map(({ screenshot, label, key }) => <div key={key} className="tj-trade-shot-slot"><ImagePreview src={screenshotSource(screenshot)} alt={label} selected={selectedImage === screenshotSource(screenshot)} onSelect={setSelectedImage}/><small>{label}</small></div>)}</div></div>}</section>
@@ -2444,7 +2469,7 @@ function TradeLogPage({ account, reviews = [], markups = [], onEdit, onDelete, o
           })}
         </div>
       )}
-      <ListPagination total={filtered.length} page={activeTradePage} showAll={showAll} onPageChange={setListPage} onShowAll={(next) => { setShowAll(next); if (!next) setListPage(1); }} label="trade logs"/>
+      <ListPagination total={filtered.length} page={activeTradePage} showAll={showAll} onPageChange={setListPage} onShowAll={(next) => { setShowAll(next); if (!next) setListPage(1); }} label="trade logs" hideArrows/>
       <button className="tj-fab" disabled={locked} title={locked ? "Trade entry is paused by the account loss limit" : "New trade"} onClick={onNewTrade}><Plus size={16} /> {locked ? "Trade Locked" : "New Trade"}</button>
     </>
   );
@@ -2533,7 +2558,7 @@ function ExecutionRhythmView({ account, trades, cap, stats }) {
     const date = new Date(`${trade.date}T00:00:00`);
     const monday = new Date(date); monday.setDate(date.getDate() - ((date.getDay() + 6) % 7));
     const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
-    const key = monday.toISOString().slice(0, 10);
+    const key = localDateKey(monday);
     if (!map[key]) map[key] = { key, start: monday, end: sunday, pnl: 0, count: 0, wins: 0 };
     map[key].pnl += trade.pnl; map[key].count += 1;
     if (classify(trade.pnl, cap) === "win") map[key].wins += 1;
@@ -2743,7 +2768,7 @@ function FinanceReminderModal({ account, savingsPlans, onClose, onOpenFinance })
 }
 
 function AnalyticsPage({ account }) {
-  const allTrades = account.trades;
+  const allTrades = closedTrades(account.trades);
   const analyticsYear = allTrades.length
     ? Math.max(...allTrades.map((trade) => Number(trade.date?.slice(0, 4)) || new Date().getFullYear()))
     : new Date().getFullYear();
@@ -3268,8 +3293,8 @@ function CalendarPage({ account, monthCursor, setMonthCursor, onDayClick }) {
         <aside className="tj-calendar-insights" aria-label="Calendar performance insights">
           <div className="tj-calendar-insights-head"><div><strong>Performance insights</strong></div><nav aria-label="Performance period"><button type="button" className={insightView === "daily" ? "tj-calendar-insight-active" : ""} onClick={() => setInsightView("daily")}>Daily</button><button type="button" className={insightView === "weekly" ? "tj-calendar-insight-active" : ""} onClick={() => setInsightView("weekly")}>Weekly</button><button type="button" className={insightView === "monthly" ? "tj-calendar-insight-active" : ""} onClick={() => setInsightView("monthly")}>Monthly</button></nav></div>
           <section className="tj-calendar-insight-section tj-view-transition" key={insightView}>
-            {insightView === "monthly" && <PerformanceTable title="Monthly Performance" unitLabel="month" rows={computeMonthlyPerformance(account.trades, account.breakevenCap, account.balance)} />}
-            {insightView === "weekly" && <PerformanceTable title="Weekly Performance" unitLabel="week" rows={computeWeeklyPerformanceAll(account.trades, account.breakevenCap, account.balance)} />}
+            {insightView === "monthly" && <PerformanceTable title="Monthly Performance" unitLabel="month" rows={computeMonthlyPerformance(closedTrades(account.trades), account.breakevenCap, account.balance)} />}
+            {insightView === "weekly" && <PerformanceTable title="Weekly Performance" unitLabel="week" rows={computeWeeklyPerformanceAll(closedTrades(account.trades), account.breakevenCap, account.balance)} />}
             {insightView === "daily" && <DailyPerformanceView trades={account.trades} cap={account.breakevenCap} />}
           </section>
         </aside>
@@ -3282,7 +3307,7 @@ function CalendarPage({ account, monthCursor, setMonthCursor, onDayClick }) {
 /* =============================== PSYCHOLOGY ============================= */
 
 function PsychologyPage({ account }) {
-  const trades = account.trades || [];
+  const trades = closedTrades(account.trades);
   const cap = account.breakevenCap;
   const moodMap = {};
   trades.forEach((t) => {
@@ -3390,7 +3415,7 @@ function JournalPerformanceBriefing({ account, trades, stats, bestTag, bestSessi
 }
 
 function InsightsPage({ account, challenge }) {
-  const trades = account.trades || [];
+  const trades = closedTrades(account.trades);
   const cap = account.breakevenCap;
   const stats = computeStats(trades, cap);
   const tagMap = {};
@@ -3822,7 +3847,7 @@ function TradingJournalApp({ user, onLogout }) {
   const personalProfileImage = profileDetails.avatarUrl;
   const personalInitials = displayName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "T";
   const [profileTheme, setProfileTheme, profileThemePreference] = useSiteTheme(user.user_metadata?.theme_preference || user.user_metadata?.theme);
-  const [profileAccent, setProfileAccent] = useProfileAccent(user.user_metadata?.accent_color || "mint", profileTheme);
+  const [profileAccent, setProfileAccent] = useProfileAccent(user.user_metadata?.accent_color || "default", profileTheme);
   const [accounts, setAccounts] = useState(null);
   const sessionRepairQueue = useRef(new Set());
   const [activeId, setActiveId] = useState(() => readActiveAccount(user.id));
@@ -3895,6 +3920,29 @@ function TradingJournalApp({ user, onLogout }) {
   const [syncing, setSyncing] = useState(false);
   const [journalClock, setJournalClock] = useState(() => Date.now());
   const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === "undefined" ? true : window.innerWidth > 900));
+  const [scrollHeaderHidden, setScrollHeaderHidden] = useState(false);
+  const [scrollHeaderReturning, setScrollHeaderReturning] = useState(false);
+  useEffect(() => {
+    if (!modal || !sidebarOpen) return undefined;
+
+    const frame = window.requestAnimationFrame(() => {
+      const sidebar = document.querySelector(".tj-sidebar.tj-sidebar-shown");
+      const popup = document.querySelector(".tj-modal-overlay:not(.tj-modal-closing) .tj-modal");
+      if (!sidebar || !popup) return;
+
+      const sidebarBounds = sidebar.getBoundingClientRect();
+      const popupBounds = popup.getBoundingClientRect();
+      const overlapsPopup = sidebarBounds.right > popupBounds.left
+        && sidebarBounds.left < popupBounds.right
+        && sidebarBounds.bottom > popupBounds.top
+        && sidebarBounds.top < popupBounds.bottom;
+
+      if (overlapsPopup) setSidebarOpen(false);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [modal, sidebarOpen]);
+  const contentScrollRef = useRef(null);
   const [toast, setToast] = useState(null); // { type: 'error'|'info', text }
   const [migration, setMigration] = useState({ checked: false, pending: null, busy: false });
 
@@ -3913,6 +3961,35 @@ function TradingJournalApp({ user, onLogout }) {
     window.addEventListener("focus", updateClock);
     return () => { window.clearInterval(timer); window.removeEventListener("focus", updateClock); };
   }, []);
+
+  useEffect(() => {
+    setScrollHeaderHidden(false);
+    setScrollHeaderReturning(false);
+  }, [page, activeId]);
+
+  const handleContentScroll = useCallback((event) => {
+    const scrollport = event.currentTarget;
+    const quoteDivider = scrollport.querySelector(".tj-dashboard-welcome");
+    const header = scrollport.querySelector(".tj-topbar");
+    if (!quoteDivider || !header) return;
+
+    // Calculate the scroll point where the quote section's bottom border meets
+    // the header's lower edge. This stays stable even while the header itself
+    // is translated out of view.
+    const scrollportTop = scrollport.getBoundingClientRect().top;
+    const dividerAtCurrentScroll = quoteDivider.getBoundingClientRect().bottom;
+    const threshold = scrollport.scrollTop + dividerAtCurrentScroll - scrollportTop - header.offsetHeight;
+    const pastDivider = scrollport.scrollTop >= threshold - 1;
+
+    if (pastDivider && !scrollHeaderHidden) {
+      setScrollHeaderHidden(true);
+      setScrollHeaderReturning(false);
+      if (sidebarOpen) setSidebarOpen(false);
+    } else if (!pastDivider && scrollHeaderHidden) {
+      setScrollHeaderHidden(false);
+      setScrollHeaderReturning(true);
+    }
+  }, [scrollHeaderHidden, sidebarOpen]);
 
   const applyJournalData = useCallback((data) => {
     setAccounts(data.accounts);
@@ -4195,7 +4272,8 @@ function TradingJournalApp({ user, onLogout }) {
   useEffect(() => { if (page === 'challenge' && !isChallengeEnabled(account)) setPage('dashboard'); }, [page, account]);
   useEffect(() => { if (page === 'finance' && !account?.finance?.enabled) setPage('dashboard'); }, [page, account]);
   const stats = useMemo(() => (account ? computeStats(account.trades, account.breakevenCap) : null), [account]);
-  const challenge = useChallenge(account, user.id);
+  const challengeAccount = useMemo(() => account ? { ...account, trades: closedTrades(account.trades) } : account, [account]);
+  const challenge = useChallenge(challengeAccount, user.id);
   const guardrails = useMemo(() => (account ? accountGuardrails(account, account.trades) : null), [account]);
   useEffect(() => {
     if (!account?.finance?.enabled) { setFinanceReminder([]); return; }
@@ -4643,14 +4721,14 @@ function TradingJournalApp({ user, onLogout }) {
       </div>
       {sidebarOpen && <div className="tj-backdrop" onClick={() => setSidebarOpen(false)} />}
       <div className="tj-main">
-        <div className="tj-topbar">
-          <div className="tj-topbar-left">
-            <button className="tj-icon-btn tj-sidebar-toggle" title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"} aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"} aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((v) => !v)}>{sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button>
-            <div className="tj-page-heading"><div className="tj-page-title">{NAV.find((n) => n.id === page)?.label || "Settings"}</div></div>
+        <div className="tj-content" ref={contentScrollRef} onScroll={handleContentScroll}>
+          <div className={`tj-topbar ${scrollHeaderHidden ? "tj-topbar-scroll-hidden" : ""} ${scrollHeaderReturning ? "tj-topbar-scroll-returning" : ""}`}>
+            <div className="tj-topbar-left">
+              <button className="tj-icon-btn tj-sidebar-toggle" title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"} aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"} aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((v) => !v)}>{sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button>
+              <div className="tj-page-heading"><div className="tj-page-title">{NAV.find((n) => n.id === page)?.label || "Settings"}</div></div>
+            </div>
+            {page === "dashboard" ? <button className="tj-btn-primary" onClick={() => { setEditingMarkup(null); setModal("markup"); }}><Plus size={16} /> Start Day</button> : <button className={`tj-btn-primary ${guardrails.tradeEntryLocked ? "tj-btn-disabled" : ""}`} disabled={guardrails.tradeEntryLocked} title={guardrails.tradeEntryLocked ? "Trade entry is paused by your account loss cap" : "Log a new trade"} onClick={() => openNewTrade()}><Plus size={16} /> {guardrails.tradeEntryLocked ? "Trade Locked" : "Log Trade"}</button>}
           </div>
-          {page === "dashboard" ? <button className="tj-btn-primary" onClick={() => { setEditingMarkup(null); setModal("markup"); }}><Plus size={16} /> Start Day</button> : <button className={`tj-btn-primary ${guardrails.tradeEntryLocked ? "tj-btn-disabled" : ""}`} disabled={guardrails.tradeEntryLocked} title={guardrails.tradeEntryLocked ? "Trade entry is paused by your account loss cap" : "Log a new trade"} onClick={() => openNewTrade()}><Plus size={16} /> {guardrails.tradeEntryLocked ? "Trade Locked" : "Log Trade"}</button>}
-        </div>
-        <div className="tj-content">
           <div className="tj-content-inner">
           <div className="tj-page-transition" key={`${page}-${account.id}`}>
           {["dashboard", "tradelog", "markups", "reviews", "calendar"].includes(page) && <JournalSignalHeader page={page} trades={account.trades} markups={markups.filter(m=>m.accountId===account.id)} reviews={reviews.filter(r=>r.accountId===account.id)} guardrails={guardrails} monthCursor={monthCursor} loginQuote={loginQuote}/>}
@@ -6471,11 +6549,241 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
 .tj-tradelog-actions { position: fixed; right: 22px; bottom: 22px; z-index: 8; display: flex; align-items: center; gap: 8px; }.tj-tradelog-actions .tj-fab { position: static; }.tj-import-modal { width: min(620px, calc(100vw - 40px)); height: auto; max-height: calc(100dvh - 40px); border-radius: 14px; }.tj-import-account { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--tj-green) 36%, var(--tj-border)); border-radius: 10px; background: color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel)); color: var(--tj-green); }.tj-import-account > div { display: grid; gap: 2px; }.tj-import-account small { color: var(--tj-muted); font-size: .65rem; font-weight: 800; letter-spacing: .8px; }.tj-import-account strong { color: var(--tj-text); font-size: .875rem; }.tj-import-preview { display: grid; gap: 7px; max-height: 245px; overflow: auto; margin-top: 14px; padding: 12px; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-panel-alt); font-size: .8rem; }.tj-import-preview > div { display: flex; justify-content: space-between; gap: 12px; padding-top: 7px; border-top: 1px solid var(--tj-border); }.tj-import-preview span { overflow: hidden; color: var(--tj-muted); text-overflow: ellipsis; white-space: nowrap; }.tj-import-preview small { color: var(--tj-muted); }.tj-import-live { display: flex; align-items: center; gap: 9px; margin-top: 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--tj-green) 40%, var(--tj-border)); border-radius: 10px; background: color-mix(in srgb, var(--tj-green) 8%, var(--tj-panel)); }.tj-import-live > div { display: grid; gap: 2px; }.tj-import-live strong { font-size: .8125rem; }.tj-import-live span { color: var(--tj-muted); font-size: .75rem; }.tj-import-error { margin-top: 12px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--tj-red) 55%, var(--tj-border)); border-radius: 9px; color: var(--tj-red); background: color-mix(in srgb, var(--tj-red) 8%, var(--tj-panel)); font-size: .8rem; line-height: 1.4; }
 .tj-import-button { display: inline-flex; align-items: center; gap: 7px; margin-top: 9px; }.tj-import-progress { width: 30px; height: 30px; flex: 0 0 30px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--tj-green) 52%, var(--tj-border)); border-radius: 50%; background: radial-gradient(circle, var(--tj-panel) 57%, transparent 59%), conic-gradient(var(--tj-green) var(--progress), color-mix(in srgb, var(--tj-green) 17%, var(--tj-panel)) 0); color: var(--tj-text); font-size: .61rem; font-style: normal; font-weight: 900; font-variant-numeric: tabular-nums; line-height: 1; text-shadow: 0 1px 1px color-mix(in srgb, var(--tj-panel) 80%, transparent); }
 .tj-list-pagination { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 9px; padding-top: 4px; color: var(--tj-muted); font-size: .8125rem; }.tj-list-pagination > span, .tj-pagination-arrows > span { font-variant-numeric: tabular-nums; }.tj-pagination-arrows { display: inline-flex; align-items: center; gap: 7px; }.tj-pagination-arrows > span { min-width: 42px; text-align: center; }
+/* The workspace is intentionally frameless. Individual panels retain their own borders and rounding. */
+.tj-content { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+@media (max-width: 900px) { .tj-content { margin: 8px 0 0; } }
+/* Scroll-responsive header: it is sticky inside the scrollport, so journal
+   content can pass beneath its translucent returning state without reflow. */
+.tj-main { position: relative; }
+.tj-content { padding: 0; }
+.tj-content-inner { padding: 24px 32px 36px; }
+.tj-topbar { position: sticky; top: 10px; z-index: 18; will-change: transform, opacity, backdrop-filter; transition: transform .9s cubic-bezier(.22,1,.36,1), opacity .9s cubic-bezier(.22,1,.36,1), background-color .5s ease, backdrop-filter .5s ease; }
+.tj-topbar.tj-topbar-scroll-hidden { opacity: 0; pointer-events: none; transform: translate3d(0, calc(-100% - 18px), 0); }
+.tj-topbar.tj-topbar-scroll-returning { background: color-mix(in srgb, var(--tj-chrome) 58%, transparent); backdrop-filter: blur(5px) saturate(1.04); }
+/* Percentages are a single value, never separate lines. Reserve enough room
+   for the meter before allowing the neighbouring cash figure to truncate. */
+.tj-guardrail-card-main { grid-template-columns: minmax(0, 1fr) 112px; }
+.tj-guardrail-meter strong { white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The sidebar reduces the journal's usable width long before the browser hits
+   a viewport breakpoint. These dashboard grids therefore respond to the page
+   column itself, rather than compressing full desktop layouts into it. */
+.tj-content-inner { container-type: inline-size; }
+.tj-kpi-challenge { background: linear-gradient(145deg, color-mix(in srgb, var(--tj-purple) 8%, var(--tj-panel)), color-mix(in srgb, var(--tj-green) 5%, var(--tj-panel)) 82%); }
+.tj-kpi-challenge::after { background: color-mix(in srgb, var(--tj-purple) 10%, transparent); }
+.tj-kpi-challenge-complete { border-color: color-mix(in srgb, var(--tj-green) 48%, var(--tj-border)); background: linear-gradient(145deg, color-mix(in srgb, var(--tj-green) 15%, var(--tj-panel)), color-mix(in srgb, var(--tj-amber) 8%, var(--tj-panel)) 82%); }
+.tj-kpi-challenge-complete::after { background: color-mix(in srgb, var(--tj-amber) 16%, transparent); }
+.tj-kpi-line .tj-kpi-line-loss { background: var(--tj-red); }
+.tj-tradelog-balance-summary .tj-tradelog-balance-curve { height: 24px; min-width: 0; margin-top: 1px; }
+.tj-tradelog-balance-summary .tj-tradelog-balance-curve .recharts-surface { overflow: visible; }
+/* Bar labels and percentages are data tokens, not prose: reserve a whole
+   column for them so they never split into vertical fragments. */
+.tj-markup-coverage > div { grid-template-columns: 42px minmax(0, 1fr) 38px; }
+.tj-markup-coverage small, .tj-markup-coverage em,
+.tj-performance-bars > span, .tj-performance-bars > strong,
+.tj-rhythm-bars > div > span, .tj-rhythm-bars > div > b,
+.tj-confluence-bars > span, .tj-confluence-bars > b,
+.tj-execution-bars strong, .tj-execution-bars em, .tj-execution-bars span,
+.tj-risk-utilisation strong, .tj-risk-utilisation span,
+.tj-live-instrument-row > strong, .tj-live-instrument-row > span { white-space: nowrap; }
+.tj-performance-bars { grid-template-columns: 56px minmax(0, 1fr) minmax(38px, auto); }
+.tj-rhythm-bars > div { grid-template-columns: 50px minmax(0, 1fr) minmax(38px, auto); }
+.tj-confluence-bars { grid-template-columns: 56px minmax(0, 1fr) minmax(38px, auto); }
+.tj-execution-bars > div { grid-template-columns: 40px minmax(0, 1fr) minmax(64px, auto) 38px; }
+.tj-risk-utilisation > div, .tj-risk-audit-grid > section:first-child .tj-risk-utilisation > div { grid-template-columns: 80px minmax(0, 1fr) 38px; }
+.tj-live-instrument-row { grid-template-columns: minmax(62px, 78px) minmax(0, 1fr) 38px; }
+.tj-toolbar-pagination > b { min-width: 82px; text-align: center; white-space: nowrap; }
+/* Markups overview: compact operational summary with the detail aligned along
+   the lower edge of every card. */
+.tj-markup-overview-grid { gap: 1px; padding: 1px; overflow: hidden; border: 1px solid var(--tj-border); border-radius: 16px; background: var(--tj-border); }
+.tj-markup-overview-card { min-height: 128px; padding: 13px 14px; border: 0; border-radius: 0; box-shadow: none; background: var(--tj-panel); }
+.tj-markup-overview-card::before, .tj-markup-overview-card::after { display: none; }
+.tj-markup-overview-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.tj-markup-overview-top > span { overflow: hidden; color: var(--tj-muted); font-size: .68rem; font-weight: 750; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.tj-markup-overview-card > strong { margin-top: 2px; }
+.tj-markup-overview-card > small { margin-top: auto; }
+.tj-markup-overview-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: auto; }
+.tj-markup-overview-metrics > div { min-width: 0; display: grid; gap: 3px; }
+.tj-markup-overview-metrics small, .tj-markup-overview-bars small { color: var(--tj-muted); font-size: .62rem; font-weight: 800; letter-spacing: .65px; text-transform: uppercase; white-space: nowrap; }
+.tj-markup-overview-metrics b { overflow: hidden; font-size: 1rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.tj-markup-outcome-cards { gap: 7px; }
+.tj-markup-outcome-cards > div { padding: 6px 8px; border: 1px solid var(--tj-border); border-radius: 8px; background: var(--tj-panel-alt); }
+.tj-markup-outcome-cards b { justify-self: center; font-size: .875rem; }
+.tj-markup-outcome-cards small { justify-self: center; text-align: center; }
+.tj-markup-overview-bars { display: grid; gap: 6px; margin-top: auto; }
+.tj-markup-overview-bars > div { display: grid; grid-template-columns: 52px minmax(0, 1fr) 22px; align-items: center; gap: 7px; }
+.tj-markup-overview-bars i { display: block; height: 5px; overflow: hidden; border-radius: 99px; background: var(--tj-panel-alt); }
+.tj-markup-overview-bars i b { display: block; height: 100%; border-radius: inherit; background: var(--tj-green); }
+.tj-markup-overview-bars > div:nth-child(2) i b { background: var(--tj-muted); opacity: .6; }
+.tj-markup-overview-bars em { color: var(--tj-text); font-size: .72rem; font-style: normal; font-weight: 800; text-align: right; }
+.tj-markup-overview-card .tj-markup-coverage { margin-top: auto; }
+/* Six summary metrics belong to one desktop strip; narrower page columns
+   still use the responsive layouts below. */
+.tj-reference-kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@container (max-width: 1180px) {
+  .tj-guardrail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tj-reference-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container (max-width: 760px) { .tj-reference-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container (max-width: 440px) {
+  .tj-guardrail-grid, .tj-reference-kpis { grid-template-columns: minmax(0, 1fr); }
+}
+/* Trade Log and Markups need to respond to the journal column, not the whole
+   browser: a narrow desktop window can have the same usable width as a phone. */
+@container (max-width: 860px) {
+  .tj-tradelog-card-grid, .tj-markup-card-grid { grid-template-columns: 1fr; }
+  .tj-markup-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tj-reference-markup-row { align-items: flex-start; flex-direction: column; }
+  .tj-reference-markup-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
+  .tj-reference-markup-actions .tj-markup-pnl { margin-right: auto; text-align: left; }
+  .tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-reference-markup-row {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "identity" "actions";
+    min-height: auto;
+  }
+  .tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-reference-markup-actions {
+    display: flex;
+    width: 100%;
+    grid-template-columns: none;
+    grid-template-rows: none;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-markup-pnl {
+    grid-column: auto;
+    justify-self: auto;
+    margin-right: 0;
+    text-align: left;
+  }
+  .tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-reference-markup-row { position: relative; }
+  .tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-reference-markup-row { min-height: 188px; }
+  .tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-reference-markup-identity { padding-bottom: 34px; }
+  .tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-reference-markup-actions { display: block; width: auto; }
+  .tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-markup-pnl { position: absolute; right: auto; bottom: 0; left: 0; z-index: 1; display: grid; min-width: 0; margin: 0; text-align: left; }
+  .tj-markup-card-grid .tj-reference-markup-card:not(.tj-reference-markup-expanded) .tj-markup-round-button { position: absolute; right: 14px; bottom: 14px; }
+  .tj-markup-expanded-grid, .tj-markup-charts-head, .tj-markup-chart-columns,
+  .tj-reference-trade-main-grid, .tj-reference-journal-grid { grid-template-columns: 1fr; }
+  .tj-reference-trade-detail-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container (max-width: 620px) {
+  .tj-tradelog-reference-summary, .tj-reference-trade-detail-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tj-tradelog-reference-summary > div { padding: 10px; }
+  .tj-reference-tradelog-row .tj-tlog-row { align-items: stretch; flex-direction: column; padding: 11px; }
+  .tj-reference-trade-left { width: 100%; flex-wrap: wrap; }
+  .tj-reference-trade-left .tj-tlog-main { flex: 1 1 120px; min-width: 120px; }
+  .tj-reference-trade-meta { flex: 1 1 170px; min-width: 170px; }
+  .tj-reference-trade-right { width: 100%; }
+  .tj-reference-tradelog-row .tj-tlog-pnl-block { margin-right: auto; text-align: left; }
+  .tj-markup-filter-controls, .tj-tradelog-filter-controls { display: grid; grid-template-columns: 1fr 1fr; }
+  .tj-markup-filter-controls .tj-toolbar-search, .tj-tradelog-filter-controls .tj-toolbar-search { grid-column: 1 / -1; }
+}
+@container (max-width: 480px) {
+  .tj-markup-overview-grid { grid-template-columns: 1fr; }
+}
+/* A narrow desktop column still has room for two concise journal cards.
+   Reserve the one-column stack for actual phone-sized columns. */
+@container (min-width: 621px) and (max-width: 860px) {
+  .tj-tradelog-card-grid, .tj-markup-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tj-tradelog-card-shell, .tj-markup-card-grid > * { min-width: 0; }
+  .tj-tradelog-card-grid .tj-reference-tradelog-expanded { grid-column: 1 / -1; }
+  .tj-tradelog-card-grid .tj-trade-card-metrics { gap: 6px; }
+  .tj-tradelog-card-grid .tj-trade-card-metrics span {
+    overflow: hidden;
+    font-size: .5625rem;
+    letter-spacing: .35px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tj-tradelog-card-grid .tj-trade-card-metrics strong,
+  .tj-tradelog-card-grid .tj-trade-card-date,
+  .tj-tradelog-card-grid .tj-reference-trade-session {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tj-markup-card-grid .tj-reference-markup-card { min-width: 0; overflow: hidden; }
+}
+@media (max-width: 900px) {
+  .tj-topbar { top: max(8px, env(safe-area-inset-top)); }
+  .tj-content-inner { padding: 14px; }
+}
+@media (min-width: 901px) {
+  .tj-sidebar.tj-sidebar-shown { width: 180px; }
+  .tj-sidebar { height: 100dvh; margin: 0 10px 0; }
+  .tj-content { margin: 0 10px 10px 0; }
+  .tj-topbar { top: 0; margin: 0 10px 0 0; }
+}
+@media (min-width: 901px) and (max-height: 960px) {
+  .tj-sidebar-collapsed .tj-nav-item { min-height: 38px; }
+  .tj-sidebar-collapsed .tj-sidebar-profile { min-height: 44px; margin-bottom: 8px; padding-bottom: 8px; }
+  .tj-sidebar-collapsed .tj-sidebar-import { padding: 7px 0; }
+  .tj-sidebar-collapsed .tj-import-nav { min-height: 38px; }
+  .tj-sidebar-collapsed .tj-sidebar-user { min-height: 44px; }
+}
+@media (max-width: 600px) { .tj-content-inner { padding: 12px 10px max(18px, env(safe-area-inset-bottom)); } }
+@media (prefers-reduced-motion: reduce) { .tj-topbar { transition: none; } }
 @media (max-width: 900px) { .tj-finance-layout { grid-template-columns: 1fr; }.tj-finance-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tj-finance-hero aside { width: 43%; }.tj-finance-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tj-finance-saving { grid-template-columns: 1fr 1fr; }.tj-finance-saving-transfer { justify-self: start; text-align: left; } }
 @media (max-width: 580px) { .tj-finance-hero { display: grid; padding: 15px; }.tj-finance-hero aside { width: auto; }.tj-finance-summary { grid-template-columns: 1fr; }.tj-finance-form { grid-template-columns: 1fr; }.tj-finance-saving { grid-template-columns: 1fr; gap: 10px; }.tj-finance-movement { grid-template-columns: auto minmax(0, 1fr) auto; }.tj-finance-delete { grid-column: 3; }.tj-finance-movement > b { grid-column: 2; }.tj-finance-movement > div { grid-column: 2; }.tj-finance-movement > i { grid-row: span 2; }.tj-tradelog-actions { right: 14px; bottom: 14px; }.tj-import-modal { width: min(100%, calc(100vw - 24px)); }.tj-import-preview > div { font-size: .74rem; } }
 .tj-reference-trade-meta, .tj-reference-trade-meta span:first-child { color: var(--tj-text); }
 .tj-settings-linked-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 @media (max-width: 480px) { .tj-settings-linked-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* A small global type reduction keeps every journal page more compact. */
+html { font-size: 15px; }
+@media (min-width: 621px) { .tj-modal .tj-trade-pnl-grid { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; } }
+@media (min-width: 621px) { .tj-modal .tj-trade-entry-grid { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; } }
+@media (min-width: 621px) { .tj-modal .tj-trade-core-grid { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; } }
+@media (max-width: 620px) { .tj-modal .tj-trade-pnl-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) { .tj-modal .tj-trade-entry-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) { .tj-modal .tj-trade-core-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1100px) {
+  .tj-reference-tradelog-expanded .tj-tlog-row { align-items: stretch; flex-direction: column; }
+  .tj-reference-tradelog-expanded .tj-reference-trade-left,
+  .tj-reference-tradelog-expanded .tj-reference-trade-right { width: 100%; }
+  .tj-reference-tradelog-expanded .tj-reference-trade-left {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "asset direction session"
+      "meta meta meta";
+    align-items: center;
+    gap: 8px 12px;
+  }
+  .tj-reference-tradelog-expanded .tj-reference-trade-left .tj-tlog-main { grid-area: asset; }
+  .tj-reference-tradelog-expanded .tj-reference-trade-direction { grid-area: direction; }
+  .tj-reference-tradelog-expanded .tj-reference-trade-session { grid-area: session; }
+  .tj-reference-tradelog-expanded .tj-reference-trade-meta {
+    grid-area: meta;
+    min-width: 0;
+    padding-top: 7px;
+    border-top: 1px solid var(--tj-border);
+  }
+}
+/* Expanded trade cards use the complete row in compact desktop grids. This
+   leaves a dedicated timestamp line beneath the instrument and prevents the
+   P&L, review status, and action buttons from overlapping it. */
+@container (max-width: 1250px) {
+  .tj-tradelog-card-shell-expanded { grid-column: 1 / -1; }
+  .tj-reference-tradelog-expanded .tj-tlog-row { align-items: stretch; flex-direction: column; }
+  .tj-reference-tradelog-expanded .tj-reference-trade-left,
+  .tj-reference-tradelog-expanded .tj-reference-trade-right { width: 100%; }
+  .tj-reference-tradelog-expanded .tj-reference-trade-left {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "asset direction session"
+      "meta meta meta";
+    align-items: center;
+    gap: 8px 12px;
+  }
+  .tj-reference-tradelog-expanded .tj-reference-trade-left .tj-tlog-main { grid-area: asset; min-width: 0; }
+  .tj-reference-tradelog-expanded .tj-reference-trade-direction { grid-area: direction; }
+  .tj-reference-tradelog-expanded .tj-reference-trade-session { grid-area: session; }
+  .tj-reference-tradelog-expanded .tj-reference-trade-meta {
+    grid-area: meta;
+    min-width: 0;
+    padding-top: 7px;
+    border-top: 1px solid var(--tj-border);
+  }
+}
 `;
 
 /* =============================== AUTH ROOT =============================== */

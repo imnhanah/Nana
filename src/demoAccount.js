@@ -1,6 +1,7 @@
 import { supabase } from "./supabaseClient";
 import { createAccount } from "./db";
 import { buildDemoHistory } from "./demoData";
+import { localDateKey } from "./dateUtils";
 
 const pending = new Map();
 async function stableId(value) {
@@ -29,7 +30,7 @@ function buildRecentDemoMarkups() {
   return DEMO_MARKUP_TEMPLATES.map(([instrument, direction, bias, market, outcome, pnl, rr], index) => {
     const date = new Date(today);
     date.setDate(today.getDate() - (DEMO_MARKUP_TEMPLATES.length - 1 - index));
-    const isoDate = date.toISOString().slice(0, 10);
+    const isoDate = localDateKey(date);
     const setup = bias === "Bullish" ? "higher-timeframe demand and a clean liquidity sweep" : "a lower-high rejection below the session range";
     return {
       date: isoDate, instrument, direction, bias, market, outcome, pnl, rr,

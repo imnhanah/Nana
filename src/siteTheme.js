@@ -22,7 +22,14 @@ export const normaliseAccent = (value) => {
   const next = legacyAccents[value] || value;
   return next === 'default' || ACCENT_OPTIONS.some((accent) => accent.id === next) ? next : 'default';
 };
-function readTheme(fallback) { try { const value = localStorage.getItem(key); if (['light', 'dark', 'system'].includes(value)) return value; } catch {} return normaliseThemePreference(fallback); }
+function isThemePreference(value) { return ['light', 'dark', 'system'].includes(value); }
+function readTheme(fallback, preferProfile = false) {
+  // Once authenticated, the profile is the source of truth across devices.
+  // Local storage remains useful only before that preference is available.
+  if (preferProfile && isThemePreference(fallback)) return fallback;
+  try { const value = localStorage.getItem(key); if (isThemePreference(value)) return value; } catch {}
+  return normaliseThemePreference(fallback);
+}
 const systemTheme = () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 export function applyAccent(accentId, theme) {
   const selected = normaliseAccent(accentId);
@@ -54,20 +61,25 @@ export function applyAccent(accentId, theme) {
   set('--tj-scroll-thumb-hover', color);
   return color;
 }
-export function useSiteTheme(fallback = 'dark') {
-  const [preference, setPreference] = useState(() => readTheme(fallback));
+export function useSiteTheme(fallback) {
+  const hasProfilePreference = isThemePreference(fallback);
+  const defaultPreference = hasProfilePreference ? fallback : 'dark';
+  const [preference, setPreference] = useState(() => readTheme(defaultPreference, hasProfilePreference));
   const [system, setSystem] = useState(() => systemTheme());
   const theme = preference === 'system' ? system : preference;
   useEffect(() => {
     const media = window.matchMedia?.('(prefers-color-scheme: dark)');
     const syncSystem = () => setSystem(media?.matches ? 'dark' : 'light');
     media?.addEventListener?.('change', syncSystem);
-    const sync = event => setPreference(normaliseThemePreference(event.detail || readTheme(fallback)));
+    const sync = event => setPreference(normaliseThemePreference(event.detail || readTheme(defaultPreference, hasProfilePreference)));
     const storage = event => { if (event.key === key) sync(event); };
     window.addEventListener(eventName, sync);
     window.addEventListener('storage', storage);
     return () => { media?.removeEventListener?.('change', syncSystem); window.removeEventListener(eventName, sync); window.removeEventListener('storage', storage); };
-  }, [fallback]);
+  }, [defaultPreference, hasProfilePreference]);
+  useEffect(() => {
+    if (hasProfilePreference) setPreference(fallback);
+  }, [fallback, hasProfilePreference]);
   useEffect(() => {
     // Do not force a resolved color scheme while using System. Leaving both
     // schemes available lets Chromium/Safari continue to follow macOS changes.

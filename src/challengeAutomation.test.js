@@ -88,3 +88,10 @@ test('a trade imported after automation starts is explicitly included in challen
   assert.equal(state.counted,1);
   assert.equal(state.lossStreak,1);
 });
+test('running trades never count toward automated challenge progress',()=>{
+  const running=row(99,0,{context:'[aaicorefx-running-trade]'});
+  const state=replay(start('risk'),[running]);
+  assert.equal(state.counted,0);
+  assert.equal(state.levelPnl,0);
+  assert.equal(state.activeLevel,1);
+});

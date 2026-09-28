@@ -20,8 +20,9 @@
 .tj-challenge-table-head { padding:18px; }
 .tj-challenge-table-head label { display:flex; gap:8px; align-items:center; font-size: 0.9375rem; }
 .tj-challenge-table-head input { accent-color:var(--tj-green); }
-.tj-challenge-scroll { overflow:auto; max-height:70vh; margin:0 14px 14px; border:1px solid var(--tj-border); border-radius:16px; scrollbar-width:none !important; }.tj-challenge-scroll::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }
-.tj-challenge table { width:100%; border-collapse:separate; border-spacing:0; font-size: 1rem; font-variant-numeric:tabular-nums; }
+.tj-challenge-scroll { overflow:auto; max-height:70vh; margin:0 14px 14px; border:1px solid var(--tj-border); border-radius:16px; scrollbar-gutter:stable both-edges; scrollbar-color:var(--tj-green) var(--tj-panel-alt); scrollbar-width:thin; }
+.tj-challenge-scroll::-webkit-scrollbar { width:10px; height:10px; }.tj-challenge-scroll::-webkit-scrollbar-thumb { background:var(--tj-green); border:2px solid var(--tj-panel-alt); border-radius:99px; }.tj-challenge-scroll::-webkit-scrollbar-track { background:var(--tj-panel-alt); }
+.tj-challenge table { width:100%; min-width:980px; border-collapse:separate; border-spacing:0; font-size: 1rem; font-variant-numeric:tabular-nums; }
 .tj-challenge th,.tj-challenge td { padding:13px 15px; border-bottom:1px solid var(--tj-border); text-align:left; white-space:nowrap; }
 .tj-challenge thead th { position:sticky; top:0; z-index:1; background:var(--tj-panel-alt); color:var(--tj-muted); font-size: 0.875rem; }
 .tj-challenge tbody th span { display:inline-flex; margin-left:8px; color:var(--tj-green); font-size: 0.875rem; }
@@ -55,3 +56,31 @@
 @media(max-width:540px) { .tj-challenge-metrics article { padding:12px; } .tj-challenge-metrics strong { font-size: 1.4175rem; } .tj-challenge-current { flex-wrap:wrap; } .tj-challenge-current > div { min-width:200px; } .tj-challenge-heading { align-items:flex-start; } }
 .tj-challenge-mode-settings{display:grid;gap:10px;padding:16px;margin:14px 0;border:1px solid var(--tj-border);border-radius:12px;background:var(--tj-panel)}.tj-challenge-mode-settings p,.tj-challenge-mode-settings small{color:var(--tj-muted);line-height:1.5;margin:0}.tj-challenge-mode-settings label{font-weight:700;font-size:14px}.tj-challenge-mode-buttons{display:flex;gap:8px;flex-wrap:wrap}.tj-challenge-mode-buttons button{flex:1;min-width:180px;font:inherit;font-size:14px;padding:12px;border:1px solid var(--tj-border);border-radius:8px;color:var(--tj-text);background:var(--tj-input-bg);cursor:pointer}.tj-challenge-mode-buttons button[aria-pressed=true]{border-color:var(--tj-green);background:var(--tj-primary-muted);color:var(--tj-green)}.tj-challenge-mode-buttons button:disabled{opacity:.5;cursor:not-allowed}.tj-challenge-auto-progress{display:grid;gap:8px;margin:14px 0;padding:16px}.tj-challenge-auto-progress small{color:var(--tj-muted)}
 .tj-challenge-mode-settings p,.tj-challenge-mode-settings small{font-size:12px}
+@media(max-width:1100px) { .tj-challenge th,.tj-challenge td { padding:10px 12px; } .tj-challenge table { font-size:.9375rem; } .tj-challenge thead th { font-size:.8125rem; } }
+/* Keep the core seven columns visible in a compact browser window. */
+@media(max-width:1100px) {
+  .tj-challenge table { min-width:0; table-layout:fixed; font-size:1rem; }
+  .tj-challenge th,.tj-challenge td { padding:13px 8px; overflow:hidden; text-overflow:ellipsis; }
+  .tj-challenge thead th { white-space:normal; line-height:1.2; font-size:.875rem; }
+  .tj-challenge th:nth-child(1) { width:17%; overflow:visible; text-overflow:clip; }
+  .tj-challenge th:nth-child(2),.tj-challenge th:nth-child(3),.tj-challenge th:nth-child(4),.tj-challenge th:nth-child(5) { width:13%; }
+  .tj-challenge th:nth-last-child(2) { width:16%; }
+  .tj-challenge th:last-child { width:11%; }
+  .tj-challenge-status { width:100%; min-width:0; padding:5px 7px; }
+  .tj-challenge td .tj-input { width:100%; min-width:0; padding:6px 7px; }
+  .tj-challenge tbody th .tj-challenge-milestone-badge { display:inline-flex; white-space:nowrap; }
+}
+/* Let the plan use the same generous viewport height as the original layout. */
+.tj-challenge-scroll { max-height:70vh; }
+.tj-challenge td .tj-input { min-height:32px; height:32px; }
+.tj-challenge tbody th .tj-challenge-milestone-badge { display:inline-flex; margin:0 0 0 6px; vertical-align:middle; }
+.tj-challenge-scroll {
+  scrollbar-width: none !important;
+  scrollbar-gutter: auto;
+  -ms-overflow-style: none;
+}
+.tj-challenge-scroll::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}

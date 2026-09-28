@@ -1,4 +1,6 @@
 import {buildChallengePlan, isChallengeEnabled} from './challengeModel.js';
+const RUNNING_TRADE_MARKER = '[aaicorefx-running-trade]';
+const isClosedTrade = trade => !String(trade?.context || '').includes(RUNNING_TRADE_MARKER);
 export const validMode = mode => mode === 'risk' || mode === 'streak' ? mode : null;
 export function localCheckpoint(now = new Date()) {
   const pad = n => String(n).padStart(2,'0');
@@ -29,7 +31,7 @@ export function replayChallenge(baseline, account) {
   const loggedAt=t=>Date.parse(t.createdAt || `${t.date}T${t.time || '00:00'}`);
   const rows=(account.trades || []).filter(t=>{
     if (excluded.has(t.id) || (t.accountId && t.accountId !== account.id)) return false;
-    return (included.has(t.id) || loggedAt(t) >= Date.parse(config.startedAt)) && t.grossPnl != null && Number.isFinite(Number(t.grossPnl));
+    return isClosedTrade(t) && (included.has(t.id) || loggedAt(t) >= Date.parse(config.startedAt)) && t.grossPnl != null && Number.isFinite(Number(t.grossPnl));
   }).sort((a,b)=>loggedAt(a)-loggedAt(b) || String(a.id).localeCompare(String(b.id)));
   let cents=0;
   for (const trade of rows) {

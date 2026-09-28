@@ -157,7 +157,7 @@ export async function updateProfile({ fullName, displayName, avatarUrl, sessionT
   if (!cleanName) return { error: "Please enter your full name." };
   try {
     const { data, error } = await supabase.auth.updateUser({
-      data: { display_name: cleanDisplayName, full_name: cleanName, avatar_url: avatarUrl || null, session_timeout_minutes: Number(sessionTimeoutMinutes) || 0, theme: theme === "light" ? "light" : "dark", theme_preference: ["light", "dark", "system"].includes(themePreference) ? themePreference : (theme === "light" ? "light" : "dark"), accent_color: accentColor || "mint", timezone: timezone || "Africa/Accra", date_format: dateFormat || "DD/MM/YYYY", time_format: timeFormat === "24" ? "24" : "12" },
+      data: { display_name: cleanDisplayName, full_name: cleanName, avatar_url: avatarUrl || null, session_timeout_minutes: Number(sessionTimeoutMinutes) || 0, theme: theme === "light" ? "light" : "dark", theme_preference: ["light", "dark", "system"].includes(themePreference) ? themePreference : (theme === "light" ? "light" : "dark"), accent_color: accentColor || "default", timezone: timezone || "Africa/Accra", date_format: dateFormat || "DD/MM/YYYY", time_format: timeFormat === "24" ? "24" : "12" },
     });
     if (error) return { error: friendlyAuthError(error) };
     const { error: profileError } = await supabase
