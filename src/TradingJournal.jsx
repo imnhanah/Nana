@@ -4714,12 +4714,13 @@ function TradingJournalApp({ user, onLogout }) {
           )}
           <button className="tj-sidebar-user" onClick={() => setShowAccountMenu((v) => !v)}>
             <div className="tj-account-initial" aria-hidden="true">{accountInitial(account.name)}</div>
-            <div style={{ textAlign: "left", minWidth: 0 }}><div className="tj-account-name">{account.name.length > 16 ? account.name.slice(0, 16) + "…" : account.name}</div><div className="tj-account-sub">Active account</div></div>
+            <div style={{ textAlign: "left", minWidth: 0 }}><div className="tj-account-name">{account.name.length > 16 ? account.name.slice(0, 16) + "…" : account.name}</div></div>
             <ChevronDown size={14} className="tj-sidebar-user-chevron" />
           </button>
         </div>
       </div>
       {sidebarOpen && <div className="tj-backdrop" onClick={() => setSidebarOpen(false)} />}
+      {!sidebarOpen && <button type="button" className="tj-sidebar-restore" title="Show sidebar" aria-label="Show sidebar" onClick={() => setSidebarOpen(true)}><PanelLeftOpen size={18} /></button>}
       <div className="tj-main">
         <div className="tj-content" ref={contentScrollRef} onScroll={handleContentScroll}>
           <div className={`tj-topbar ${scrollHeaderHidden ? "tj-topbar-scroll-hidden" : ""} ${scrollHeaderReturning ? "tj-topbar-scroll-returning" : ""}`}>
@@ -4862,6 +4863,8 @@ html:has(.tj-root) { font-size: 93.75%; }
 .tj-sidebar { width:220px; min-width:0; height:100vh; overflow:visible; background:var(--tj-chrome); border-right:1px solid var(--tj-border); display:flex; flex-direction:column; padding:18px 14px; position:relative; flex:0 0 auto; box-shadow:12px 0 28px rgba(0,0,0,0.08); }
 .tj-sidebar-toggle { width:32px; height:32px; min-width:32px; min-height:32px; flex:0 0 32px; display:grid; place-items:center; padding:0; line-height:0; background:var(--tj-panel-alt); border:1px solid var(--tj-border); border-radius:9px; }
 .tj-sidebar-toggle svg { display:block; }
+.tj-sidebar-restore { position:fixed; z-index:44; top:50%; left:0; width:32px; height:52px; display:grid; place-items:center; padding:0 0 0 2px; color:var(--tj-text); background:var(--tj-chrome); border:1px solid var(--tj-border); border-left:0; border-radius:0 12px 12px 0; box-shadow:8px 10px 24px color-mix(in srgb,var(--tj-bg) 55%,transparent); cursor:pointer; transform:translateY(-50%); transition:width .2s ease, background-color .2s ease, color .2s ease; }
+.tj-sidebar-restore:hover { width:38px; color:var(--tj-accent); background:var(--tj-panel-alt); }
 @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
   .tj-root :is(button, a, [role="button"], [role="tab"], tr) { transition: background-color .25s ease, box-shadow .3s ease, border-color .25s ease, translate .3s cubic-bezier(.22,1,.36,1); }
   .tj-root .tj-pointer-lit {
@@ -6019,6 +6022,9 @@ i.tj-dot-green { background: var(--tj-green); } i.tj-dot-red { background: var(-
   .tj-local-briefing-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 900px) {
+  /* On narrow screens the normal menu control is sufficient; the persistent
+     edge tab would compete with already compact content. */
+  .tj-sidebar-restore { display: none; }
   .tj-psychology-main { grid-template-columns: 1fr; }
   .tj-settings-hero-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .tj-analytics-command-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
